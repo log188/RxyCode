@@ -205,6 +205,7 @@ jobs:
           & $smokePython -m pip install --no-deps --force-reinstall $wheel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+          $env:PYTHONIOENCODING = "utf-8"
           & $rxycode --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $rxycode --help

@@ -17,12 +17,23 @@ if sys.platform == "win32":
         ctypes.windll.kernel32.SetConsoleOutputCP(65001)
     except Exception:
         pass
-# Reconfigure std streams to UTF-8 regardless of console vs pipe
+# Reconfigure std streams to UTF-8 regardless of console vs pipe.
+# reconfigure() is preferred (in-place), but fall back to wrapping
+# the underlying buffer if it fails or is unavailable.
+import io as _io
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
-        pass
+        try:
+            _buf = _stream.buffer
+            _new = _io.TextIOWrapper(_buf, encoding="utf-8", errors="replace", line_buffering=_stream.line_buffering)
+            if _stream is sys.stdout:
+                sys.stdout = _new
+            else:
+                sys.stderr = _new
+        except Exception:
+            pass
 
 import click
 
