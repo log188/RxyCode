@@ -3,7 +3,9 @@
 import sys
 import os
 
-# CRITICAL: Set UTF-8 console encoding BEFORE any other imports/output
+# CRITICAL: Set UTF-8 encoding BEFORE any other imports/output.
+# On Windows, stdout may default to cp1252 when piped (e.g. CI),
+# causing UnicodeEncodeError on Chinese help text.
 if sys.platform == "win32":
     try:
         os.system("chcp 65001 >nul 2>&1")
@@ -13,6 +15,12 @@ if sys.platform == "win32":
         import ctypes
         ctypes.windll.kernel32.SetConsoleCP(65001)
         ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+# Reconfigure std streams to UTF-8 regardless of console vs pipe
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
 
