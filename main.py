@@ -236,7 +236,14 @@ def cli(ctx, model, api, api_port, log_level, print_logs):
             click.echo(f"RxyCode API bearer token: {api_token}", err=True)
             run_api_server(port=api_port, token=api_token)
         else:
-            # Default: launch Ink TUI
+            # Default: launch Ink TUI — requires an interactive terminal
+            if not sys.stdin.isatty():
+                click.echo(
+                    "RxyCode requires an interactive terminal (TTY) to run the "
+                    "Ink frontend. Use --api for headless/server mode.",
+                    err=True,
+                )
+                sys.exit(1)
             _log.info("RxyCode started", extra={"mode": "ink", "model": _resolve_model_label(model), "port": api_port})
             _launch_ink_tui(model, api_port)
 
