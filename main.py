@@ -221,6 +221,16 @@ def _resolve_model_label(model):
 def cli(ctx, model, api, api_port, log_level, print_logs):
     """RxyCode - General-Purpose AI Agent"""
     if ctx.invoked_subcommand is None:
+        # Non-TTY guard: Ink requires an interactive terminal.
+        # Must run before setup_logging to avoid hangs in CI pipes.
+        if not api and not sys.stdin.isatty():
+            click.echo(
+                "RxyCode requires an interactive terminal (TTY) to run the "
+                "Ink frontend. Use --api for headless/server mode.",
+                err=True,
+            )
+            sys.exit(1)
+
         # 初始化应用级日志（对标 opencode 日志模式，key=value 结构化格式）
         from .log.logger import setup_logging
         _log = setup_logging(level=log_level, print_logs=print_logs)
@@ -236,14 +246,6 @@ def cli(ctx, model, api, api_port, log_level, print_logs):
             click.echo(f"RxyCode API bearer token: {api_token}", err=True)
             run_api_server(port=api_port, token=api_token)
         else:
-            # Default: launch Ink TUI — requires an interactive terminal
-            if not sys.stdin.isatty():
-                click.echo(
-                    "RxyCode requires an interactive terminal (TTY) to run the "
-                    "Ink frontend. Use --api for headless/server mode.",
-                    err=True,
-                )
-                sys.exit(1)
             _log.info("RxyCode started", extra={"mode": "ink", "model": _resolve_model_label(model), "port": api_port})
             _launch_ink_tui(model, api_port)
 
