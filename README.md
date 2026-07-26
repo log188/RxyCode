@@ -1,409 +1,436 @@
-<p align="center">
-  <h1 align="center">RxyCode</h1>
-  <p align="center"><strong>AI-Powered Coding Agent with Verification Layer</strong></p>
-  <p align="center">
-    <em>基于 ReAct + 反幻觉验证层 的智能编程助手</em>
-  </p>
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="#english">English</a> | <a href="#中文">中文</a>
-</p>
+# RxyCode
+
+**Plan-and-Execute AI Coding Agent with Verification & Safe Tool Orchestration**
+
+**规划-执行型 AI 编程助手，带验证层与安全工具编排**
+
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-2477%20passed-brightgreen.svg)](#testing--测试)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+</div>
 
 ---
 
-<a name="english"></a>
+> **[English](#english)** | **[中文](#中文)**
 
-## 🇬🇧 English
+---
 
-### Overview
+# English
 
-RxyCode is a Python-based AI coding agent that uses a **ReAct (Reasoning + Acting) architecture** enhanced with a custom **Verification Layer** to prevent hallucinated success reports. It features a modular tool system, environment-aware path resolution, and MCP (Model Context Protocol) integration.
+RxyCode is a general-purpose AI agent built on LangGraph with a hierarchical
+plan-and-execute architecture. It decomposes complex tasks into subtasks,
+executes them with a safe tool orchestrator, validates results, and synthesizes
+a final answer — all streamed live to a beautiful Ink terminal UI.
 
-### Architecture
+### Why RxyCode?
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    RxyCode Agent                         │
-├─────────────┬─────────────┬──────────────┬──────────────┤
-│  Session    │  Execution  │ Verification │ Environment  │
-│  Manager    │  Engine     │ Layer        │ Detector     │
-├─────────────┼─────────────┼──────────────┼──────────────┤
-│ Context     │ Timeout/    │ Claim        │ OS/Shell/    │
-│ Isolation   │ Retry/      │ Extraction   │ Path         │
-│ & History   │ Degradation │ & Correction │ Resolution   │
-│ Compression │             │              │              │
-├─────────────┴─────────────┴──────────────┴──────────────┤
-│                    Tool Registry                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
-│  │  Write   │  │   Read   │  │   Bash   │  ...          │
-│  │  Tool    │  │   Tool   │  │   Tool   │              │
-│  └──────────┘  └──────────┘  └──────────┘              │
-├─────────────────────────────────────────────────────────┤
-│              Shell Abstraction Layer                     │
-│         (PowerShell / CMD / Bash / Zsh)                  │
-└─────────────────────────────────────────────────────────┘
-         ↕
-┌─────────────────────────────────────────────────────────┐
-│                  MCP Integration Layer                    │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐    │
-│  │   Shell MCP  │ │  Verify MCP  │ │ Task Progress│    │
-│  └──────────────┘ └──────────────┘ └──────────────┘    │
-└─────────────────────────────────────────────────────────┘
-```
+- **Anti-hallucination** — A dedicated validator checks tool results against
+  the original goal before reporting success
+- **Plan & Execute** — Hierarchical task decomposition with dependency-aware
+  parallel execution, not a linear ReAct loop
+- **Safe by default** — Risk-level classification, write whitelist, approval
+  dialogs, and full audit trail
+- **Blazing fast** — Three-level cache (exact hash + semantic similarity +
+  Provider KV), 50 ms token batching, fast-reply path for simple queries
+- **Beautiful TUI** — Ink/React/TypeScript frontend with streaming output,
+  syntax highlighting, and flicker-free rendering
+- **30+ tools** — File ops, shell, web search/fetch, git, RAG, MCP, LSP, and more
 
-### Core Mechanism: ReAct + Verification
+## Quick Start
 
-RxyCode follows the **ReAct pattern** (Reason → Act → Observe → Repeat) but adds a critical **Verification Layer** that independently checks every success claim before returning to the user.
+### Prerequisites
 
-#### ReAct Loop
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| Python | 3.10+ | Backend runtime |
+| Node.js | 20+ | Ink frontend runtime |
+| OpenAI-compatible API key | — | Any provider (OpenAI, DeepSeek, etc.) |
 
-```
-User: "Create hello.py with a hello world function"
-  ↓
-[Reason] Agent thinks: I need to use the write tool to create this file
-  ↓
-[Act] Agent calls: write(path="hello.py", content="def hello():...")
-  ↓
-[Observe] Tool returns: "File written: hello.py (45 bytes)"
-  ↓
-[Verify] Verification Layer checks: Does hello.py actually exist? → YES ✓
-  ↓
-[Respond] "Created hello.py with a hello world function [Verified]"
+### Option 1: One-command install (recommended)
+
+**Windows PowerShell:**
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.1.0/install.ps1 | iex"
+rxycode
 ```
 
-#### Verification Layer (Anti-Hallucination)
-
-The Verification Layer solves the critical problem where agents claim success without actually completing tasks:
-
-| Component | Function |
-|-----------|----------|
-| **ClaimExtractor** | Parses agent responses to find success claims ("file created", "test passed") |
-| **Verifier** | Independently checks each claim using actual tool results |
-| **ReportCorrector** | Rewrites false claims with accurate failure descriptions |
-
-Example:
-```
-Agent says:    "I have successfully created hello.py and run the tests"
-Verification:  ✓ hello.py exists (verified via filesystem)
-Verification:  ✗ No test output found (no pytest markers in evidence)
-Corrected:     "hello.py created. ⚠️ Tests were not actually run."
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.1.0/install.sh | sh
+rxycode
 ```
 
-### Key Features
+The installer bootstraps `uv` (if needed), creates an isolated tool
+environment, and installs the pinned `v1.1.0` release. No manual clone
+required.
 
-- **ReAct Architecture**: Structured reasoning → action → observation loop
-- **Anti-Hallucination Verification**: Independent claim verification before user delivery
-- **Tool Timeout/Retry/Degradation**: 15s write / 5s read / 60s bash with automatic retry and graceful degradation
-- **Environment Awareness**: Auto-detects OS, shell, paths without hardcoding
-- **Context Isolation**: Per-request context to prevent cross-task contamination
-- **History Compression**: Automatic summarization to stay within token limits
-- **MCP Integration**: Extensible via Model Context Protocol servers
-
-### Project Structure
-
-```
-RxyCode/
-├── rxycode_backend/          # Core agent backend
-│   ├── core/                 # Cross-cutting concerns
-│   │   ├── environment.py    # OS/shell/path detection
-│   │   ├── execution.py      # Tool execution engine (timeout/retry/degrade)
-│   │   ├── session.py        # Context management & history compression
-│   │   ├── shell.py          # Shell abstraction (PS/CMD/Bash)
-│   │   └── verification.py   # Anti-hallucination verification layer
-│   ├── tools/                # Tool implementations
-│   │   ├── base.py           # Tool protocol & registry
-│   │   ├── bash_tool.py      # Shell command execution
-│   │   ├── read_tool.py      # File reading
-│   │   └── write_tool.py     # File writing
-│   └── tests/                # Test suite
-│       ├── test_p01_hallucination.py
-│       ├── test_p02a_timeout.py
-│       ├── test_p02b_shell_syntax.py
-│       ├── test_p03_path_error.py
-│       └── test_p11_context_leak.py
-├── rxycode-mcp/              # MCP server integrations
-│   ├── codebase_explorer_mcp.py
-│   ├── rxycode_shell_mcp.py
-│   ├── rxycode_verify_mcp.py
-│   ├── task_progress_mcp.py
-│   └── config/mcp_config.json
-├── test_parse_tool_call.py   # Tool call parsing tests
-├── test_rxycode.py           # Integration tests
-└── README.md
-```
-
-### Quick Start
-
-#### Prerequisites
-
-- Python 3.13+
-- API key for an LLM provider (DeepSeek, OpenAI, etc.)
-
-#### Installation
+### Option 2: Run once with uv
 
 ```bash
-# Clone the repository
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.1.0" rxycode
+```
+
+### Option 3: Permanent install
+
+```bash
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.1.0"
+rxycode
+```
+
+### Option 4: From source
+
+```bash
 git clone https://github.com/xin-yi33/RxyCode.git
 cd RxyCode
-
-# Install dependencies
-pip install -r requirements.txt
+python -m pip install -e .
+rxycode
 ```
 
-#### Configuration (Windows)
-
-```powershell
-# PowerShell
-$env:RXYCODE_API_KEY="your-api-key-here"
-
-# CMD
-set RXYCODE_API_KEY=your-api-key-here
-```
-
-Or create config file at `~/.rxycode/config.yaml`
-
-#### Running
+### Option 5: Docker
 
 ```bash
-# Start API server
-python -m rxycode_backend --api --api-port 18765
-
-# Test with curl
-curl -X POST http://127.0.0.1:18765/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Hello, introduce yourself"}'
+cp .env.example .env   # Set OPENAI_API_KEY and RXYCODE_API_TOKEN
+docker compose up -d api       # API server (loopback only)
+docker compose run --rm tui    # Interactive TUI (needs TTY)
 ```
 
-#### Running Tests
+### First launch
 
+1. Run `rxycode` — the TUI opens even without a model configured
+2. Type `/addmodel` to add your first model (credential input is masked)
+3. Start chatting! Type your request in natural language
+
+## Architecture
+
+```
+User Input
+    │
+    ▼
+AgentV2 (core/agent_v2.py)
+    │
+    ├── Simple query  →  Fast path (single LLM call + cache check)
+    ├── Multi-task    →  Sub-agents (parallel)
+    ├── Compose       →  Plan + Build
+    └── Complex       →  LangGraph Pipeline:
+                              │
+                 goal_planner → decomposer → executor → ToolOrchestrator
+                                                → evidence → validator
+                                                            → synthesizer
+```
+
+### Streaming Pipeline
+
+```
+Backend (Python)                          Frontend (TypeScript/Ink)
+─────────────────                         ──────────────────────────
+_raw_stream()                              useApi.ts
+  │                                          │
+  ├── cache_control injection                fetch /chat/stream (SSE)
+  │                                          │
+  ├── OpenAI async stream                    parse SSE events:
+  │   ├── reasoning_content → reasoning       ├── progress/reasoning/plan/step
+  │   ├── content token → stream_token        ├── token → live AssistantMessage (50ms)
+  │   └── tool_calls delta                    ├── tool_call/tool_result → ToolMessage
+  │                                           ├── approval/question → dialogs
+  └── StreamTUI → asyncio.Queue → SSE         └── final/done → terminal state
+```
+
+## Modes
+
+| Mode | Command | Behavior |
+|------|---------|----------|
+| Build | `/build` | Full pipeline: plan → decompose → execute → validate → synthesize |
+| Plan | `/plan` | Read-only analysis and planning, no file modifications |
+| Compose | `/compose` | Plan + build with simplified pipeline |
+
+## Directory Structure
+
+| Directory | Purpose |
+|-----------|---------|
+| `core/` | AgentV2, LangGraph graph, state, prompts, UsageTrackingLLM |
+| `planning/` | Goal refiner, task decomposer |
+| `execution/` | Executor, tool orchestrator |
+| `validation/` | Validator, re-planner |
+| `synthesis/` | Output synthesizer |
+| `frontend/` | Ink/React TUI (TypeScript), 28 files / 158 tests |
+| `tools/` | 30+ built-in tools (read, write, edit, bash, grep, web, git, ...) |
+| `memory/` | Tiered memory (short-term, long-term, user, search) |
+| `cache/` | Three-level cache (exact + semantic + Provider KV) |
+| `config/` | Configuration management (`~/.rxycode/config.yaml`) |
+| `rag/` | Codebase vector search (chunking, embedding, cosine) |
+| `scheduler/` | Cron-like prompt scheduling |
+| `recovery/` | Error recovery with retry logic |
+| `mcp/` | MCP server integration |
+| `lsp/` | LSP integration (experimental) |
+| `safety/` | Risk levels, approval, write whitelist, audit |
+| `evals/` | Evaluation harness (success rate, LLM-as-judge) |
+| `tests/` | Python test suite (2319 deterministic tests) |
+
+## Testing
+
+### Frontend (TypeScript)
 ```bash
-# Run all tests
-python -m pytest rxycode_backend/tests/ -v
-
-# Run specific test
-python test_parse_tool_call.py
+cd frontend && npm test    # 28 files / 158 tests
 ```
 
-### API Endpoints
+### Backend (Python)
+```bash
+python -m pytest tests -m "not live and not pty and not serial" -n 2 --dist loadscope -q
+python -m pytest tests -m "serial and not live and not pty" -n 0 -q
+# 2319 deterministic tests passed
+```
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/chat` | POST | Send a message to the agent |
-| `/command` | POST | Execute a slash command |
-| `/status` | GET | Check server health |
+## Configuration
 
-### Tool System
+Configuration is stored at `~/.rxycode/config.yaml`:
 
-Tools are registered via `ToolRegistry` and executed through `ExecutionEngine` with automatic timeout/retry/degradation:
+```yaml
+cache:
+  enabled: true
+  prompt_prefix_cache: true   # Enable provider-side KV cache
+  ttl: 3600
 
-| Tool | Timeout | Description |
-|------|---------|-------------|
-| `write` | 15s | Create/overwrite files with path resolution |
-| `read` | 5s | Read file contents with encoding detection |
-| `bash` | 60s | Execute shell commands via abstraction layer |
+models:
+  - name: deepseek-v4-flash
+    provider: openai
+    api_key: <your-key>        # Stored outside the repo, never committed
+    base_url: https://api.deepseek.com
+```
 
-### License
+Use `/addmodel` in the TUI for a guided setup wizard.
 
-MIT
+## Version History
+
+| Version | Date | Highlights |
+|---------|------|------------|
+| [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | Initial release: ReAct + anti-hallucination + MCP |
+| [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph rewrite: plan-and-execute, 24+ tools, tiered memory |
+| [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI, SSE streaming, Docker, CI/CD, one-command installers |
+
+See [CHANGELOG.md](CHANGELOG.md) for the full change history.
 
 ---
 
-<a name="中文"></a>
+# 中文
 
-## 🇨🇳 中文
+RxyCode 是一个基于 LangGraph 的通用 AI Agent，采用分层"规划-执行"架构。
+它将复杂任务拆解为子任务，通过安全的工具编排器执行，验证结果后综合最终答案——
+全部过程实时流式输出到精美的 Ink 终端界面。
 
-### 概述
+### 为什么选择 RxyCode？
 
-RxyCode 是一个基于 Python 的 AI 编程助手，采用 **ReAct（推理+行动）架构**，并增强了自定义的**验证层**来防止幻觉性成功报告。具有模块化工具系统、环境感知路径解析和 MCP（模型上下文协议）集成。
+- **防幻觉** — 专用验证器在报告成功前，会检查工具结果是否真正满足原始目标
+- **规划与执行** — 分层任务拆解 + 依赖感知的并行执行，而非线性 ReAct 循环
+- **默认安全** — 风险分级、写入白名单、审批对话框、完整审计日志
+- **极速响应** — 三层缓存（精确哈希 + 语义相似 + Provider KV）、50ms token 批处理、简单查询快速路径
+- **精美界面** — Ink/React/TypeScript 前端，流式输出、语法高亮、无闪烁渲染
+- **30+ 内置工具** — 文件操作、Shell、网页搜索/抓取、Git、RAG、MCP、LSP 等
 
-### 架构设计
+## 快速开始
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    RxyCode 智能体                         │
-├─────────────┬─────────────┬──────────────┬──────────────┤
-│  会话管理器  │  执行引擎    │  验证层       │  环境探测器   │
-├─────────────┼─────────────┼──────────────┼──────────────┤
-│ 上下文隔离   │ 超时/重试/   │ 声明提取      │ OS/Shell/    │
-│ 历史压缩     │ 降级机制     │ 独立验证      │ 路径解析     │
-│             │             │ 修正报告      │              │
-├─────────────┴─────────────┴──────────────┴──────────────┤
-│                    工具注册表                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
-│  │  Write   │  │   Read   │  │   Bash   │  ...          │
-│  │  写入工具 │  │  读取工具 │  │  命令工具 │              │
-│  └──────────┘  └──────────┘  └──────────┘              │
-├─────────────────────────────────────────────────────────┤
-│              Shell 抽象层                                │
-│         (PowerShell / CMD / Bash / Zsh)                  │
-└─────────────────────────────────────────────────────────┘
-         ↕
-┌─────────────────────────────────────────────────────────┐
-│                  MCP 集成层                               │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐    │
-│  │   Shell MCP  │ │  Verify MCP  │ │ Task Progress│    │
-│  └──────────────┘ └──────────────┘ └──────────────┘    │
-└─────────────────────────────────────────────────────────┘
+### 前置条件
+
+| 要求 | 版本 | 说明 |
+|------|------|------|
+| Python | 3.10+ | 后端运行时 |
+| Node.js | 20+ | Ink 前端运行时 |
+| OpenAI 兼容 API 密钥 | — | 任意提供商（OpenAI、DeepSeek 等） |
+
+### 方式一：一键安装（推荐）
+
+**Windows PowerShell：**
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.1.0/install.ps1 | iex"
+rxycode
 ```
 
-### 核心机制：ReAct + 验证层
-
-RxyCode 遵循 **ReAct 模式**（推理 → 行动 → 观察 → 重复），但增加了关键的**验证层**，在返回给用户之前独立检查每一个成功声明。
-
-#### ReAct 循环
-
-```
-用户: "创建一个 hello.py，包含 hello world 函数"
-  ↓
-[推理] Agent 思考: 需要使用 write 工具创建文件
-  ↓
-[行动] Agent 调用: write(path="hello.py", content="def hello():...")
-  ↓
-[观察] 工具返回: "文件已写入: hello.py (45 字节)"
-  ↓
-[验证] 验证层检查: hello.py 是否真的存在？ → 是 ✓
-  ↓
-[响应] "已创建 hello.py [验证通过]"
+**macOS / Linux：**
+```bash
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.1.0/install.sh | sh
+rxycode
 ```
 
-#### 验证层（反幻觉机制）
+安装脚本会自动引导安装 `uv`（如果需要），创建隔离的工具环境，并安装 `v1.1.0` 版本。
+无需手动 clone 仓库。
 
-验证层解决了 Agent 虚假报告成功的关键问题：
+### 方式二：一次性运行
 
-| 组件 | 功能 |
+```bash
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.1.0" rxycode
+```
+
+### 方式三：永久安装
+
+```bash
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.1.0"
+rxycode
+```
+
+### 方式四：从源码安装
+
+```bash
+git clone https://github.com/xin-yi33/RxyCode.git
+cd RxyCode
+python -m pip install -e .
+rxycode
+```
+
+### 方式五：Docker
+
+```bash
+cp .env.example .env   # 设置 OPENAI_API_KEY 和 RXYCODE_API_TOKEN
+docker compose up -d api       # API 服务器（仅本地回环）
+docker compose run --rm tui    # 交互式 TUI（需要 TTY）
+```
+
+### 首次启动
+
+1. 运行 `rxycode` — 即使没有配置模型，TUI 也会打开
+2. 输入 `/addmodel` 添加你的第一个模型（凭据输入有掩码保护）
+3. 开始使用！直接用自然语言输入你的需求
+
+## 架构
+
+```
+用户输入
+    │
+    ▼
+AgentV2 (core/agent_v2.py)
+    │
+    ├── 简单查询  →  快速路径（单次 LLM 调用 + 缓存检查）
+    ├── 多任务    →  子 Agent 并行
+    ├── 编排      →  规划 + 构建
+    └── 复杂任务  →  LangGraph 管道：
+                           │
+                目标规划器 → 拆解器 → 执行器 → 工具编排器
+                                        → 证据 → 验证器
+                                                → 综合器
+```
+
+### 流式管道
+
+```
+后端 (Python)                              前端 (TypeScript/Ink)
+─────────────────                         ──────────────────────────
+_raw_stream()                              useApi.ts
+  │                                          │
+  ├── cache_control 注入                     fetch /chat/stream (SSE)
+  │                                          │
+  ├── OpenAI 异步流                          解析 SSE 事件：
+  │   ├── reasoning_content → 推理            ├── progress/reasoning/plan/step
+  │   ├── content token → 流式 token          ├── token → 实时 AssistantMessage (50ms)
+  │   └── tool_calls delta                    ├── tool_call/tool_result → ToolMessage
+  │                                           ├── approval/question → 对话框
+  └── StreamTUI → asyncio.Queue → SSE         └── final/done → 终态
+```
+
+## 工作模式
+
+| 模式 | 命令 | 行为 |
+|------|------|------|
+| 构建 | `/build` | 完整管道：规划 → 拆解 → 执行 → 验证 → 综合 |
+| 规划 | `/plan` | 只读分析和规划，不修改文件 |
+| 编排 | `/compose` | 规划 + 构建（简化管道） |
+
+## 目录结构
+
+| 目录 | 职责 |
 |------|------|
-| **ClaimExtractor（声明提取器）** | 解析 Agent 回复，找到成功声明（"文件已创建"、"测试通过"） |
-| **Verifier（验证器）** | 使用实际工具结果独立验证每个声明 |
-| **ReportCorrector（报告修正器）** | 用准确的失败描述重写虚假声明 |
+| `core/` | AgentV2、LangGraph 图、状态、提示词、UsageTrackingLLM |
+| `planning/` | 目标提炼器、任务拆解器 |
+| `execution/` | 执行器、工具编排器 |
+| `validation/` | 验证器、重规划器 |
+| `synthesis/` | 输出综合器 |
+| `frontend/` | Ink/React 终端 UI（TypeScript），28 文件 / 158 测试 |
+| `tools/` | 30+ 内置工具（read, write, edit, bash, grep, web, git 等） |
+| `memory/` | 分层记忆（短期、长期、用户、搜索） |
+| `cache/` | 三层缓存（精确 + 语义 + Provider KV） |
+| `config/` | 配置管理（`~/.rxycode/config.yaml`） |
+| `rag/` | 代码库向量搜索（分块、嵌入、余弦） |
+| `scheduler/` | 定时任务（类 cron） |
+| `recovery/` | 错误恢复与重试 |
+| `mcp/` | MCP 服务器集成 |
+| `lsp/` | LSP 集成（实验性） |
+| `safety/` | 风险分级、审批、写入白名单、审计 |
+| `evals/` | 评估框架（成功率、LLM-as-judge） |
+| `tests/` | Python 测试套件（2319 个确定性测试） |
 
-示例：
-```
-Agent 说:     "我已成功创建 hello.py 并运行了测试"
-验证结果:     ✓ hello.py 存在（通过文件系统验证）
-验证结果:     ✗ 未找到测试输出（证据中无 pytest 特征）
-修正后:       "hello.py 已创建。⚠️ 测试未实际运行。"
-```
+## 测试
 
-### 核心特性
-
-- **ReAct 架构**：结构化的 推理→行动→观察 循环
-- **反幻觉验证**：在交付给用户之前独立验证声明
-- **工具超时/重试/降级**：write 15s / read 5s / bash 60s，自动重试并优雅降级
-- **环境感知**：自动检测 OS、Shell、路径，无需硬编码
-- **上下文隔离**：按请求隔离上下文，防止跨任务污染
-- **历史压缩**：自动摘要以保持在 token 限制内
-- **MCP 集成**：通过模型上下文协议服务器可扩展
-
-### 项目结构
-
-```
-RxyCode/
-├── rxycode_backend/          # 核心 Agent 后端
-│   ├── core/                 # 横切关注点
-│   │   ├── environment.py    # OS/Shell/路径检测
-│   │   ├── execution.py      # 工具执行引擎（超时/重试/降级）
-│   │   ├── session.py        # 上下文管理与历史压缩
-│   │   ├── shell.py          # Shell 抽象层（PS/CMD/Bash）
-│   │   └── verification.py   # 反幻觉验证层
-│   ├── tools/                # 工具实现
-│   │   ├── base.py           # 工具协议与注册表
-│   │   ├── bash_tool.py      # Shell 命令执行
-│   │   ├── read_tool.py      # 文件读取
-│   │   └── write_tool.py     # 文件写入
-│   └── tests/                # 测试套件
-│       ├── test_p01_hallucination.py
-│       ├── test_p02a_timeout.py
-│       ├── test_p02b_shell_syntax.py
-│       ├── test_p03_path_error.py
-│       └── test_p11_context_leak.py
-├── rxycode-mcp/              # MCP 服务器集成
-│   ├── codebase_explorer_mcp.py
-│   ├── rxycode_shell_mcp.py
-│   ├── rxycode_verify_mcp.py
-│   ├── task_progress_mcp.py
-│   └── config/mcp_config.json
-├── test_parse_tool_call.py   # 工具调用解析测试
-├── test_rxycode.py           # 集成测试
-└── README.md
-```
-
-### 快速上手
-
-#### 前置要求
-
-- Python 3.13+
-- LLM 提供商的 API Key（DeepSeek、OpenAI 等）
-
-#### 安装
-
+### 前端（TypeScript）
 ```bash
-# 克隆仓库
-git clone https://github.com/xin-yi33/RxyCode.git
-cd RxyCode
-
-# 安装依赖
-pip install -r requirements.txt
+cd frontend && npm test    # 28 文件 / 158 测试
 ```
 
-#### 配置 (Windows)
-
-```powershell
-# PowerShell
-$env:RXYCODE_API_KEY="your-api-key-here"
-
-# CMD
-set RXYCODE_API_KEY=your-api-key-here
-```
-
-或在 `~/.rxycode/config.yaml` 中创建配置文件
-
-#### 运行
-
+### 后端（Python）
 ```bash
-# 启动 API 服务器
-python -m rxycode_backend --api --api-port 18765
-
-# 使用 curl 测试
-curl -X POST http://127.0.0.1:18765/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "你好，请介绍一下你自己"}'
+python -m pytest tests -m "not live and not pty and not serial" -n 2 --dist loadscope -q
+python -m pytest tests -m "serial and not live and not pty" -n 0 -q
+# 2319 个确定性测试通过
 ```
 
-#### 运行测试
+## 配置
 
-```bash
-# 运行所有测试
-python -m pytest rxycode_backend/tests/ -v
+配置文件位于 `~/.rxycode/config.yaml`：
 
-# 运行特定测试
-python test_parse_tool_call.py
+```yaml
+cache:
+  enabled: true
+  prompt_prefix_cache: true   # 开启 Provider 侧 KV 缓存
+  ttl: 3600
+
+models:
+  - name: deepseek-v4-flash
+    provider: openai
+    api_key: <your-key>        # 存储在仓库外，不会被提交
+    base_url: https://api.deepseek.com
 ```
 
-### API 端点
+在 TUI 中使用 `/addmodel` 打开引导式设置向导。
 
-| 端点 | 方法 | 说明 |
+## 版本历史
+
+| 版本 | 日期 | 要点 |
 |------|------|------|
-| `/chat` | POST | 向 Agent 发送消息 |
-| `/command` | POST | 执行斜杠命令 |
-| `/status` | GET | 检查服务器健康状态 |
+| [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | 初版：ReAct + 防幻觉 + MCP 集成 |
+| [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph 重写：规划-执行、24+ 工具、分层记忆 |
+| [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI、SSE 流式、Docker、CI/CD、一键安装 |
 
-### 工具系统
+完整变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
-工具通过 `ToolRegistry` 注册，通过 `ExecutionEngine` 执行，自动处理超时/重试/降级：
+## 常用命令
 
-| 工具 | 超时 | 说明 |
-|------|------|------|
-| `write` | 15s | 创建/覆写文件，支持路径解析 |
-| `read` | 5s | 读取文件内容，支持编码检测 |
-| `bash` | 60s | 通过抽象层执行 Shell 命令 |
+| 命令 | 说明 |
+|------|------|
+| `/help` | 显示所有可用命令 |
+| `/addmodel` | 添加新模型 |
+| `/models` | 列出所有模型 |
+| `/model <name>` | 切换模型 |
+| `/build` `/plan` `/compose` | 切换工作模式 |
+| `/clear` | 清除对话上下文 |
+| `/memory add/list/search` | 记忆管理 |
+| `/queue add/run` | 任务队列 |
+| `/cache` | 查看缓存统计 |
+| `/language` | 切换语言 |
+| `/thinking` | 切换思考面板 |
 
-### 许可证
+## 快捷键
 
-MIT
+| 快捷键 | 功能 |
+|--------|------|
+| `Tab` | 切换工作模式 |
+| `Ctrl+S` | 发送消息 |
+| `Ctrl+X` | 取消当前操作 |
+| `Ctrl+?` | 显示帮助 |
+| `Ctrl+E` | 外部编辑器 |
+| `Ctrl+C` | 退出程序 |
 
----
+## License
 
-> **该项目为测试版，欢迎大家踊跃提问。**
->
-> *This project is in beta. Questions and feedback are welcome!*
+[MIT](LICENSE) © RxyCode contributors

@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>跑酷小游戏</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    background: #1a1a2e;
+    font-family: 'Arial', sans-serif;
+    user-select: none;
+  }
+  .game-wrapper {
+    background: #16213e;
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  canvas {
+    display: block;
+    background: #0f3460;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .info-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    color: #e94560;
+    font-size: 20px;
+    font-weight: bold;
+  }
+  .score-label { color: #eee; }
+  .restart-btn {
+    background: #e94560;
+    color: #fff;
+    border: none;
+    padding: 6px 18px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: background 0.2s;
+  }
+  .restart-btn:hover { background: #c73650; }
+  .hint {
+    color: #aaa;
+    font-size: 13px;
+    margin-top: 10px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="game-wrapper">
+  <div class="info-bar">
+    <span><span class="score-label">得分:</span> <span id="scoreDisplay">0</span></span>
+    <button class="restart-btn" id="restartBtn">重新开始</button>
+  </div>
+  <canvas id="gameCanvas" width="600" height="400"></canvas>
+  <div class="hint">按 空格键 或 点击画面 跳跃</div>
+</div>
+<script>
+(function() {
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const scoreSpan = document.getElementById('scoreDisplay');
+
+  // 游戏常量
+  const GROUND_Y = 350;          // 地面高度
+  const PLAYER_WIDTH = 30;
+  const PLAYER_HEIGHT = 40;
+  const PLAYER_X = 80;           // 固定水平位置
+  const GRAVITY = 0.6;
+  const JUMP_FORCE = -11;
+  const OBSTACLE_WIDTH = 25;
+  const OBSTACLE_HEIGHT = 35;
+  const OBSTACLE_SPEED = 5;
+  const MIN_OBSTACLE_INTERVAL = 60;  // 帧
+  const MAX_OBSTACLE_INTERVAL = 120;
+
+  // 游戏状态
+  let player = { x: PLAYER_X, y: GROUND_Y - PLAYER_HEIGHT, vy: 0, width: PLAYER_WIDTH, height: PLAYER_HEIGHT };
+  let obstacles = [];
+  let score = 0;
+  let gameOver = false;
+  let frameCount = 0;
+  let obstacleTimer = 0;
+  let animationId = null;
+
+  // 重置游戏
+  function resetGame() {
+    player.y = GROUND_Y - PLAYER_HEIGHT;
+    player.vy = 0;
+    obstacles = [];
+    score = 0;
+    gameOver = false;
+    frameCount = 0;
+    obstacleTimer = 0;
+    scoreSpan.textContent = '0';
+  }
+
+  // 跳跃
+  function jump() {
+    if (gameOver) {
+      resetGame();
+      return;
+    }
+    // 只有在地面才能跳跃
+    if (player.y >= GROUND_Y - PLAYER_HEIGHT - 1) {
+      player.vy = JUMP_FORCE;
+    }
+  }
+
+  // 生成障碍物
+  function spawnObstacle() {
+    obstacles.push({
+      x: canvas.width,
+      y: GROUND_Y - OBSTACLE_HEIGHT,
+      width: OBSTACLE_WIDTH,
+      height: OBSTACLE_HEIGHT,
+      passed: false
+    });
+  }
+
+  // 碰撞检测 (AABB)
+  function checkCollision(a, b) {
+    return a.x < b.x + b.width &&
+           a.x + a.width > b.x &&
+           a.y < b.y + b.height &&
+           a.y + a.height > b.y;
+  }
+
+  // 更新逻辑
+  function update() {
+    if (gameOver) return;
+
+    // 玩家物理
+    player.vy += GRAVITY;
+    player.y += player.vy;
+
+    // 地面限制
+    if (player.y > GROUND_Y - PLAYER_HEIGHT) {
+      player.y = GROUND_Y - PLAYER_HEIGHT;
+      player.vy = 0;
+    }
+
+    // 障碍物生成
+    obstacleTimer--;
+    if (obstacleTimer <= 0) {
+      spawnObstacle();
+      obstacleTimer = MIN_OBSTACLE_INTERVAL + Math.floor(Math.random() * (MAX_OBSTACLE_INTERVAL - MIN_OBSTACLE_INTERVAL));
+    }
+
+    // 障碍物移动 & 得分 & 移除
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      const obs = obstacles[i];
+      obs.x -= OBSTACLE_SPEED;
+
+      // 通过玩家左侧则计分
+      if (!obs.passed && obs.x + obs.width < player.x) {
+        obs.passed = true;
+        score++;
+        scoreSpan.textContent = score;
+      }
+
+      // 移出屏幕左侧则删除
+      if (obs.x + obs.width < 0) {
+        obstacles.splice(i, 1);
+      }
+    }
+
+    // 碰撞检测
+    for (const obs of obstacles) {
+      if (checkCollision(player, obs)) {
+        gameOver = true;
+        break;
+      }
+    }
+  }
+
+  // 绘制
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // ---- 天空渐变 ----
+    const skyGrad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+    skyGrad.addColorStop(0, '#1a1a4e');
+    skyGrad.addColorStop(1, '#0f3460');
+    ctx.fillStyle = skyGrad;
+    ctx.fillRect(0, 0, canvas.width, GROUND_Y);
+
+    // ---- 地面 ----
+    ctx.fillStyle = '#2d6a4f';
+    ctx.fillRect(0, GROUND_Y, canvas.width, canvas.height - GROUND_Y);
+    // 地面纹理线
+    ctx.strokeStyle = '#40916c';
+    ctx.lineWidth = 2;
+    for (let x = 0; x < canvas.width; x += 40) {
+      ctx.beginPath();
+      ctx.moveTo(x, GROUND_Y + 10);
+      ctx.lineTo(x + 20, GROUND_Y + 10);
+      ctx.stroke();
+    }
+
+    // ---- 玩家 (跑酷小人) ----
+    // 身体
+    ctx.fillStyle = '#e94560';
+    ctx.shadowColor = 'rgba(233,69,96,0.4)';
+    ctx.shadowBlur = 10;
+    ctx.fillRect(player.x, player.y, player.width, player.height);
+    // 眼睛
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(player.x + 18, player.y + 8, 6, 6);
+    ctx.fillStyle = '#222';
+    ctx.fillRect(player.x + 20, player.y + 10, 3, 3);
+
+    // ---- 障碍物 (尖刺方块) ----
+    ctx.shadowBlur = 0;
+    for (const obs of obstacles) {
+      // 主体
+      ctx.fillStyle = '#f77f00';
+      ctx.shadowColor = 'rgba(247,127,0,0.3)';
+      ctx.shadowBlur = 8;
+      ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+      // 顶部尖刺装饰
+      ctx.fillStyle = '#fcbf49';
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.moveTo(obs.x, obs.y);
+      ctx.lineTo(obs.x + obs.width / 2, obs.y - 8);
+      ctx.lineTo(obs.x + obs.width, obs.y);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // ---- 游戏结束覆盖层 ----
+    if (gameOver) {
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 36px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('游戏结束', canvas.width / 2, canvas.height / 2 - 20);
+      ctx.font = '18px Arial';
+      ctx.fillStyle = '#ddd';
+      ctx.fillText('按 空格键 或 点击 重新开始', canvas.width / 2, canvas.height / 2 + 30);
+    }
+
+    ctx.shadowBlur = 0;
+  }
+
+  // 游戏循环
+  function gameLoop() {
+    update();
+    draw();
+    animationId = requestAnimationFrame(gameLoop);
+  }
+
+  // ---- 事件绑定 ----
+  // 键盘：空格跳跃 / 重新开始
+  document.addEventListener('keydown', function(e) {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      jump();
+    }
+  });
+
+  // 点击画面跳跃 / 重新开始
+  canvas.addEventListener('click', function() {
+    jump();
+  });
+
+  // 重新开始按钮
+  document.getElementById('restartBtn').addEventListener('click', function() {
+    resetGame();
+  });
+
+  // ---- 启动游戏 ----
+  resetGame();
+  obstacleTimer = MIN_OBSTACLE_INTERVAL;
+  gameLoop();
+})();
+</script>
+</body>
+</html>
