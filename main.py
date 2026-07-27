@@ -225,17 +225,19 @@ def cli(ctx, model, api, api_port, log_level, print_logs):
         # Must run before setup_logging to avoid hangs in CI pipes.
         # On Windows PowerShell, isatty() may return True even when piped,
         # so also check the CI environment variable as a fallback.
+        # Use os.write + os._exit for maximum reliability in CI pipes.
         if not api and (
             not sys.stdin.isatty()
             or not sys.stdout.isatty()
             or os.getenv("GITHUB_ACTIONS") == "true"
+            or os.getenv("CI") == "true"
         ):
-            print(
+            _msg = (
                 "RxyCode requires an interactive terminal (TTY) to run the "
-                "Ink frontend. Use --api for headless/server mode.",
-                file=sys.stderr,
+                "Ink frontend. Use --api for headless/server mode.\n"
             )
-            sys.exit(1)
+            os.write(2, _msg.encode("utf-8"))
+            os._exit(1)
 
         # 初始化应用级日志（对标 opencode 日志模式，key=value 结构化格式）
         from .log.logger import setup_logging

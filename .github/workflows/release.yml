@@ -141,6 +141,9 @@ jobs:
           $env:RXYCODE_DATA_DIR = Join-Path $env:RUNNER_TEMP "rxycode-fresh-home"
           $output = "/exit" | & $rxycode 2>&1 | Out-String
           $status = $LASTEXITCODE
+          Write-Host "=== Non-TTY smoke: exit=$status ==="
+          Write-Host $output
+          Write-Host "=== End non-TTY smoke ==="
           if ($status -ne 1) { throw "Expected non-TTY exit 1, got $status`n$output" }
           if ($output -notmatch "requires an interactive terminal \(TTY\)") {
             throw "Missing non-TTY diagnostic:`n$output"
