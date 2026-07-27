@@ -7,7 +7,10 @@ import { createMouseStdin } from './stdinBridge.js';
 import { initializeTerminalCursor } from './terminalCursor.js';
 import { installTerminalLifecycle } from './terminalLifecycle.js';
 
-if (!process.stdin.isTTY) {
+// On some CI runners (e.g. GitHub Actions Windows), node-pty's ConPTY may not
+// set process.stdin.isTTY to true even though a real pseudo-terminal exists.
+// Allow an explicit bypass so the e2e harness can still drive the TUI.
+if (!process.stdin.isTTY && process.env.RXYCODE_E2E_BYPASS_TTY !== '1') {
   console.log('RxyCode TUI requires an interactive terminal (TTY).');
   console.log('Please run this directly in a terminal, not piped.');
   process.exit(1);

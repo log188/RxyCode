@@ -253,20 +253,21 @@ function observePty(pty) {
 }
 
 async function verifyCrashRestoration(apiUrl) {
-  const childEnv = {
+  const crashEnv = {
     ...process.env,
     TERM: 'xterm-256color',
     FORCE_COLOR: '1',
     RXYCODE_API_URL: apiUrl,
+    RXYCODE_E2E_BYPASS_TTY: '1',
   };
-  delete childEnv.RXYCODE_MOUSE;
+  delete crashEnv.RXYCODE_MOUSE;
 
   const crashPty = spawn(process.execPath, ['--require', CRASH_PRELOAD, APP_BIN], {
     name: 'xterm-256color',
     cwd: ROOT,
     cols: COLS,
     rows: ROWS,
-    env: childEnv,
+    env: crashEnv,
     ...(process.platform === 'win32' ? { useConpty: true } : {}),
   });
   const observed = observePty(crashPty);
@@ -348,6 +349,7 @@ async function main() {
       TERM: 'xterm-256color',
       FORCE_COLOR: '1',
       RXYCODE_API_URL: api.url,
+      RXYCODE_E2E_BYPASS_TTY: '1',
     };
     delete childEnv.RXYCODE_MOUSE;
     pty = spawn(process.execPath, [APP_BIN], {
@@ -369,7 +371,7 @@ async function main() {
       label,
     );
 
-    await observed.waitFor((output) => /输入指令或需求|Ready/.test(plain(output)), 'TUI boot');
+    await observed.waitFor((output) => /输入指令或需求|Ready/.test(plain(output)), 'TUI boot', 15000);
     check(process.platform === 'win32' ? 'Windows ConPTY boot' : 'PTY boot', true, `${COLS}x${ROWS}`);
     check('Mouse tracking disabled by default', !observed.output.includes('\x1b[?1002h'));
 

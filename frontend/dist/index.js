@@ -67429,7 +67429,7 @@ function installTerminalLifecycle({
 
 // src/index.tsx
 var import_jsx_runtime13 = __toESM(require_jsx_runtime(), 1);
-if (!process.stdin.isTTY) {
+if (!process.stdin.isTTY && process.env.RXYCODE_E2E_BYPASS_TTY !== "1") {
   console.log("RxyCode TUI requires an interactive terminal (TTY).");
   console.log("Please run this directly in a terminal, not piped.");
   process.exit(1);
