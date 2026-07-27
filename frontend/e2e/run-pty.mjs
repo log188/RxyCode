@@ -259,6 +259,7 @@ async function verifyCrashRestoration(apiUrl) {
     FORCE_COLOR: '1',
     RXYCODE_API_URL: apiUrl,
     RXYCODE_E2E_BYPASS_TTY: '1',
+    CI: 'false',
   };
   delete crashEnv.RXYCODE_MOUSE;
 
@@ -350,6 +351,10 @@ async function main() {
       FORCE_COLOR: '1',
       RXYCODE_API_URL: api.url,
       RXYCODE_E2E_BYPASS_TTY: '1',
+      // Ink's is-in-ci check skips live frame rendering when CI=true (GitHub
+      // Actions sets this).  Force-disable so the TUI renders normally in the
+      // ConPTY under e2e.
+      CI: 'false',
     };
     delete childEnv.RXYCODE_MOUSE;
     pty = spawn(process.execPath, [APP_BIN], {
