@@ -148,6 +148,7 @@ jobs:
           if ($output -notmatch "requires an interactive terminal \(TTY\)") {
             throw "Missing non-TTY diagnostic:`n$output"
           }
+          $LASTEXITCODE = 0
 
   publish:
     name: Create GitHub release

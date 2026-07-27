@@ -222,6 +222,7 @@ jobs:
           if ($output -notmatch "requires an interactive terminal \(TTY\)") {
             throw "Missing non-TTY diagnostic:`n$output"
           }
+          $LASTEXITCODE = 0
 
       - name: Run distribution, contract, and system tests
         shell: pwsh
