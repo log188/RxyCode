@@ -64,6 +64,7 @@ log/*.err
 .DS_Store
 Thumbs.db
 
-# --- docs: only keep modules/ ---
+# --- docs: only keep modules/ and images/ ---
 docs/*
 !docs/modules/
+!docs/images/
