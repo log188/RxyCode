@@ -15,6 +15,10 @@
 
 </div>
 
+<div align="center">
+  <img src="docs/images/screenshot.png" alt="RxyCode 界面截图" width="800">
+</div>
+
 ---
 
 RxyCode 是一个基于 LangGraph 的通用 AI Agent，采用分层"规划-执行"架构。

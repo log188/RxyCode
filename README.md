@@ -15,6 +15,10 @@
 
 </div>
 
+<div align="center">
+  <img src="docs/images/screenshot.png" alt="RxyCode TUI Screenshot" width="800">
+</div>
+
 ---
 
 RxyCode is a general-purpose AI agent built on LangGraph with a hierarchical
