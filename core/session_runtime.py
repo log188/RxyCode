@@ -135,6 +135,12 @@ def resolve_write_path(value: str | os.PathLike[str]) -> Path:
     if session_path.exists():
         return session_path
 
+    # If the path is absolute and the parent directory exists, write there
+    # directly.  This lets callers (and tests) write to explicit locations
+    # like /tmp/... while still redirecting bare relative paths to output.
+    if path.is_absolute() and path.parent.exists():
+        return path.resolve()
+
     output_dir = get_output_dir().resolve()
     try:
         session_path.relative_to(output_dir)

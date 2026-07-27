@@ -109,6 +109,8 @@ def test_parkour_write_and_run_pipeline(tmp_path):
         [sys.executable, str(target)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr

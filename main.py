@@ -223,11 +223,12 @@ def cli(ctx, model, api, api_port, log_level, print_logs):
     if ctx.invoked_subcommand is None:
         # Non-TTY guard: Ink requires an interactive terminal.
         # Must run before setup_logging to avoid hangs in CI pipes.
-        if not api and not sys.stdin.isatty():
-            click.echo(
+        # Check both stdin and stdout — CI pipes either one.
+        if not api and (not sys.stdin.isatty() or not sys.stdout.isatty()):
+            print(
                 "RxyCode requires an interactive terminal (TTY) to run the "
                 "Ink frontend. Use --api for headless/server mode.",
-                err=True,
+                file=sys.stderr,
             )
             sys.exit(1)
 
