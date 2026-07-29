@@ -3,7 +3,7 @@ import { render } from 'ink-testing-library';
 import React from 'react';
 import ChatPanel from './ChatPanel.js';
 
-const SECRET = 'private-reasoning-secret-line';
+const THINKING_MARKER = 'private-reasoning-marker-line';
 const base = { height: 40, mode: 'build' as const };
 
 type MatrixCase = {
@@ -41,7 +41,7 @@ describe('ChatPanel thinking expand/collapse/done recall matrix', () => {
           messages={[{
             id: 'think-1',
             role: 'thinking',
-            content: `${SECRET}\nsecond line`,
+            content: `${THINKING_MARKER}\nsecond line`,
             done,
             ...(live !== undefined ? { live } : {}),
             timestamp: Date.now(),
@@ -51,9 +51,9 @@ describe('ChatPanel thinking expand/collapse/done recall matrix', () => {
       const f = lastFrame() ?? '';
       expect(f).toContain('Thought');
       if (expectSecret) {
-        expect(f).toContain(SECRET);
+        expect(f).toContain(THINKING_MARKER);
       } else {
-        expect(f).not.toContain(SECRET);
+        expect(f).not.toContain(THINKING_MARKER);
       }
     });
   }
@@ -69,14 +69,14 @@ describe('ChatPanel thinking U3 recall (completed + expanded)', () => {
           messages={[{
             id: 'think-done',
             role: 'thinking',
-            content: SECRET,
+            content: THINKING_MARKER,
             done: true,
             elapsed,
             timestamp: Date.now(),
           }] as any}
         />,
       );
-      expect(lastFrame() ?? '').toContain(SECRET);
+      expect(lastFrame() ?? '').toContain(THINKING_MARKER);
     });
   }
 });
@@ -91,14 +91,14 @@ describe('ChatPanel thinking collapse after done (问题5)', () => {
           messages={[{
             id: 't',
             role: 'thinking',
-            content: SECRET,
+            content: THINKING_MARKER,
             done: true,
             ...(live !== undefined ? { live } : {}),
             timestamp: Date.now(),
           }] as any}
         />,
       );
-      expect(lastFrame() ?? '').not.toContain(SECRET);
+      expect(lastFrame() ?? '').not.toContain(THINKING_MARKER);
     });
   }
 });
@@ -113,14 +113,14 @@ describe('ChatPanel streaming respects expandThinking=false', () => {
           messages={[{
             id: 't',
             role: 'thinking',
-            content: SECRET,
+            content: THINKING_MARKER,
             done: false,
             live,
             timestamp: Date.now(),
           }] as any}
         />,
       );
-      expect(lastFrame() ?? '').not.toContain(SECRET);
+      expect(lastFrame() ?? '').not.toContain(THINKING_MARKER);
     });
   }
 });
