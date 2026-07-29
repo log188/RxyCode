@@ -44,12 +44,16 @@ if [ -n "${RXYCODE_SOURCE:-}" ]; then
 else
     source_spec="git+$REPOSITORY@$version_ref"
 fi
-source_without_line_breaks=$(printf '%s' "$source_spec" | tr -d '\015\012')
-if [ "$source_without_line_breaks" != "$source_spec" ]; then
+# Reject CR/LF without coreutils — dry-run tests isolate PATH to a fake bin.
+cr=$(printf '\015')
+case "$source_spec" in
+*"
+"*|*"$cr"*)
     printf '%s\n' \
         "RxyCode installation failed: RXYCODE_SOURCE must not contain line breaks." >&2
     exit 1
-fi
+    ;;
+esac
 
 no_modify_path=0
 if [ "${RXYCODE_NO_MODIFY_PATH:-0}" = "1" ]; then
