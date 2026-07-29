@@ -9,12 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **No-model onboarding** — when the local model list is empty, the TUI shows a
-  welcome hint and auto-opens the `/addmodel` wizard (OpenTUI and Ink)
-
-## [1.2.2] - 2026-07-29
+## [1.2.2] - 2026-07-30
 
 ### Added
 
@@ -25,11 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the official installer once (disable with `RXYCODE_SKIP_BUN_INSTALL=1`); also
   discovers `~/.bun/bin` even when PATH is stale, and runs `bun install` on
   first OpenTUI start when `node_modules` is absent
+- **No-model onboarding** — when the local model list is empty, the TUI shows a
+  welcome hint and auto-opens the `/addmodel` wizard (OpenTUI and Ink)
 
 ### Notes
 
-- Prefer installing `@v1.2.2`. Bun remains required for OpenTUI; if install
-  fails, the CLI still falls back to Ink.
+- Prefer installing `@v1.2.2` (this is the current downloadable 1.2.x patch).
+  Bun remains required for OpenTUI; if install fails, the CLI still falls back
+  to Ink.
 
 ---
 

@@ -244,7 +244,7 @@ Use `/addmodel` in the TUI for a guided setup wizard.
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI, SSE streaming, Docker, CI/CD, one-command installers |
 | [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | Frontend rewrite: OpenTUI default TUI (Ink fallback), settings parity, safer Ctrl+C, plan hints, autoCompact |
 | [v1.2.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1) | 2026-07 | Package fix: ship OpenTUI sources in the installable wheel |
-| [v1.2.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2) | 2026-07 | Auto-install Bun + OpenTUI deps so default UI works without manual Bun setup |
+| [v1.2.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2) | 2026-07 | Auto-install Bun + OpenTUI deps; empty-model welcome hint + auto `/addmodel` |
 
 See [CHANGELOG.md](CHANGELOG.md) for the full change history.
 

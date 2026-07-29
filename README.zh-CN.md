@@ -235,7 +235,7 @@ models:
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI、SSE 流式、Docker、CI/CD、一键安装 |
 | [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | 前端重构：默认 OpenTUI（Ink 回退）、设置面板对齐、Ctrl+C 防误退、Plan 提示、autoCompact |
 | [v1.2.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1) | 2026-07 | 打包修复：安装包内包含 OpenTUI 源码 |
-| [v1.2.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2) | 2026-07 | 自动安装 Bun 与 OpenTUI 依赖，默认界面无需手装 Bun |
+| [v1.2.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2) | 2026-07 | 自动安装 Bun 与 OpenTUI 依赖；无模型时欢迎提示并自动打开 /addmodel |
 
 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
