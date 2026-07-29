@@ -692,25 +692,32 @@ class ToolOrchestrator:
             )
 
         try:
-            cache = _live_tool_dedup.get()
-            if cache is None:
-                cache = {}
-                _live_tool_dedup.set(cache)
-            key = self._dedup_key(name, args)
-            if key in cache:
-                skipped = (
-                    f"[重复调用已跳过: {name} 参数与本轮先前调用相同；"
-                    f"上次结果摘要: {str(cache[key])[:200]}]"
-                )
-                if event_started and hasattr(tui, "write_tool_result"):
-                    try:
-                        tui.write_tool_result(
-                            skipped, "success", call_id=resolved_call_id
-                        )
-                    except Exception:
-                        pass
-                finish_span("ok")
-                return skipped
+            # Live identical-call cache is for LLM retry spam within one run.
+            # When a side-effect journal is bound, it owns resume / pending /
+            # read-bypass semantics — short-circuiting here would hide those.
+            journal_bound = self.get_tool_journal_binding() is not None
+            cache = None
+            key = ""
+            if not journal_bound:
+                cache = _live_tool_dedup.get()
+                if cache is None:
+                    cache = {}
+                    _live_tool_dedup.set(cache)
+                key = self._dedup_key(name, args)
+                if key in cache:
+                    skipped = (
+                        f"[重复调用已跳过: {name} 参数与本轮先前调用相同；"
+                        f"上次结果摘要: {str(cache[key])[:200]}]"
+                    )
+                    if event_started and hasattr(tui, "write_tool_result"):
+                        try:
+                            tui.write_tool_result(
+                                skipped, "success", call_id=resolved_call_id
+                            )
+                        except Exception:
+                            pass
+                    finish_span("ok")
+                    return skipped
 
             result = await self._execute_tool_gated(
                 name,
@@ -719,7 +726,8 @@ class ToolOrchestrator:
                 approval_source=approval_source,
                 mode=mode,
             )
-            cache[key] = str(result)
+            if cache is not None:
+                cache[key] = str(result)
         except asyncio.CancelledError:
             if trajectory is not None:
                 trajectory.record(

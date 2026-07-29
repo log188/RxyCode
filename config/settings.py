@@ -103,6 +103,15 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
+def _normalize_legacy_aliases(cfg: dict) -> dict:
+    """Promote legacy keys so default merge does not shadow user intent."""
+    normalized = deepcopy(cfg)
+    rag = normalized.get("rag")
+    if isinstance(rag, dict) and "max_chars" in rag and "max_context_chars" not in rag:
+        rag["max_context_chars"] = rag.pop("max_chars")
+    return normalized
+
+
 def load_config() -> dict:
     path = get_config_path()
     with _CONFIG_LOCK:
@@ -122,7 +131,7 @@ def load_config() -> dict:
             except BaseException:
                 _delete_credentials(created_references, path)
                 raise
-        return _deep_merge(defaults, sanitized)
+        return _deep_merge(defaults, _normalize_legacy_aliases(sanitized))
 
 
 def save_config(cfg: dict):

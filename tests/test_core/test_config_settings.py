@@ -85,12 +85,17 @@ class TestLoadConfig:
         assert "m1" in loaded["models"]
 
     def test_load_empty_yaml(self, tmp_path, monkeypatch):
-        from RxyCode.RxyCode1_1_0.config.settings import load_config, get_config_path
+        from RxyCode.RxyCode1_1_0.config.settings import (
+            _default_config,
+            get_config_path,
+            load_config,
+        )
         monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
         cfg_path = get_config_path()
         cfg_path.write_text("", encoding="utf-8")
         loaded = load_config()
-        assert loaded == {}
+        # Empty YAML is treated as partial config and inherits defaults.
+        assert loaded == _default_config()
 
 
 class TestSaveConfig:
