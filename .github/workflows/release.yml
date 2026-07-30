@@ -164,8 +164,24 @@ jobs:
           name: rxycode-distributions
           path: dist
 
-      - name: Create release and upload distributions
+      - name: Create or update release and upload distributions
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(dist/*)
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo "No distribution artifacts found under dist/" >&2
+            exit 1
+          fi
+          # Retries / concurrent tag workflows may find an existing release
+          # (sometimes without assets). Create once, otherwise replace assets.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; uploading assets with --clobber."
+            gh release upload "$GITHUB_REF_NAME" "${artifacts[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${artifacts[@]}" \
+              --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          fi

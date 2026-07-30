@@ -48,7 +48,10 @@ All jobs upload their existing diagnostics even when a test step fails.
 3. installs the produced wheel in temporary Linux and Windows environments and
    executes the packaged `rxycode` command with `--version` and `--help`;
 4. after both platform checks pass, uses the preinstalled GitHub CLI to create a
-   GitHub Release and upload the wheel and source distribution.
+   GitHub Release and upload the wheel and source distribution. If a release for
+   that tag already exists (for example after a retried tag workflow), the job
+   uploads or replaces the distribution assets with `gh release upload
+   --clobber` instead of failing on `gh release create`.
 
 The workflow deliberately does not publish to PyPI. It uses only GitHub-owned
 workflow actions and grants `contents: write` solely to the final release job.
