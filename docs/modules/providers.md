@@ -42,6 +42,16 @@ Provider 探测结果 > Provider 默认值。所有 provider 的 `capabilities()
 `caps.merged_with_overrides(model_config)` 应用配置覆盖（只认本 dataclass 已声明的
 字段名，未知字段忽略，因为 model_config 里还混着 base_url / api_key 等非能力字段）。
 
+## 三条不可违反的设计约束（PHASE-A §2.2）
+
+| # | 约束 | 原因 |
+|---|---|---|
+| DC1 | `BaseProvider` 的默认实现 = 当前 OpenAI 行为；任何未识别 model 落到 OpenAIProvider，行为与今天**逐字节一致** | 保证零回归（A6 前行为完全保留） |
+| DC2 | Provider 只描述差异、不持有状态；所有实例是无状态可缓存单例 | Phase B/C 的 Child/Agent Runtime 并发使用 |
+| DC3 | 能力元数据优先级：用户显式配置 > provider 探测 > provider 默认值 | 用户接中转站时自动探测常猜错，配置写死永远赢 |
+
+代码落点：DC1 → base.py 默认实现与 `_FALLBACK = OpenAIProvider()`（providers/__init__.py）；DC2 → 模块级单例（无实例状态）；DC3 → `ModelCapabilities.merged_with_overrides` + `resolve_model_config`。
+
 ## Provider 解析顺序
 
 `providers.resolve(model_config)`（`core/providers/__init__.py`）：
