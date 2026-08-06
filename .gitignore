@@ -144,5 +144,12 @@ evals/baselines/models-comparison-*.md
 Microsoft/
 screenshot_monitor_*.png
 
+# --- Agent smoke-run artifacts (never commit run outputs) ---
+ai_coding_*.md
+ai_coding_trends_*.md
+ai_coding_assistant_trends_*.md
+analysis_*.md
+core/UsageTrackingLLM_summary.md
+
 # --- Git worktree admin dirs (git worktree add .worktrees/...) ---
 .worktrees/

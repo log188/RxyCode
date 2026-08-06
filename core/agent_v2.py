@@ -51,6 +51,7 @@ from RxyCode.RxyCode1_1_0.core.prompts import (
 )
 from RxyCode.RxyCode1_1_0.core.research_policy import (
     ResearchPolicy,
+    extract_research_query,
     extract_research_urls,
     get_research_policy,
     is_successful_research_fetch,
@@ -1404,6 +1405,18 @@ class AgentV2:
                 out.append({"role": "user", "content": getattr(m, "content", "") or ""})
             elif role == "ai":
                 d = {"role": "assistant", "content": getattr(m, "content", "") or ""}
+                # Thinking-mode providers (DeepSeek v4, MiMo, kimi) require the
+                # assistant's reasoning_content to be echoed back verbatim on
+                # every tool-bearing request, or they reject with HTTP 400.
+                # ``_raw_stream`` stores the captured reasoning here.  When a
+                # tool-bearing assistant message has no captured reasoning
+                # (e.g. the research pre-fetch injection), still emit the key
+                # with an empty value so the provider's chain stays valid.
+                reasoning = ak.get("reasoning_content")
+                if reasoning is None:
+                    reasoning = getattr(m, "reasoning_content", None)
+                if reasoning:
+                    d["reasoning_content"] = reasoning
                 tcs = getattr(m, "tool_calls", None)
                 if tcs:
                     d["tool_calls"] = [
@@ -1420,6 +1433,7 @@ class AgentV2:
                         }
                         for tc in tcs
                     ]
+                    d.setdefault("reasoning_content", "")
                 out.append(d)
             elif role == "tool":
                 out.append({
@@ -1957,9 +1971,10 @@ class AgentV2:
         messages = [SystemMessage(content=system), HumanMessage(content=user_msg)]
         research_sources: list[str] = []
         if research_policy.requires_web:
+            search_query = extract_research_query(user_input)
             search_call = {
                 "name": "websearch",
-                "args": {"query": user_input, "numResults": 5},
+                "args": {"query": search_query or user_input, "numResults": 5},
                 "id": "required_web_research",
                 "type": "tool_call",
             }
@@ -2174,7 +2189,20 @@ class AgentV2:
                     break
 
                 # Execute tool calls
-                messages.append(AIMessage(content=answer, tool_calls=tool_calls))
+                # DeepSeek-style thinking providers require the assistant's
+                # reasoning_content to be passed back on every subsequent
+                # tool-bearing request, or the API rejects with 400
+                # ("The `reasoning_content` in the thinking mode must be passed
+                # back to the API."). Carry it in additional_kwargs so
+                # _to_openai_messages can preserve it on the wire.
+                ai_kwargs = {}
+                if _reasoning_buffer:
+                    ai_kwargs["reasoning_content"] = "".join(_reasoning_buffer)
+                messages.append(AIMessage(
+                    content=answer,
+                    tool_calls=tool_calls,
+                    additional_kwargs=ai_kwargs,
+                ))
                 for tc in tool_calls:
                     tool_name = tc.get("name", "") if isinstance(tc, dict) else tc.name
                     tool_args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
@@ -2265,9 +2293,16 @@ class AgentV2:
                     if url not in supported_urls
                 ]
                 if unsupported_urls:
-                    return research_failure_message(
-                        "the generated answer cited a source that was not successfully fetched"
-                    )
+                    # A file/side-effect task already produced its deliverable;
+                    # do not discard the whole answer because a cited URL was
+                    # not among the successfully-fetched set. The deliverable
+                    # (e.g. a written file) is the real proof of completion.
+                    # For pure Q&A, an unfetched citation is a fabrication risk
+                    # and the strict check still applies.
+                    if not getattr(self, "_side_effecting_tool_attempted", False):
+                        return research_failure_message(
+                            "the generated answer cited a source that was not successfully fetched"
+                        )
                 missing_sources = [url for url in research_sources[:5] if url not in answer]
                 if missing_sources:
                     answer = answer.rstrip() + "\n\nSources:\n" + "\n".join(
@@ -2785,6 +2820,31 @@ class AgentV2:
             except Exception:
                 pass
 
+    @staticmethod
+    def _evidence_is_critical(item) -> bool:
+        """Return True when a failed evidence record is task-critical.
+
+        WRITE/DANGER tools mutate state, so their failure is authoritative.
+        Read-only probes (webfetch/websearch/read/grep/glob/...) are attempts
+        and may legitimately fail while the task still completes.
+        """
+        risk = str(getattr(item, "risk", "") or "").strip().upper()
+        return risk in {"WRITE", "DANGER"} or not risk
+
+    @staticmethod
+    def _evidence_has_artifact_issue(item) -> bool:
+        """Return True when a failed record carries artifact-validation issues.
+
+        A file that was written but failed format/content validation is a real
+        deliverable problem regardless of the tool's own risk level.
+        """
+        for artifact in getattr(item, "artifacts", []) or []:
+            if getattr(artifact, "exists", False) is False:
+                return True
+            if getattr(artifact, "valid", None) is False:
+                return True
+        return False
+
     async def run(self, user_input: str, mode: str = "build") -> str:
         """Run one observable request while exposing a cancellation handle."""
         if mode not in VALID_AGENT_MODES:
@@ -2959,9 +3019,24 @@ class AgentV2:
         else:
             evidence = ToolOrchestrator.end_evidence_capture(evidence_token)
             evidence_token = None
-            failed_evidence = [item for item in evidence if item.status == "failed"]
-            if failed_evidence:
-                issues = deterministic_issues(failed_evidence)
+            # A failed read-only probe (websearch/webfetch/read/grep/...) is an
+            # *attempt*, not a verdict: the model may legitimately retry with a
+            # different source or strategy and still complete the task. Only
+            # critical failures — WRITE/DANGER tools, or artifact-validation
+            # failures on files the task actually wrote — are authoritative and
+            # override the answer. Otherwise a single 404 during web research
+            # would discard a fully completed, well-sourced answer.
+            critical_failures = [
+                item
+                for item in evidence
+                if item.status == "failed"
+                and (
+                    self._evidence_is_critical(item)
+                    or self._evidence_has_artifact_issue(item)
+                )
+            ]
+            if critical_failures:
+                issues = deterministic_issues(critical_failures)
                 result = f"[evidence failed: {'; '.join(issues)}]"
                 status = "failed"
                 record_failure("tool_error")
