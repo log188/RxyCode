@@ -193,7 +193,7 @@ Unit tests for the harness live in `tests/test_core/test_evals_runner.py` and `t
 | opencode-go/mimo-v2.5 | go | 12/19 (63%) | rerun via GO gateway (replaces the quota-invalid zen free column) |
 | ~~zen/mimo-v2.5-free~~ | zen (free) | ~~2/17 (12%)~~ | **invalid: zen free-tier quota exhausted (HTTP 429); replaced by the opencode-go/mimo-v2.5 rerun** |
 
-Suite size note: batches 1-2 ran the 17-task suite; batches 3-4 ran 19 tasks after two websearch tasks were added to `evals/tasks/` mid-run (user work-in-progress, uncommitted). `websearch-summary` failed on every model; `websearch-save-report` passed on ark models only — both are new uncommitted tasks, treated as FAIL where not covered (missing tasks are scored FAIL in the matrix).
+Suite size note: batches 1-2 ran the 17-task suite; batches 3-4 ran 19 tasks after two websearch tasks were added to `evals/tasks/` mid-run (committed later in 30cec28, 2026-08-06 12:33; batches 1-2 predate them). `websearch-summary` failed on every model; `websearch-save-report` passed on ark models only — both are new tasks (added mid-run), treated as FAIL where not covered (missing tasks are scored FAIL in the matrix).
 
 Follow-up directions (per model):
 - doubao-seed-2.1-turbo (84%): first run under the new A23 DoubaoProvider (supports_reasoning/FC declared from live probe); feature-multi-file-cache + websearch gaps; tokenizer estimation (chars:2.0) to revisit when a doubao tokenizer is available.
