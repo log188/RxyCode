@@ -90,7 +90,6 @@ obj = UsageTrackingLLM(...)
 
 关键对象/函数：
 
-- 类 `LLMConfig`：Configuration for an LLM provider.
 - 类 `MemoryConfig`：Configuration for the memory system.
 - 类 `ExecutorConfig`：Configuration for the executor.
 - 类 `AppConfig`：Top-level application configuration.
@@ -102,13 +101,7 @@ obj = UsageTrackingLLM(...)
 
 实现方式示例代码：
 
-```python
-from RxyCode.RxyCode1_1_0.core.config import LLMConfig
-
-# 示例：根据真实业务传入依赖或配置
-obj = LLMConfig(...)
-# result = obj.<method>(...)
-```
+LLMConfig 已于 A11 删除（死代码）；配置加载走 config/settings.py
 
 ### `graph.py`
 

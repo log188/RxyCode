@@ -3,6 +3,11 @@
 Loads config from ~/.rxycode-v2/config.yaml with sensible defaults.
 """
 
+# NOTE: This module is legacy v2-era configuration (A11). The current
+# configuration system lives in config/settings.py. LLMConfig was dead
+# code (no importers anywhere) and was removed in A11; the module is kept
+# for the remaining legacy classes until they are migrated.
+
 from __future__ import annotations
 
 import os
@@ -16,17 +21,6 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 # Config models
 # ---------------------------------------------------------------------------
-
-class LLMConfig(BaseModel):
-    """Configuration for an LLM provider."""
-
-    provider: str = "openai"
-    model_name: str = "gpt-4o"
-    api_key: str = ""
-    base_url: str = "https://api.openai.com/v1"
-    temperature: float = 0.7
-    max_tokens: int = 8192
-
 
 class MemoryConfig(BaseModel):
     """Configuration for the memory system."""
@@ -58,7 +52,6 @@ class ExecutorConfig(BaseModel):
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
-    llm: LLMConfig = Field(default_factory=LLMConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     language: str = "zh"                 # zh | en
