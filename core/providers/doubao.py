@@ -1,8 +1,8 @@
 """Doubao (Volcano Ark coding endpoint) provider.
 
-与 OpenAI 默认行为的差异以 A0 第 9 家族调研（§7.9）为准：
-  - doubao-seed-2.1-turbo：256k 上下文 / 128k 输出上限（max_tokens 由配置控制）
-  - 无独立推理模式，但响应 message/delta 层含 reasoning_content 字段（实测）
+与 OpenAI 默认行为的差异以 A0 第 9 家族调研（§7.9 rev1）为准：
+  - doubao-seed-2.1-turbo：256k 上下文 / 256k 最大输出（官方 AI Hub；max_tokens 由配置控制）
+  - 未见独立 thinking.type 开关；响应 message/delta 层含 reasoning_content（实测）
   - function calling 实测可用（tool_calls + tool_choice，ark coding 端点）
   - 无官方 tiktoken → 用 chars: 估算
 """
