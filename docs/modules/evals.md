@@ -189,11 +189,15 @@ Unit tests for the harness live in `tests/test_core/test_evals_runner.py` and `t
 | zen/gpt-5.6-luna | zen | 15/17 (88%) | readcode x2 (17-task suite; websearch tasks not covered) |
 | ark/minimax-m3 | ark | 15/19 (79%) | readcode (2) + refactor-extract-function + websearch-summary |
 | zen/kimi-k2.7-code | zen | 13/19 (68%) | readcode x4 + websearch x2 |
-| zen/mimo-v2.5-free | zen (free) | 2/17 (12%) | **invalid: zen free-tier quota exhausted (HTTP 429) during the run; excluded from conclusions** |
+| **ark/doubao-seed-2.1-turbo** | ark | 16/19 (84%) | new DoubaoProvider (A23); failed feature-cli-parser + websearch x2 |
+| opencode-go/mimo-v2.5 | go | 12/19 (63%) | rerun via GO gateway (replaces the quota-invalid zen free column) |
+| ~~zen/mimo-v2.5-free~~ | zen (free) | ~~2/17 (12%)~~ | **invalid: zen free-tier quota exhausted (HTTP 429); replaced by the opencode-go/mimo-v2.5 rerun** |
 
 Suite size note: batches 1-2 ran the 17-task suite; batches 3-4 ran 19 tasks after two websearch tasks were added to `evals/tasks/` mid-run (user work-in-progress, uncommitted). `websearch-summary` failed on every model; `websearch-save-report` passed on ark models only — both are new uncommitted tasks, treated as FAIL where not covered (missing tasks are scored FAIL in the matrix).
 
 Follow-up directions (per model):
+- doubao-seed-2.1-turbo (84%): first run under the new A23 DoubaoProvider (supports_reasoning/FC declared from live probe); feature-cli-parser + websearch gaps; tokenizer estimation (chars:2.0) to revisit when a doubao tokenizer is available.
+- mimo-v2.5 via GO (63%): valid data vs the quota-invalid zen free run; websearch tasks drag it down.
 - kimi-k2.7-code (68%): readcode identifier-citation + websearch tasks underperform — prompt-variant mechanism (A9) is the vehicle once real variants exist.
 - minimax-m3 (79%): readcode + extract-function flake; re-run for confirmation.
 - luna (88%): cheap and competitive; readcode gaps point at the same identifier-citation issue.
