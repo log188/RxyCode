@@ -101,6 +101,21 @@ python -m evals.run --backend agent --task-ids my-task
 
 5. Confirm `git status --short` is clean after the run (no repo pollution).
 
+## Web Search Tasks
+
+`websearch-summary` and `websearch-save-report` cover the agent's web-search
+capability end to end. They live in the `feature` category (reusing the existing
+four categories — no runner/CLI change needed) and rely on the stable
+`tool_used: websearch` assertion, which passes as long as the agent actually
+invoked the websearch tool, regardless of whether the external engine returned
+results.
+
+**Network sensitivity:** these tasks hit live DuckDuckGo / Baidu / Bing / Google
+endpoints. Search engines sometimes rate-limit or block scrapers, so a web task
+may fail in the nightly run for reasons unrelated to the agent's code. Do **not**
+change harness code or baselines based on a single flaky web-task failure; treat
+it as an external-network signal and re-run before investigating.
+
 ## CLI
 
 ```powershell
@@ -160,3 +175,28 @@ Evals with real LLM calls are **not** in the PR gate (cost + latency).
 - **External**: `langchain_openai`, `pyyaml`
 
 Unit tests for the harness live in `tests/test_core/test_evals_runner.py` and `tests/test_prompt_registry.py`. Full eval runs require API credentials and are executed explicitly or via nightly CI.
+## A10: Per-Model Comparison Matrix (2026-08-06)
+
+`--models <id1,id2,...>` runs a full 17/19-task suite per model and saves per-model baselines; `--models-report <DATE>` regenerates the comparison matrix from existing baselines without re-running (see PHASE-A §A10).
+
+### Results (agent backend, full suite, official/zen/ark gateways)
+
+| Model | Channel | Pass rate | Notes |
+|---|---|---|---|
+| zen/deepseek-v4-flash | zen | **17/17 (100%)** | default model; strongest on this suite |
+| deepseek/deepseek-v4-pro | official | 16/17 (94%) | failed feature-multi-file-cache |
+| ark/glm-5.2 | ark | 17/19 (89%) | failed feature-cli-parser + websearch-summary |
+| zen/gpt-5.6-luna | zen | 15/17 (88%) | readcode failures (3) + websearch-summary |
+| ark/minimax-m3 | ark | 15/19 (79%) | readcode (2) + refactor-extract-function + websearch-summary |
+| zen/kimi-k2.7-code | zen | 13/19 (68%) | readcode (3) + websearch (2) + feature-cli-parser |
+| zen/mimo-v2.5-free | zen (free) | 2/17 (12%) | **invalid: zen free-tier quota exhausted (HTTP 429) during the run; excluded from conclusions** |
+
+Suite size note: batches 1-2 ran the 17-task suite; batches 3-4 ran 19 tasks after two websearch tasks were added to `evals/tasks/` mid-run (user work-in-progress, uncommitted). `websearch-summary` failed on every model; `websearch-save-report` passed on ark models only — both are new uncommitted tasks, treated as FAIL where not covered (missing tasks are scored FAIL in the matrix).
+
+Follow-up directions (per model):
+- kimi-k2.7-code (68%): readcode identifier-citation + websearch tasks underperform — prompt-variant mechanism (A9) is the vehicle once real variants exist.
+- minimax-m3 (79%): readcode + extract-function flake; re-run for confirmation.
+- luna (88%): cheap and competitive; readcode gaps point at the same identifier-citation issue.
+- websearch tasks: investigate task quality/tool wiring before including in the canonical suite.
+
+Raw evidence (per-model baselines + matrix md) is intentionally **not tracked** (gitignore policy 5c6c84a: date-stamped per-model runs are run artifacts); data lives locally under `evals/baselines/2026-08-06-agent-*.json` and `evals/baselines/models-comparison-2026-08-06.md`. Public-benchmark context (Artificial Analysis / Arena Intelligence, 2026-08): Kimi K3 is the top open-weights model (AA index 57) and GLM-5.2 second (51); qwen3.8-max leads the Arena text chart; consistent with the measured ordering where coverage overlaps.
