@@ -217,6 +217,32 @@ def _search_baidu(query, numResults=5):
     return results
 
 
+def _search_ddgs(query: str, numResults: int = 5) -> list[str]:
+    """Search via DuckDuckGo metasearch using the ddgs package (free, no API key).
+
+    ddgs is a soft dependency: when it is not installed we return [] so the
+    existing free HTML-scraping engines keep working. This mirrors how other
+    agents (Hermes, Pi) treat DuckDuckGo as a zero-config fallback provider.
+    """
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        return []
+    results = []
+    try:
+        with DDGS(timeout=8) as ddgs:
+            for item in ddgs.text(query, max_results=numResults):
+                title = _clean_text(item.get("title") or "")
+                href = _clean_url(item.get("href") or "")
+                body = _clean_text(item.get("body") or "")
+                if not title or not href:
+                    continue
+                results.append(f"{title}\n  {href}\n  {body}")
+    except Exception:
+        return []
+    return results
+
+
 def _is_github_query(query: str) -> bool:
     """Check if the query is related to GitHub."""
     q = query.lower()
@@ -236,6 +262,7 @@ def _engine_list(query: str):
     if _is_github_query(query):
         engines.append(("GitHub API", _search_github_api))
     engines.extend([
+        ("DuckDuckGo API", _search_ddgs),
         ("Baidu", _search_baidu),
         ("DuckDuckGo Lite", _search_via_redirect),
         ("DuckDuckGo", _search_duckduckgo),
@@ -306,7 +333,7 @@ def search_web(query: str, numResults: int = 5) -> str:
 
 websearch_tool = StructuredTool(
     name="websearch",
-    description="Search the web using GitHub API, Baidu, DuckDuckGo, Google, Bing.",
+    description="Search the web using DuckDuckGo, GitHub API, Baidu, Google, Bing.",
     func=search_web,
     args_schema=WebSearchInput,
 )
