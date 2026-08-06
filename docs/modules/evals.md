@@ -186,9 +186,9 @@ Unit tests for the harness live in `tests/test_core/test_evals_runner.py` and `t
 | zen/deepseek-v4-flash | zen | **17/17 (100%)** | default model; strongest on this suite |
 | deepseek/deepseek-v4-pro | official | 16/17 (94%) | failed feature-multi-file-cache |
 | ark/glm-5.2 | ark | 17/19 (89%) | failed feature-cli-parser + websearch-summary |
-| zen/gpt-5.6-luna | zen | 15/17 (88%) | readcode failures (3) + websearch-summary |
+| zen/gpt-5.6-luna | zen | 15/17 (88%) | readcode x2 (17-task suite; websearch tasks not covered) |
 | ark/minimax-m3 | ark | 15/19 (79%) | readcode (2) + refactor-extract-function + websearch-summary |
-| zen/kimi-k2.7-code | zen | 13/19 (68%) | readcode (3) + websearch (2) + feature-cli-parser |
+| zen/kimi-k2.7-code | zen | 13/19 (68%) | readcode x4 + websearch x2 |
 | zen/mimo-v2.5-free | zen (free) | 2/17 (12%) | **invalid: zen free-tier quota exhausted (HTTP 429) during the run; excluded from conclusions** |
 
 Suite size note: batches 1-2 ran the 17-task suite; batches 3-4 ran 19 tasks after two websearch tasks were added to `evals/tasks/` mid-run (user work-in-progress, uncommitted). `websearch-summary` failed on every model; `websearch-save-report` passed on ark models only — both are new uncommitted tasks, treated as FAIL where not covered (missing tasks are scored FAIL in the matrix).
