@@ -41,6 +41,7 @@ Provider 探测结果 > Provider 默认值。所有 provider 的 `capabilities()
 `DEFAULT_CAPABILITIES` 做 `dataclasses.replace()`，最后
 `caps.merged_with_overrides(model_config)` 应用配置覆盖（只认本 dataclass 已声明的
 字段名，未知字段忽略，因为 model_config 里还混着 base_url / api_key 等非能力字段）。
+> 覆盖规则：只接受 `ModelCapabilities` 的字段名（`usage_fields` 除外——不可通过覆盖改写，与 docs/modules/config.md 一致）；未知字段（如 base_url / api_key）忽略。
 
 ## 三条不可违反的设计约束（PHASE-A §2.2）
 
@@ -61,25 +62,89 @@ Provider 探测结果 > Provider 默认值。所有 provider 的 `capabilities()
 3. 全部落空 → OpenAIProvider（行为等同 Phase A 之前）
 
 注册顺序即匹配优先级（越具体越靠前）；新增 provider 注册进 `core/providers/__init__.py`
-的 `_PROVIDERS`。
+
+> **调研 vs 实现（各家族状态）**：
+>
+> | 家族 | 调研 | 实现 | 当前路由 |
+> |---|---|---|---|
+> | OpenAI | §7.2 | OpenAIProvider（兜底） | 兜底即用 |
+> | DeepSeek | §7.1 | DeepSeekProvider | 已注册 |
+> | Anthropic | §7.8 | AnthropicProvider | 已注册 |
+> | Qwen | §7.7 | QwenProvider | 已注册 |
+> | Doubao | §7.9 | DoubaoProvider（A23） | 已注册 |
+> | Kimi | §7.3 | A13 待实现 | OpenAIProvider 兜底 |
+> | GLM | §7.4 | A14 待实现 | OpenAIProvider 兜底 |
+> | MiniMax | §7.5 | A15 待实现 | OpenAIProvider 兜底 |
+> | MIMO | §7.6 | A16 待实现 | OpenAIProvider 兜底 |
+
 
 ## 新增一个 Provider 的完整流程
 
-见
-[PHASE-A-MODEL-ADAPTATION-LAYER.md「## §5 扩展手册：加一个新 Provider」](docs/plans/opus5-plan/rxycode/PHASE-A-MODEL-ADAPTATION-LAYER.md#5-扩展手册加一个新-provider)，
-本模块要点：
+### 完整流程（照抄 PHASE-A §5 扩展手册原文）
 
-1. §7.x 调研通过（A0 审计门，含 DeepSeek + GPT-5.6-Luna 双验证 + Grok 自审）
-2. 新建 `core/providers/<name>.py`：`matches()` 精确（避免抢其他模型）、`capabilities()`
-   基于 `DEFAULT_CAPABILITIES` replace、`UsageFieldMap` 按实测
-3. 注册 `_PROVIDERS`；测试（matches 识别/不抢/能力字段/overrides）
-4. evals 矩阵验证（A10 --models 机制）
+> 原文出处（本地开发文档引用，docs/plans 不入 GitHub）：[PHASE-A-MODEL-ADAPTATION-LAYER.md §5 扩展手册](../plans/opus5-plan/rxycode/PHASE-A-MODEL-ADAPTATION-LAYER.md#5-扩展手册加一个新-provider)
 
-（实例：A23 DoubaoProvider 全流程）
+## §5 扩展手册：加一个新 Provider
 
+> Phase A 之后，接一个新模型族的标准流程。**这一节是长期使用的，不是一次性任务。**
+
+**第 1 步 · 查资料**（交给 Grok，由 A0 统一执行，2026-08-01 起）
+
+调研不再在卡内临时进行，统一由 **A0** 承担（分批调研 + 每批审计 + §7 分区汇报）。新增模型族时：
+
+1. 在 A0 的调研清单里追加一批（或复用已有批次），按 A0 的 9 问模板调研
+2. 结果写入 §7 新分区，通过 A0 的审计门（Grok 自审 + 第三方非编码模型审计，§7.10 留档）
+3. 通过审计后，再按下面第 2–7 步写 provider
+
+本手册第 2–7 步与调研解耦，可参照任意已通过的 provider 卡执行。
+
+**第 2 步 · 写 provider**
+
+复制 `core/providers/deepseek.py` 作模板，改四个地方：`name`、`matches()`、`capabilities()`、docstring 里的文档 URL。
+
+**第 3 步 · 注册**
+
+`core/providers/__init__.py` 的 `_PROVIDERS` 列表。**顺序 = 优先级，越具体越靠前。**
+
+**第 4 步 · 写测试**
+
+复制 `tests/test_providers/test_deepseek_provider.py`，至少覆盖：
+- `matches()` 的正例（URL 匹配、模型名匹配）和反例
+- capabilities 的关键字段不等于全局默认值
+- 用户显式覆盖能赢过 provider 默认值
+- usage 字段提取
+
+**第 5 步 · 验证不误伤兜底**
+
+```powershell
+python -m pytest tests/test_providers/test_registry.py -q
+```
+
+新 provider 的 `matches()` 如果写得太宽，会把别的模型抢走。这个测试文件专门守这条。
+
+**第 6 步 · 跑评测**
+
+```powershell
+python -m evals.cli run --backend agent --models <新模型id> --save-baseline
+```
+
+**第 7 步 · 更新文档**
+
+`docs/modules/providers.md` 的支持列表。
+
+---
+
+### 快速要点（同流程的精简版）
+
+1. §7.x 调研通过（A0 审计门：Grok 自审 + DeepSeek + GPT-5.6-Luna 双验证，记录入 §7.10 批表）
+2. 新建 `core/providers/<name>.py`：`matches()` 精确（避免抢同端点其他模型）、`capabilities()` 基于 `DEFAULT_CAPABILITIES` replace、`UsageFieldMap` 按实测
+3. 注册 `_PROVIDERS`（越具体越靠前）；测试（matches 识别/不抢/能力字段/overrides）
+4. evals 矩阵验证（A10 `--models` 机制）
+
+（实例：A23 DoubaoProvider 全流程，见 PHASE-A §7.9 与 core/providers/doubao.py）
 ## 常见问题
 
-- 仓库 issues #2（2.2：provider 相关常见问题，引用链接占位）
+- 仓库 [issues #2](https://github.com/xin-yi33/RxyCode/issues/2)（provider 相关常见问题，对应 PHASE-A §2.2 设计约束语境；已核实可访问）
 - 本项目实测踩坑：
   ① usage/reasoning 字段盲试 → 能力映射委派（A8）；
   ② import-time 绑定 load_config 使配置补丁失效（eval harness 需补丁 utils.shell 等模块全局名）；
