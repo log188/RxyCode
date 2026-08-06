@@ -53,6 +53,40 @@ used by fast-path, graph, and workflow calls. Setting it to `0` explicitly
 disables that layer; explicit task cancellation still propagates regardless of
 this setting.
 
+## Model Entry Fields
+
+Each entry under `models:` is a dict keyed by model name. Recognized fields
+(verbatim from `resolve_model_config()` and `add_model()` in `settings.py` /
+`model_manager.py`):
+
+| Field | Meaning |
+|-------|---------|
+| `model_name` | Model id sent to the provider (e.g. `deepseek-chat`) |
+| `base_url` | API endpoint; also feeds `providers.resolve()` matching |
+| `api_key_env` | Env var name holding the key (preferred storage form) |
+| `api_key_secret` | Opaque reference into the DPAPI-protected credential store |
+| `api_key` | Explicit inline key (migrated off on load by `_sanitize_model_credentials`) |
+| `max_tokens` | Output token ceiling (default `8192` in `llm_kwargs`) |
+| `temperature` | Sampling temperature (default `0.7` in `llm_kwargs`) |
+| `provider_id` / `provider_name` | Grouping metadata for `/model` (see `add_model()`) |
+| `provider` | **Explicit** provider name; bypasses `matches()` probing (short-circuits in `providers.resolve()`) |
+
+**`api_key` resolution priority** (`resolve_model_config()`, `config/settings.py`):
+
+1. `api_key_env` — read the env var into `api_key`. A literal `api_key` value in
+   `${ENV_VAR}` reference form is treated as an env name too.
+2. If the env var is unset/empty **and** `api_key_secret` exists, fall back to
+   `load_credential(api_key_secret, get_config_path())` (common for
+   OpenTUI/appserver child processes that do not inherit the operator shell).
+3. Otherwise an explicit inline `api_key` remains as-is.
+
+**Model capability overrides:** every provider runs
+`caps.merged_with_overrides(model_config)`, which accepts any `ModelCapabilities`
+field name — e.g. `context_window`, `tokenizer`, `supports_reasoning` — written
+directly inside the model entry to override the provider's declared value
+(unknown fields are ignored; `usage_fields` is not overrideable). See
+[docs/modules/providers.md](providers.md).
+
 ## Data Migration
 When the default data root is used, `settings.py` copies missing entries from the previous `~/.rxycode/` root and the legacy in-repo `data/` directory into `~/.RxyCode/`. Explicit `RXYCODE_DATA_DIR` locations are not populated from legacy sources.
 

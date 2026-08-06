@@ -1,0 +1,78 @@
+# providers/ - Provider 策略层
+
+## What Is This Module?
+
+provider 描述"这一族模型和 OpenAI 默认行为有什么不同"，无状态单例，被多个 Agent 并发使用。
+默认实现 == Phase A 之前的 OpenAI 行为；未识别模型落到 OpenAIProvider。
+
+注册表（`core/providers/__init__.py`）当前登记：`DeepSeekProvider`、`DoubaoProvider`、
+`AnthropicProvider`、`QwenProvider`，兜底 `_FALLBACK = OpenAIProvider()`。
+
+## ModelCapabilities 字段表（含义 / 默认值 / 来源）
+
+字段默认值逐字取自 `config/model_capabilities.py`（`ModelCapabilities` dataclass）。
+
+| 字段 | 含义 | 默认值 | 来源/改写处 |
+|---|---|---|---|
+| provider | 标识（openai/deepseek/doubao...） | `"openai"` | 各 provider capabilities() 里的 `provider=self.name` |
+| context_window | 上下文窗口 token | `256_000` | provider 声明（如 DeepSeek `1_048_576`）或配置覆盖 |
+| compaction_threshold | 压缩阈值 | `232_000` | 同上（DeepSeek `943_718` ≈ 1M 的 90%） |
+| tokenizer | 估算方式（tiktoken:xxx / chars:ratio） | `"tiktoken:o200k_base"` | 同上（DeepSeek/Doubao 用 `"chars:2.0"`） |
+| supports_function_calling | 原生 FC | `True` | 同上 |
+| supports_reasoning | 推理模型 | `False` | 同上（DeepSeek 按模型名决定；Doubao `True`） |
+| accepts_temperature | 是否接受 temperature | `True` | 同上（DeepSeek thinking 模式下 `False`） |
+| supports_vision | 多模态输入 | `False` | 同上 |
+| supports_prompt_cache | 前缀缓存 | `True` | 同上 |
+| structured_output | function_calling / json_in_text | `"function_calling"` | 同上 |
+| prompt_variant | 提示词变体键 | `"default"` | 同上（A9 机制） |
+| usage_fields | 字段名映射（cache_read/reasoning） | 见 UsageFieldMap | 同上 |
+| extra_body | 透传参数 | `{}` | 同上 |
+
+`UsageFieldMap` 默认值（`config/model_capabilities.py`）：
+
+| 字段 | 默认值 |
+|---|---|
+| cache_read_flat | `("prompt_cache_hit_tokens",)` |
+| cache_read_nested | `(("prompt_tokens_details", "cached_tokens"), ("input_token_details", "cache_read"))` |
+| reasoning | `("reasoning_content",)` |
+
+能力优先级（`model_capabilities.py` 模块 docstring）：用户在模型配置里显式写的字段 >
+Provider 探测结果 > Provider 默认值。所有 provider 的 `capabilities()` 都基于
+`DEFAULT_CAPABILITIES` 做 `dataclasses.replace()`，最后
+`caps.merged_with_overrides(model_config)` 应用配置覆盖（只认本 dataclass 已声明的
+字段名，未知字段忽略，因为 model_config 里还混着 base_url / api_key 等非能力字段）。
+
+## Provider 解析顺序
+
+`providers.resolve(model_config)`（`core/providers/__init__.py`）：
+
+1. model_config 里显式写了 `provider` 字段 → 按名字直取（`_BY_NAME`）
+2. 依次问每个已注册 provider 的 `matches(base_url, model_name)`
+3. 全部落空 → OpenAIProvider（行为等同 Phase A 之前）
+
+注册顺序即匹配优先级（越具体越靠前）；新增 provider 注册进 `core/providers/__init__.py`
+的 `_PROVIDERS`。
+
+## 新增一个 Provider 的完整流程
+
+见
+[PHASE-A-MODEL-ADAPTATION-LAYER.md「## §5 扩展手册：加一个新 Provider」](docs/plans/opus5-plan/rxycode/PHASE-A-MODEL-ADAPTATION-LAYER.md#5-扩展手册加一个新-provider)，
+本模块要点：
+
+1. §7.x 调研通过（A0 审计门，含 DeepSeek + GPT-5.6-Luna 双验证 + Grok 自审）
+2. 新建 `core/providers/<name>.py`：`matches()` 精确（避免抢其他模型）、`capabilities()`
+   基于 `DEFAULT_CAPABILITIES` replace、`UsageFieldMap` 按实测
+3. 注册 `_PROVIDERS`；测试（matches 识别/不抢/能力字段/overrides）
+4. evals 矩阵验证（A10 --models 机制）
+
+（实例：A23 DoubaoProvider 全流程）
+
+## 常见问题
+
+- 仓库 issues #2（2.2：provider 相关常见问题，引用链接占位）
+- 本项目实测踩坑：
+  ① usage/reasoning 字段盲试 → 能力映射委派（A8）；
+  ② import-time 绑定 load_config 使配置补丁失效（eval harness 需补丁 utils.shell 等模块全局名）；
+  ③ matches 写太宽抢走同端点其他模型（doubao vs minimax/glm）；
+  ④ api_key_env 环境变量缺失 → 静默无 key；
+  ⑤ 免费配额 429 与计费口径（官方 CNY vs 转发商）

@@ -77,6 +77,29 @@ Session restoration searches the current date, earlier dated records, and the le
 - _extract_cache_read(resp): Extracts cache hit tokens from provider response metadata
 - _record_usage(resp): Records input/output/cache tokens into the global token_stats singleton
 
+**LLM construction via provider layer (A6/A8/A9):**
+
+- `_build_llm_from_config()` resolves the strategy, derives capabilities, and
+  builds the raw LLM: `provider = providers.resolve(model_config)` →
+  `caps = provider.capabilities(model_config)` →
+  `ChatOpenAI(**provider.llm_kwargs(model_config, caps))` — then wraps it in
+  `UsageTrackingLLM(provider=provider, capabilities=caps)` (see
+  [providers](providers.md) for the strategy layer itself).
+- `UsageTrackingLLM` records usage for every `ainvoke()`/`astream()`; cache-read
+  and reasoning extraction are **delegated to the provider's capability map**
+  (A8): `BaseProvider.extract_cache_read(usage, caps)` walks
+  `caps.usage_fields.cache_read_flat` / `cache_read_nested`, and
+  `_extract_reasoning()` calls `provider.extract_reasoning(delta, caps)` using
+  `caps.usage_fields.reasoning` — replacing the old "try both fields" guessing.
+- Prompt variants (A9): `get_role_prompt(...)` / `get_system_prompt(...)` are
+  called with `variant=self._prompt_variant()`, where `_prompt_variant()`
+  returns `caps.prompt_variant` (e.g. `deepseek-v4-pro` vs `deepseek-v4-flash`).
+- Capability gates: `_apply_cache_control()` skips `cache_control` injection
+  when `not self._provider.supports_prompt_cache(self._capabilities)`; the
+  function-calling fast path raises
+  `"capabilities.supports_function_calling is False"` when the capability is
+  off (both in `agent_v2.py`).
+
 **Rate-limit settlement:** Before a provider call, `UsageTrackingLLM` reserves
 one request unit plus estimated input tokens and the configured output
 reservation. `ainvoke()`, wrapped streaming, and the raw provider stream each
