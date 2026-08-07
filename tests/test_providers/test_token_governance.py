@@ -221,6 +221,27 @@ def test_agent_get_core_tools_subset_with_rag():
     assert [t.name for t in out] == sorted(t.name for t in tools)[:8]
 
 
+def test_agent_get_core_tools_subset_session_stable():
+    """subset 会话内固定：后续 MCP 工具变化不改变已确定的子集。"""
+    tools = [SimpleNamespace(name=f"tool{i:02d}") for i in range(12)]
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = object.__new__(AgentV2)
+    agent._capabilities = ModelCapabilities(tool_send_policy="subset")
+    registry = list(tools)
+    agent._tool_orchestrator = SimpleNamespace(
+        get_all=lambda: {t.name: t for t in registry}
+    )
+    agent._memory = SimpleNamespace(_rag_enabled=False)
+    first = [t.name for t in agent._get_core_tools()]
+    assert len(first) == 8
+    # 会话中途新增工具（MCP 热载）→ 子集不变。
+    registry.append(SimpleNamespace(name="zzz-new-mcp-tool"))
+    second = [t.name for t in agent._get_core_tools()]
+    assert second == first
+    assert "zzz-new-mcp-tool" not in second
+
+
 # ---- 消费点：max_output_tokens 经 resolver 生效（Phase 3 M4） ---------------
 
 

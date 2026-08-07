@@ -1033,12 +1033,22 @@ class AgentV2:
         if active is not None and not active.done():
             raise RuntimeError("cannot switch model during an active run")
         model_config = _settings.get_model_config(configured_name, self._cfg)
+        api_key = str(model_config.get("api_key") or "").strip()
+        if not api_key:
+            env_name = model_config.get("api_key_env") or "the configured environment variable"
+            raise ValueError(
+                f"API credential is unavailable for '{configured_name}'; "
+                f"set {env_name} or re-add the model with its API key, then retry."
+            )
         try:
             self._memory.save_session()
         except Exception:
             pass
+        # Build the new LLM before mutating live state so a missing-credential
+        # / construct failure leaves the previous model active.
+        new_llm = self._build_llm_from_config(model_config)
         self.model_config = model_config
-        self._llm = self._build_llm_from_config(model_config)
+        self._llm = new_llm
         self._provider = providers.resolve(model_config)
         self._capabilities = self._provider.capabilities(model_config)
         self._sync_token_stats_context()
@@ -1309,6 +1319,13 @@ class AgentV2:
             cfg = {}
 
         model_config = dict(model_config)
+        api_key = str(model_config.get("api_key") or "").strip()
+        if not api_key:
+            env_name = model_config.get("api_key_env") or "the configured environment variable"
+            raise ValueError(
+                "API credential is unavailable; "
+                f"set {env_name} or re-add the model with its API key."
+            )
         try:
             resolution = resolve_configured_max_tokens(
                 model_config=model_config,
@@ -1567,16 +1584,13 @@ class AgentV2:
             if _estimate_tokens(out, spec) <= limit:
                 return out
             keep_chars = max(1, keep_chars // 2)
-        # 标记本身 token 数可能 > limit（极小 limit）→ 退化为仅保留开头、
-        # 不带标记的文本，收缩到估算 token ≤ limit。
-        if _estimate_tokens(marker, spec) >= limit:
-            head = ""
-            for head_len in range(min(len(text), 64), 0, -1):
-                head = text[:head_len]
-                if _estimate_tokens(head, spec) <= limit:
-                    return head
-            return text[:1]
-        return text[:1] + marker + text[-1:]
+        # 标记本身 token 数可能 ≥ limit（极小 limit）→ 退化为仅保留开头、
+        # 不带标记的文本，收缩到估算 token ≤ limit（含最终兜底逐字符验证）。
+        for head_len in range(min(len(text), 256), 0, -1):
+            head = text[:head_len]
+            if _estimate_tokens(head, spec) <= limit:
+                return head
+        return text[:1] if _estimate_tokens(text[:1], spec) <= limit else ""
 
     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
         """Phase 3 M4：请求层解析最终 max_tokens（含 context 钳制）。
@@ -2483,7 +2497,16 @@ class AgentV2:
         caps = getattr(self, "_capabilities", None)
         policy = getattr(caps, "tool_send_policy", None) if caps is not None else None
         if policy == "subset":
-            return sorted(tools, key=lambda t: getattr(t, "name", ""))[:8]
+            # 会话内固定：首次计算后缓存，MCP 工具后续变化不改变子集。
+            cache = getattr(self, "_subset_tool_names", None)
+            if cache is None:
+                cache = tuple(
+                    getattr(t, "name", "") for t in sorted(
+                        tools, key=lambda t: getattr(t, "name", "")
+                    )[:8]
+                )
+                self._subset_tool_names = cache
+            return [t for t in tools if getattr(t, "name", "") in cache]
         return tools
 
     async def _execute_tool(
