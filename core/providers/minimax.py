@@ -41,11 +41,14 @@ _MINIMAX_USAGE = UsageFieldMap(
     # §7.5 问 4：官方 OpenAI 路径 usage.prompt_tokens_details.cached_tokens（嵌套）
     cache_read_flat=(),
     cache_read_nested=(("prompt_tokens_details", "cached_tokens"),),
-    # §7.5 问 4/5：缓存写入价仅 M2.x 有；reasoning 在 message/delta（reasoning_details），
-    # 非 usage 嵌套字段——显式清空 A12 承载的全局默认嵌套路径
+    # §7.5 问 4/5：缓存写入价仅 M2.x 有；reasoning 在 message/delta（reasoning_content /
+    # reasoning_details），非 usage 嵌套字段——显式清空 A12 承载的全局默认嵌套路径。
+    # 注：`reasoning=()` 是 §7.5 ③ 的 UsageFieldMap 原文（「reasoning_content /
+    # reasoning_details 在 message/delta，不在 usage」），与 A13/A14 同裁决一致；
+    # 内容抽取由 A8 的 delta/message 路径处理（reasoning_split=true 时含 reasoning_details）。
     cache_write_nested=(),
     reasoning_nested=(),
-    reasoning=(),  # reasoning_content / reasoning_details 在 message/delta，不在 usage
+    reasoning=(),
 )
 
 # §7.5 问 2：MM1 概览表可核验精确整数（输入+输出合计）
@@ -118,7 +121,8 @@ _DEFAULT_MINIMAX_PRICING = ModelPricing(
     source_url="https://platform.minimaxi.com/docs/guides/pricing-paygo",
 )
 
-#: 调研覆盖的型号（§7.5 问 1，小写规范化）。
+#: 调研覆盖的型号（§7.5 问 1，小写规范化；含 M2 系的 legacy highspeed 变体，
+#: 见问 7「上述对应 -highspeed（历史）4.2/16.8/0.21/2.625」）。
 _MINIMAX_FAMILY = {
     "minimax-m3",
     "minimax-m2.7",
@@ -128,6 +132,7 @@ _MINIMAX_FAMILY = {
     "minimax-m2.1",
     "minimax-m2.1-highspeed",
     "minimax-m2",
+    "minimax-m2-highspeed",
 }
 
 

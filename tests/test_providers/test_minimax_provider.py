@@ -109,10 +109,31 @@ def test_cache_read_uses_nested_cached_tokens():
     assert caps.usage_fields.cache_read_flat == ()
     assert caps.usage_fields.cache_read_nested == (("prompt_tokens_details", "cached_tokens"),)
     assert caps.usage_fields.reasoning == ()
+    assert caps.usage_fields.reasoning_nested == ()
+    assert caps.usage_fields.cache_write_nested == ()
     assert p.extract_cache_read(
         {"prompt_tokens_details": {"cached_tokens": 64}}, caps
     ) == 64
     assert p.extract_cache_read({"cached_tokens": 99}, caps) == 0
+
+
+def test_reasoning_is_in_message_delta_not_usage():
+    """§7.5 问 5：reasoning_content / reasoning_details 在 message/delta，不在 usage。"""
+    caps = _caps("MiniMax-M3")
+    assert caps.usage_fields.reasoning == ()
+    assert caps.usage_fields.reasoning_nested == ()
+    # A8 的 delta/message 抽取路径依赖 supports_reasoning 已开启
+    assert caps.supports_reasoning is True
+
+
+def test_llm_kwargs_injects_chat_thinking():
+    """§7.5 ③：Chat thinking 经 extra_body thinking=adaptive + reasoning_split=True。"""
+    p, cfg = _resolve("MiniMax-M3")
+    caps = p.capabilities(cfg)
+    kwargs = p.llm_kwargs(cfg, caps)
+    body = kwargs.get("extra_body") or {}
+    assert body.get("thinking") == {"type": "adaptive"}
+    assert body.get("reasoning_split") is True
 
 
 # ---- §7.5 问 7：定价按型号分条（CNY） -----------------------------------
@@ -136,6 +157,20 @@ def test_per_model_pricing(name, inp, outp, cached, cwrite):
     assert caps.pricing.cache_write_per_mtok == cwrite
     assert caps.pricing.as_of == "2026-08-02"
     assert caps.pricing.source_url
+
+
+@pytest.mark.parametrize("name,inp,outp,cached,cwrite", [
+    ("MiniMax-M2.5-highspeed", 4.2, 16.8, 0.21, 2.625),
+    ("MiniMax-M2.1-highspeed", 4.2, 16.8, 0.21, 2.625),
+    ("MiniMax-M2-highspeed", 4.2, 16.8, 0.21, 2.625),
+])
+def test_legacy_highspeed_pricing(name, inp, outp, cached, cwrite):
+    """§7.5 问 7 末行：legacy -highspeed 档 4.2/16.8/0.21/2.625（M2.5/M2.1/M2）。"""
+    caps = _caps(name)
+    assert caps.pricing.input_per_mtok == inp
+    assert caps.pricing.output_per_mtok == outp
+    assert caps.pricing.cached_input_per_mtok == cached
+    assert caps.pricing.cache_write_per_mtok == cwrite
 
 
 def test_unknown_minimax_variant_stays_conservative():
