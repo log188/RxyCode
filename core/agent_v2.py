@@ -1518,6 +1518,20 @@ class AgentV2:
         caps = getattr(self, "_capabilities", None)
         return (caps or DEFAULT_CAPABILITIES).prompt_variant
 
+    def _include_few_shot(self) -> bool:
+        """A20: few_shot_policy → include_few_shot。
+
+        - None（现状）/ "full" → True（全量注入，A9 前行为不变）
+        - "none" → False（不注入）
+        - "first2" → True（注入量由模板/registry 控制；A20 默认走现状路径，
+          细分首 2 条的裁剪留待 A9 模板扩展）
+        """
+        caps = getattr(self, "_capabilities", None)
+        policy = (caps or DEFAULT_CAPABILITIES).few_shot_policy
+        if policy == "none":
+            return False
+        return True
+
     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
         """Phase 3 M4：请求层解析最终 max_tokens（含 context 钳制）。
 
@@ -2405,14 +2419,23 @@ class AgentV2:
             raise
 
     def _get_core_tools(self) -> list:
-        """Return Agent-local tools for the tool-aware fast path."""
+        """Return Agent-local tools for the tool-aware fast path.
+
+        A20: tool_send_policy=="subset" 时按会话内固定的确定性子集裁剪
+        （按名字排序保留前 8 个），其余策略（None/full）全量返回，现状不变。
+        """
         orchestrator = getattr(self, "_tool_orchestrator", None)
         if orchestrator is None:
             return []
         tools = list(orchestrator.get_all().values())
         if getattr(self._memory, "_rag_enabled", False):
             return tools
-        return [tool for tool in tools if getattr(tool, "name", "") != "code_search"]
+        tools = [tool for tool in tools if getattr(tool, "name", "") != "code_search"]
+        caps = getattr(self, "_capabilities", None)
+        policy = getattr(caps, "tool_send_policy", None) if caps is not None else None
+        if policy == "subset":
+            return sorted(tools, key=lambda t: getattr(t, "name", ""))[:8]
+        return tools
 
     async def _execute_tool(
         self,
@@ -2534,6 +2557,7 @@ class AgentV2:
 
         # Trim oldest tool results first (most often long logs/stdout).
         compressor = ContextCompressor()
+        limit = getattr(self._capabilities, "tool_output_token_limit", None)
         for m in messages:
             if total <= budget:
                 break
@@ -2541,7 +2565,20 @@ class AgentV2:
                 content = getattr(m, "content", "") or ""
                 if _estimate_tokens(content, self._tokenizer_spec()) <= 200:
                     continue
-                new_content = compressor._middle_truncate(content)
+                if limit is None:
+                    # A20 默认（None）：现状行为——固定 middle-truncate。
+                    new_content = compressor._middle_truncate(content)
+                else:
+                    # A20：按 tool_output_token_limit 保留头尾、截断中间。
+                    # 只改注入上下文的文本副本，不改 ToolMessage 对象（tool_call_id 契约）。
+                    chars = max(1, int(limit) * 3)
+                    keep = chars
+                    if len(content) > keep * 2 + 100:
+                        new_content = (
+                            content[:keep] + "\n...[truncated]...\n" + content[-keep:]
+                        )
+                    else:
+                        new_content = content
                 try:
                     m.content = new_content  # type: ignore[attr-defined]
                 except Exception:
@@ -2799,6 +2836,7 @@ class AgentV2:
         plan_role = get_role_prompt(
             "compose_plan",
             user_input=user_input,
+            include_few_shot=self._include_few_shot(),
             variant=self._prompt_variant(),
         )
         plan_prompt = build_user_message(plan_role, "")
@@ -2830,6 +2868,7 @@ class AgentV2:
                 user_input=user_input,
                 plan_file=tmp_file.name,
                 plan_content=plan_response,
+                include_few_shot=self._include_few_shot(),
                 variant=self._prompt_variant(),
             )
             build_prompt = build_user_message(build_role, "")

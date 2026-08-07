@@ -182,6 +182,21 @@ class ModelCapabilities:
     #: 空元组 = 不用显式断点。A8 的 _apply_cache_control 读取它（A19）。
     cache_breakpoints: tuple[str, ...] = ()
 
+    #: few-shot 注入策略（A20）。None = 现状（全量注入，A9 前的行为）。
+    #:   "full" 全量 / "first2" 只留前 2 条 / "none" 不注入
+    #: A9 的 get_role_prompt(include_few_shot=...) 消费。
+    few_shot_policy: str | None = None
+
+    #: 工具描述发送策略（A20）。None = 现状（全量发送）。
+    #:   "full" 全量 / "subset" 按任务子集（由调用方决定子集，会话内固定）
+    #: agent_v2._get_core_tools 组包时消费。
+    tool_send_policy: str | None = None
+
+    #: 工具输出截断阈值（token）（A20）。None = 现状（不截断）。
+    #: agent_v2._maybe_compress_context 按此截断注入上下文的工具结果文本副本
+    #: （保留头尾；**不**改 ToolMessage 对象本身，避免破坏 tool_call_id 契约）。
+    tool_output_token_limit: int | None = None
+
     #: 未归类的 provider 特有参数，会原样透传给 LLM 构造函数
     extra_body: dict[str, Any] = field(default_factory=dict)
 
