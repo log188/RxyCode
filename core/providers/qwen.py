@@ -1,11 +1,21 @@
-"""Qwen / 通义千问 provider（骨架；完整实现见 A17）。
+"""Qwen / 通义千问 provider（A17 补全：DashScope / 百炼 Model Studio）。
 
-与 OpenAI 默认行为的差异：
-  - 分词无官方 tiktoken encoding，用 ``chars:0.7`` 启发式（100 万 token ≈ 70 万汉字）
-  - 缓存命中在 ``usage.prompt_tokens_details.cached_tokens``（嵌套路径）
-  - 3.7 系默认混合思考（``enable_thinking`` 经 extra_body）；输出 ``reasoning_content``
+与 OpenAI 默认行为的差异以 A0 批 7 调研报告（§7.7，2026-08-02 三方审计通过）为准：
 
-数值来源（A0 §7.7，2026-08-02 三方审计通过）：
+四档（A17 必须覆盖；按量首选 plus；Token Plan 最强用 3.8）：
+  - qwen3.7-plus：主力 A，能力/成本均衡，多模态 Agent（图/文/视频），按量默认
+  - qwen3.7-max：主力 B，最强按量推理；动态 id 当前纯文本体验
+  - qwen3.7-flash：主力 C，低成本接近旗舰，多模态
+  - qwen3.8-max-preview：主力 D，Token Plan 最强推理预览；仅 Token Plan（Credits）
+
+共用（Chat Completions / OpenAI 兼容；按量三主力）：
+  - 3.7：context 1_000_000（型号页精确整数）；max_output 65_536；FC=True
+  - thinking：3.7 混合思考默认开启（可关）；3.8 仅思考不可关
+  - 缓存：隐式默认开；显式可选 cache_control（TTL 5min / min 1024）
+  - 无官方 tiktoken → 用 ``chars:0.7`` 启发式（100 万 token ≈ 70 万汉字，Q1）
+  - enable_thinking 经 extra_body；Responses 用 reasoning.effort（端点区分）
+
+数值来源（A0 §7.7）：
   - https://help.aliyun.com/zh/model-studio/text-generation-model/
   - https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope
   - https://help.aliyun.com/zh/model-studio/deep-thinking
@@ -24,12 +34,14 @@ try:
     from ...config.model_capabilities import (
         DEFAULT_CAPABILITIES,
         ModelCapabilities,
+        ModelPricing,
         UsageFieldMap,
     )
 except ImportError:  # pragma: no cover - repo-root layout (tests)
     from config.model_capabilities import (
         DEFAULT_CAPABILITIES,
         ModelCapabilities,
+        ModelPricing,
         UsageFieldMap,
     )
 from .base import BaseProvider
@@ -37,38 +49,113 @@ from .base import BaseProvider
 _QWEN_USAGE = UsageFieldMap(
     cache_read_flat=(),
     cache_read_nested=(("prompt_tokens_details", "cached_tokens"),),
-    reasoning=(),  # reasoning_content 在 message/delta
+    # §7.7 问 4：显式缓存创建写 usage.prompt_tokens_details.cache_creation_input_tokens
+    cache_write_nested=(("prompt_tokens_details", "cache_creation_input_tokens"),),
+    reasoning=(),  # reasoning_content 在 message/delta，不在 usage
 )
 
 # §7.7 Q5/Q6/Q7：3.7 型号页精确 1_000_000
 # §7.7 Q10 Codex 元数据：qwen3.8-max-preview context_window=983_616（无独立型号页）
 _CONTEXT_WINDOW_37 = 1_000_000
 _CONTEXT_WINDOW_38 = 983_616
+# §7.7 问 2：3.7 max_output_tokens=65_536（3.8 未找到官方整数 → None）
+_MAX_OUTPUT_37 = 65_536
 # RxyCode 项目约定：compaction_threshold ≈ context 的 90%（同 A3 §7.1；非厂商文档数值）
 _COMPACTION_RATIO = 0.9
 
+# §7.7 问 7：定价按型号分条（CNY / 1M，华北2 北京按量；as_of=2026-08-02；source_url=型号页）。
+# plus 按 ≤256k 档填；>256k 阶梯（6/24/1.2）由调用方按实际输入切换（§7.7 问 7a）。
+# 3.8 仅 Token Plan（Credits）→ 单价 None，禁止填 3.7-max 的 12/36（§7.7 问 7b）。
+_QWEN_PRICING: dict[str, ModelPricing] = {
+    "qwen3.7-plus": ModelPricing(
+        input_per_mtok=2.0,
+        output_per_mtok=8.0,
+        cached_input_per_mtok=0.4,  # 隐式命中；显式命中另用 0.2
+        cache_write_per_mtok=None,
+        as_of="2026-08-02",
+        source_url="https://help.aliyun.com/zh/model-studio/qwen3-7-plus",
+    ),
+    "qwen3.7-max": ModelPricing(
+        input_per_mtok=12.0,
+        output_per_mtok=36.0,
+        cached_input_per_mtok=2.4,
+        cache_write_per_mtok=None,
+        as_of="2026-08-02",
+        source_url="https://help.aliyun.com/zh/model-studio/qwen3-7-max",
+    ),
+    "qwen3.7-flash": ModelPricing(
+        input_per_mtok=0.2,
+        output_per_mtok=0.8,
+        cached_input_per_mtok=0.04,
+        cache_write_per_mtok=None,
+        as_of="2026-08-02",
+        source_url="https://help.aliyun.com/zh/model-studio/qwen3-7-flash",
+    ),
+}
 
-def _context_window(model_name: str) -> int:
-    name = model_name.lower()
-    if "3.8" in name or "qwen3.8" in name:
-        return _CONTEXT_WINDOW_38
-    return _CONTEXT_WINDOW_37
+#: 3.8-max-preview：仅 Token Plan（Credits），禁止按量 CNY 单价（§7.7 问 7b）。
+_38_PREVIEW_PRICING = ModelPricing(
+    input_per_mtok=None,
+    output_per_mtok=None,
+    cached_input_per_mtok=None,
+    cache_write_per_mtok=None,
+    as_of="2026-08-02",
+    source_url="https://help.aliyun.com/zh/model-studio/codex",
+)
+
+#: 未调研型号 → 价格显式 None（来源 URL 仍在），不得静默当 0。
+_DEFAULT_QWEN_PRICING = ModelPricing(
+    input_per_mtok=None,
+    output_per_mtok=None,
+    cached_input_per_mtok=None,
+    cache_write_per_mtok=None,
+    as_of="2026-08-02",
+    source_url="https://help.aliyun.com/zh/model-studio/text-generation-model/",
+)
+
+#: 调研覆盖的四档（§7.7 问 1）。qwen-plus / qwen-flash 等旧版不在调研内 → 保守。
+_QWEN_FAMILY = {"qwen3.7-plus", "qwen3.7-max", "qwen3.7-flash", "qwen3.8-max-preview"}
+
+
+def _family(model_name: str) -> str | None:
+    """返回调研覆盖的型号规范名；未覆盖返回 None（旧版 qwen-plus 等保守）。"""
+    name = model_name.lower().replace(" ", "")
+    if name in _QWEN_FAMILY:
+        return name
+    return None
+
+
+def _context_window(family: str) -> int:
+    return _CONTEXT_WINDOW_38 if family == "qwen3.8-max-preview" else _CONTEXT_WINDOW_37
+
+
+def _max_output(family: str) -> int | None:
+    return None if family == "qwen3.8-max-preview" else _MAX_OUTPUT_37
+
+
+def _supports_vision(family: str) -> bool:
+    """§7.7 ③：plus/flash 多模态（True）；max 动态 id 纯文本（False）；
+    3.8 无型号页复核 → 不写入 True 作 API 能力证明（保守 False）。"""
+    return family in ("qwen3.7-plus", "qwen3.7-flash")
+
+
+def _pricing_for(family: str | None) -> ModelPricing:
+    if family is None:
+        return _DEFAULT_QWEN_PRICING
+    if family == "qwen3.8-max-preview":
+        return _38_PREVIEW_PRICING
+    return _QWEN_PRICING[family]
 
 
 def _prompt_variant(model_name: str) -> str:
-    name = model_name.lower()
-    if "3.8" in name:
-        return "qwen3.8-max-preview"
-    if "max" in name and "preview" not in name:
-        return "qwen3.7-max"
-    if "flash" in name:
-        return "qwen3.7-flash"
-    return "qwen3.7-plus"
+    # 未调研变体保持 DEFAULT_CAPABILITIES.prompt_variant（"default"），与 A12–A16 一致
+    family = _family(model_name)
+    return family if family is not None else "default"
 
 
 def _supports_reasoning(model_name: str) -> bool:
-    """§7.7：3.7/3.8 均适配 thinking；旧 qwen-plus 混合但默认关（仍 supports）。"""
-    return True
+    """§7.7 问 5：3.7/3.8 均适配 thinking（3.7 混合默认可关；3.8 仅思考不可关）。"""
+    return _family(model_name) is not None
 
 
 class QwenProvider(BaseProvider):
@@ -87,20 +174,57 @@ class QwenProvider(BaseProvider):
 
     def capabilities(self, model_config: dict) -> ModelCapabilities:
         model_name = str(model_config.get("model_name") or "").lower()
-        context_window = _context_window(model_name)
+        family = _family(model_name)
 
         caps = replace(
             DEFAULT_CAPABILITIES,
             provider=self.name,
-            context_window=context_window,
-            compaction_threshold=int(context_window * _COMPACTION_RATIO),
             usage_fields=_QWEN_USAGE,
-            supports_function_calling=True,
-            supports_reasoning=_supports_reasoning(model_name),
-            supports_prompt_cache=True,
-            structured_output="function_calling",
+            pricing=_pricing_for(family),
             prompt_variant=_prompt_variant(model_name),
-            # §7.7：100 万 token ≈ 70 万汉字 → chars:0.7
-            tokenizer="chars:0.7",
         )
+        if family is not None:
+            context_window = _context_window(family)
+            caps = replace(
+                caps,
+                context_window=context_window,
+                compaction_threshold=int(context_window * _COMPACTION_RATIO),
+                # §7.7 问 2：3.7=65536；3.8 未找到官方整数 → None
+                max_output_tokens=_max_output(family),
+                supports_function_calling=(family != "qwen3.8-max-preview"),
+                # §7.7 ③：plus/flash 多模态；max 纯文本；3.8 不写入 True
+                supports_vision=_supports_vision(family),
+                supports_reasoning=True,
+                # §7.7 问 5：3.7 混合思考默认可关；3.8 仅思考不可关（均默认开）
+                thinking_default_on=True,
+                supports_prompt_cache=True,
+                # §7.7 ③：plus/flash Q1 结构化输出支持 → function_calling 可用；
+                # max Q1=不支持 vs Q5=支持 → 冲突留档（§7.7 问 3 审计处置），以 Q1 列序
+                # 为准保守声明；StructuredOutputMode 亦仅支持 function_calling/json_in_text
+                structured_output="function_calling",
+                prompt_variant=_prompt_variant(model_name),
+                # §7.7 问 5：3.7 未找到「思考拒绝 temperature」明文 → 保留采样参数；
+                # 3.8 temperature 默认 0.6、<0.6 强制抬到 0.6（非整段拒绝）→ 仍可传
+                accepts_temperature=True,
+                # §7.7 问 6：官方无 tiktoken → chars:0.7 启发式（100 万 token ≈ 70 万汉字）
+                tokenizer="chars:0.7",
+                # §7.7 ③：Chat 路径无 reasoning.effort（Responses 用 reasoning.effort，
+                # 由 A21 处理）→ 不设 effort_presets
+                effort_presets={},
+            )
         return caps.merged_with_overrides(model_config)
+
+    def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
+        kwargs = super().llm_kwargs(model_config, caps)
+        # §7.7 问 5：3.7 混合思考经 extra_body enable_thinking（默认开启，可关）；
+        # 3.8 仅思考不可关 → 不注入 enable_thinking（关不掉，注入无意义）。
+        family = _family(str(model_config.get("model_name") or ""))
+        if (
+            family is not None
+            and family != "qwen3.8-max-preview"
+            and caps.supports_reasoning
+            and caps.thinking_default_on
+        ):
+            body = kwargs.setdefault("extra_body", {})
+            body.setdefault("enable_thinking", True)
+        return kwargs
