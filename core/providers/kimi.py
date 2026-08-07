@@ -3,7 +3,9 @@
 与 OpenAI 默认行为的差异以 A0 批 3 调研报告（§7.3，2026-08-02 三方审计通过）为准：
   - 缓存命中字段：顶层 ``usage.cached_tokens``（非 prompt_cache_hit_tokens，不嵌套）
   - reasoning 内容在 message/delta 层（非 usage 嵌套字段）
-  - kimi-k3：1M 上下文 / 始终推理；k2.7 系与 k2.6：262k / 始终思考（K2.x 不支持 reasoning_effort）
+  - kimi-k3：1M 上下文 / 始终推理；k2.7 系：262k / 始终思考（不支持 reasoning_effort）；
+    k2.6：262k / thinking 默认 enabled 但**可 disabled**（无独立开关字段，thinking_default_on=True
+    仅表达默认开启）
   - 采样参数固定（temperature 1.0 等），勿显式传；改值报错
   - 无官方 tiktoken → 用 ``chars:1.75`` 估算（§7.3 问 6 启发式）
 
@@ -141,6 +143,9 @@ class KimiProvider(BaseProvider):
         name = model_name.lower()
         # §7.3 问 3：api.moonshot.cn / api.moonshot.ai 均可；kimi 模型名任意端点命中。
         # 勿写成 endswith("moonshot.com") 之类把 .cn 漏掉。
+        # 注（A13 卡骨架原文指定该规则）：`"kimi" in name` 属卡面约定，仅对实测正例
+        # 断言覆盖；复合名（glm-kimi-* 等）不在卡面反例清单内，若未来出现按卡面「matches
+        # 别写太宽」原则收紧为 startswith/白名单，不在本卡范围。
         return "moonshot" in url or "kimi" in name
 
     def capabilities(self, model_config: dict) -> ModelCapabilities:
@@ -171,8 +176,11 @@ class KimiProvider(BaseProvider):
                 thinking_default_on=True,  # k3 始终推理；k2.x 始终/默认思考
                 supports_prompt_cache=True,
                 # §7.3 ③ 列 K3 structured_output="json_schema"，但 RxyCode 的
-                # StructuredOutputMode 仅支持 function_calling / json_in_text（A12 同裁决，
-                # 以 function_calling 声明，json_schema 属 Phase E 扩展，不在本卡落地）。
+                # StructuredOutputMode 仅支持 function_calling / json_in_text（A12 同裁决：
+                # §7.2 的 gpt-5.6 同样标注 "+ json_schema"，Luna 终审接受 function_calling；
+                # 且 StructuredOutputMode 为 Literal，json_schema 会触发类型错误）。
+                # caps.structured_output 当前无运行时消费（纯元数据），以 function_calling
+                # 声明，json_schema 属 Phase E 扩展，不在本卡落地。
                 structured_output="function_calling",
                 prompt_variant=_prompt_variant(model_name),
                 # §7.3 问 5：采样参数固定，勿显式传（改值报错）
