@@ -177,18 +177,26 @@ def test_truncate_tool_text_short_untouched():
 
 
 def test_truncate_tool_text_strictly_bounded():
-    """超限时输出 token 数 ≤ limit（无短文本提前返回）。"""
-    agent = _new_agent(ModelCapabilities(tool_output_token_limit=20), [])
-    text = "word " * 500  # 远超 20 token
-    out = agent._truncate_tool_text(text)
-    assert "[truncated]" in out
-    # 截断后（头尾 + 标记）估算 token 应显著小于原文本且受 limit 约束
+    """超限时输出估算 token ≤ limit（硬上限，覆盖极小 limit）。"""
     from RxyCode.RxyCode1_1_0.core.agent_v2 import _estimate_tokens
 
-    assert _estimate_tokens(out, agent._tokenizer_spec()) <= _estimate_tokens(
-        text, agent._tokenizer_spec()
-    )
-    assert len(out) < len(text) // 2
+    long_text = "word " * 500  # 远超任何小 limit
+    for limit in (1, 2, 5, 20):
+        agent = _new_agent(ModelCapabilities(tool_output_token_limit=limit), [])
+        out = agent._truncate_tool_text(long_text)
+        est = _estimate_tokens(out, agent._tokenizer_spec())
+        assert est <= limit, f"limit={limit} exceeded: est={est}"
+        # 输出不能是空串；限足够大时保留截断标记。
+        assert out.strip() != ""
+        if limit >= 10:
+            assert "[truncated]" in out
+
+
+def test_truncate_tool_text_within_limit_untouched():
+    """估算 token ≤ limit 时原样返回（不截断）。"""
+    agent = _new_agent(ModelCapabilities(tool_output_token_limit=1000), [])
+    text = "short"
+    assert agent._truncate_tool_text(text) == text
 
 
 def test_truncate_tool_text_empty_ok():

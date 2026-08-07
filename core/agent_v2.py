@@ -1545,25 +1545,38 @@ class AgentV2:
     def _truncate_tool_text(self, text: str) -> str:
         """A20: 按 tool_output_token_limit 对工具结果文本副本截断。
 
-        返回截断后的**文本副本**（按 token 估算保留头尾、中间插入标记）；
-        **不改动任何 ToolMessage 对象**（tool_call_id 契约不受影响）。
-        limit=None → 原样返回。调用点：构造 ToolMessage(content=...) 之前。
-
-        截断保证：当估算 token 数 > limit 时，按比例把 limit 分配到两端
-        （各约一半），中间插入截断标记；无 `len(text) <= X` 提前返回，避免
-        短文本超限。
+        返回截断后的**文本副本**；**不改动任何 ToolMessage 对象**
+        （tool_call_id 契约不受影响）。limit=None → 原样返回。
+        保证：估算 token 数 ≤ limit 时原样返回；> limit 时返回截断文本，
+        其估算 token 数（含截断标记）**不超过 limit**——按比例收缩 keep_chars
+        迭代直至满足，覆盖极小 limit（1/2/5/20）。
         """
         caps = getattr(self, "_capabilities", None)
         limit = getattr(caps, "tool_output_token_limit", None) if caps else None
         if limit is None or not text:
             return text
         spec = self._tokenizer_spec()
-        total = _estimate_tokens(text, spec)
-        if total <= limit:
+        if _estimate_tokens(text, spec) <= limit:
             return text
-        ratio = max(0.1, float(limit) / max(1, total))
+        marker = "\n...[truncated]...\n"
+        # 按比例初始 keep_chars，再迭代收缩直到含标记的截断文本 ≤ limit。
+        ratio = max(0.1, float(limit) / max(1, _estimate_tokens(text, spec)))
         keep_chars = max(1, int(len(text) * ratio * 0.5))
-        return text[:keep_chars] + "\n...[truncated]...\n" + text[-keep_chars:]
+        while keep_chars > 1:
+            out = text[:keep_chars] + marker + text[-keep_chars:]
+            if _estimate_tokens(out, spec) <= limit:
+                return out
+            keep_chars = max(1, keep_chars // 2)
+        # 标记本身 token 数可能 > limit（极小 limit）→ 退化为仅保留开头、
+        # 不带标记的文本，收缩到估算 token ≤ limit。
+        if _estimate_tokens(marker, spec) >= limit:
+            head = ""
+            for head_len in range(min(len(text), 64), 0, -1):
+                head = text[:head_len]
+                if _estimate_tokens(head, spec) <= limit:
+                    return head
+            return text[:1]
+        return text[:1] + marker + text[-1:]
 
     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
         """Phase 3 M4：请求层解析最终 max_tokens（含 context 钳制）。
