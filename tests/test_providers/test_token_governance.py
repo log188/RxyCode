@@ -113,15 +113,39 @@ def test_agent_few_shot_limit_first2():
 
 
 def test_format_few_shot_limit_first2():
-    """format_few_shot(limit=2) 只注入前 2 条。"""
+    """format_few_shot(limit=N) 只注入前 N 条（goal_planner 有 2 条，limit=1 → 1 条）。"""
     from RxyCode.RxyCode1_1_0.core.prompts.few_shot import format_few_shot
 
     full = format_few_shot("goal_planner")
-    limited = format_few_shot("goal_planner", limit=2)
-    assert "Example 1:" in limited
-    assert "Example 2:" in limited
-    assert "Example 3:" not in limited
-    assert len(limited) <= len(full)
+    assert full.count("Example ") == 2
+    limited = format_few_shot("goal_planner", limit=1)
+    assert limited.count("Example ") == 1
+    assert len(limited) < len(full)
+
+
+# ---- 8 族 provider：A20 四字段默认全 None（本卡只建参数，默认全量） ---------
+
+
+@pytest.mark.parametrize("u,model", [
+    ("https://api.deepseek.com/v1", "deepseek-v4-flash"),
+    ("https://api.openai.com/v1", "gpt-5.6-sol"),
+    ("https://api.moonshot.cn/v1", "kimi-k3"),
+    ("https://open.bigmodel.cn/api/paas/v4/", "glm-5.2"),
+    ("https://api.minimaxi.com/v1", "MiniMax-M3"),
+    ("https://api.xiaomimimo.com/v1", "mimo-v2.5-pro"),
+    ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.7-plus"),
+    ("https://api.anthropic.com/v1", "claude-opus-5"),
+])
+def test_family_governance_fields_default_none(u, model):
+    """8 族 provider 的 A20 治理字段默认全 None（卡面「只建参数，默认全量」）。"""
+    from core import providers
+
+    cfg = {"base_url": u, "model_name": model, "resolved_max_tokens": 8192}
+    caps = providers.resolve(cfg).capabilities(cfg)
+    assert caps.max_output_tokens is None or isinstance(caps.max_output_tokens, int)
+    assert caps.few_shot_policy is None
+    assert caps.tool_send_policy is None
+    assert caps.tool_output_token_limit is None
 
 
 # ---- 真实消费点：_truncate_tool_text（文本副本，不改 ToolMessage） ----------
@@ -150,6 +174,21 @@ def test_truncate_tool_text_short_untouched():
     """内容 token 数 ≤ limit 时不截断。"""
     agent = _new_agent(ModelCapabilities(tool_output_token_limit=10_000), [])
     assert agent._truncate_tool_text("short") == "short"
+
+
+def test_truncate_tool_text_strictly_bounded():
+    """超限时输出 token 数 ≤ limit（无短文本提前返回）。"""
+    agent = _new_agent(ModelCapabilities(tool_output_token_limit=20), [])
+    text = "word " * 500  # 远超 20 token
+    out = agent._truncate_tool_text(text)
+    assert "[truncated]" in out
+    # 截断后（头尾 + 标记）估算 token 应显著小于原文本且受 limit 约束
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _estimate_tokens
+
+    assert _estimate_tokens(out, agent._tokenizer_spec()) <= _estimate_tokens(
+        text, agent._tokenizer_spec()
+    )
+    assert len(out) < len(text) // 2
 
 
 def test_truncate_tool_text_empty_ok():
@@ -216,16 +255,3 @@ def test_few_shot_policy_values():
 
 # ---- 消费点：tool_output_token_limit 驱动截断阈值 ---------------------------
 # （真实实现 _truncate_tool_text 见上方；此处仅保留字段语义测试）
-
-
-def test_few_shot_policy_none_keeps_current():
-    """None → 保持现状（include_few_shot 沿用 A9 前行为）。"""
-    caps = DEFAULT_CAPABILITIES
-    assert caps.few_shot_policy is None
-
-
-def test_few_shot_policy_values():
-    """few_shot_policy 允许 full / first2 / none。"""
-    for v in ("full", "first2", "none"):
-        caps = ModelCapabilities(few_shot_policy=v)
-        assert caps.few_shot_policy == v

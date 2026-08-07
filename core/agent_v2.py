@@ -1548,6 +1548,10 @@ class AgentV2:
         返回截断后的**文本副本**（按 token 估算保留头尾、中间插入标记）；
         **不改动任何 ToolMessage 对象**（tool_call_id 契约不受影响）。
         limit=None → 原样返回。调用点：构造 ToolMessage(content=...) 之前。
+
+        截断保证：当估算 token 数 > limit 时，按比例把 limit 分配到两端
+        （各约一半），中间插入截断标记；无 `len(text) <= X` 提前返回，避免
+        短文本超限。
         """
         caps = getattr(self, "_capabilities", None)
         limit = getattr(caps, "tool_output_token_limit", None) if caps else None
@@ -1557,11 +1561,8 @@ class AgentV2:
         total = _estimate_tokens(text, spec)
         if total <= limit:
             return text
-        # 保留头尾：按比例把 limit 分配到两端（各一半），字符近似逐字保留。
         ratio = max(0.1, float(limit) / max(1, total))
         keep_chars = max(1, int(len(text) * ratio * 0.5))
-        if len(text) <= keep_chars * 2 + 100:
-            return text
         return text[:keep_chars] + "\n...[truncated]...\n" + text[-keep_chars:]
 
     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
