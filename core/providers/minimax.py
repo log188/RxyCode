@@ -215,7 +215,10 @@ class MiniMaxProvider(BaseProvider):
                     _M3_MAX_OUTPUT if _is_m3(family) else _M2X_MAX_OUTPUT
                 ),
                 supports_function_calling=True,
-                # §7.5 问 1：M3 OpenAI 路径支持 image/video parts；音频未支持
+                # §7.5 问 1/③：M3 OpenAI 路径支持 image/video content parts（音频未支持）；
+                # M2.x 未见多模态证据（MM4 仅述 M3），保守不声明（不臆造）。
+                # 注：§7.5 ③「M2.x 改 window / 定价」指继承骨架默认的窗口/定价调整，
+                # 但 vision 行注释明确为 M3 专属能力，M2.x 无对应官方证据 → False。
                 supports_vision=_is_m3(family),
                 supports_reasoning=True,
                 # §7.5 问 5：Chat Completions 省略 thinking → adaptive 开启（主路径）
