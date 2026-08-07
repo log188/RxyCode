@@ -989,6 +989,8 @@ class AgentV2:
             getattr(self, "_rag_indexer_thread", None)
         )
         self._session_loaded = False
+        # A20: subset 工具子集按会话固定——切换会话时清除缓存，避免沿用旧会话子集。
+        self._subset_tool_names = None
         return resolved
 
     def reset_session(self) -> dict[str, int | str]:

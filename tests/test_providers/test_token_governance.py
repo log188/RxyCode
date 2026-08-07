@@ -137,15 +137,23 @@ def test_format_few_shot_limit_first2():
     ("https://api.anthropic.com/v1", "claude-opus-5"),
 ])
 def test_family_governance_fields_default_none(u, model):
-    """8 族 provider 的 A20 治理字段默认全 None（卡面「只建参数，默认全量」）。"""
+    """8 族 provider 的 A20 治理字段默认全 None（卡面「只建参数，默认全量」）。
+
+    A20 三个旋钮（few_shot_policy / tool_send_policy / tool_output_token_limit）
+    严格断言 is None；max_output_tokens 属 A12/A20 共用能力字段，A13–A18 已
+    各设调研值，此处仅断言其为非负整数或 None（本卡不新增治理值）。
+    """
     from core import providers
 
     cfg = {"base_url": u, "model_name": model, "resolved_max_tokens": 8192}
     caps = providers.resolve(cfg).capabilities(cfg)
-    assert caps.max_output_tokens is None or isinstance(caps.max_output_tokens, int)
     assert caps.few_shot_policy is None
     assert caps.tool_send_policy is None
     assert caps.tool_output_token_limit is None
+    # max_output_tokens 是 A12/A20 共用能力字段（A13–A18 填调研值），非本卡旋钮
+    assert caps.max_output_tokens is None or (
+        isinstance(caps.max_output_tokens, int) and caps.max_output_tokens > 0
+    )
 
 
 # ---- 真实消费点：_truncate_tool_text（文本副本，不改 ToolMessage） ----------
