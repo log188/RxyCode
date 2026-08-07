@@ -118,11 +118,6 @@ class OpenAIProvider(BaseProvider):
             DEFAULT_CAPABILITIES,
             provider=self.name,
             pricing=_pricing_for(name),
-            effort_presets={
-                "fast": "low",
-                "balanced": "medium",
-                "deep": "high",
-            },
         )
         if _gpt_5_6_family(name) is not None:
             # §7.2 ③（2026-08-02 审计通过）：gpt-5.6 三档显式能力。
@@ -137,6 +132,11 @@ class OpenAIProvider(BaseProvider):
                 supports_prompt_cache=True,
                 structured_output="function_calling",
                 prompt_variant=_prompt_variant(name),
+                effort_presets={
+                    "fast": "low",
+                    "balanced": "medium",
+                    "deep": "high",
+                },
                 # §7.2 问 6：项目侧启发式；未找到官方 5.6 encoding 名
                 tokenizer="tiktoken:o200k_base",
             )

@@ -48,8 +48,8 @@ def test_fallback_path_keeps_legacy_defaults():
 
 def test_matched_gpt_gets_explicit_caps():
     caps = providers.resolve({"base_url": "https://api.openai.com/v1",
-                              "model_name": "gpt-5.2"}).capabilities(
-        {"base_url": "https://api.openai.com/v1", "model_name": "gpt-5.2"})
+                              "model_name": "gpt-5.6-sol"}).capabilities(
+        {"base_url": "https://api.openai.com/v1", "model_name": "gpt-5.6-sol"})
     assert caps.provider == "openai"
     assert caps.pricing.source_url  # 调研报告 URL 已填
     assert caps.effort_presets.get("fast")
@@ -124,7 +124,17 @@ def test_unknown_5_6_variant_is_not_researched():
     assert caps.context_window == 256_000
     assert caps.max_output_tokens is None
     assert caps.supports_reasoning is False
+    assert caps.effort_presets == {}
     p, cfg = _resolve("gpt-5.6-unknown")
+    assert "reasoning_effort" not in p.llm_kwargs(cfg, caps)
+
+
+def test_non_researched_gpt_has_no_effort_presets():
+    """gpt-5.2 无 §7.2 数据：不得套用调研专属 effort_presets。"""
+    caps = _caps("gpt-5.2")
+    assert caps.effort_presets == {}
+    assert caps.pricing.input_per_mtok is None
+    p, cfg = _resolve("gpt-5.2")
     assert "reasoning_effort" not in p.llm_kwargs(cfg, caps)
 
 
