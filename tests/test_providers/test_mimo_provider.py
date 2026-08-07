@@ -42,6 +42,13 @@ def test_does_not_match_broad_mimo_url():
     assert not isinstance(p, MIMOProvider)
 
 
+def test_mimo_v_prefix_not_matched():
+    """§7.6 ③ 仅认 mimo- 前缀；mimo_v 不在授权匹配范围。"""
+    p = providers.resolve({"base_url": "https://relay.example/v1",
+                           "model_name": "mimo_v2"})
+    assert not isinstance(p, MIMOProvider)
+
+
 @pytest.mark.parametrize("cfg", [
     {"base_url": "https://api.deepseek.com/v1", "model_name": "deepseek-chat"},
     {"base_url": "https://api.openai.com/v1", "model_name": "gpt-5.6-sol"},
@@ -76,12 +83,13 @@ def test_shared_window_and_caps(name):
 
 
 def test_thinking_mode_forces_sampling_defaults():
-    """§7.6 问 5：思考模式 temperature/top_p 强制 1.0/0.95 → accepts_temperature=False。"""
+    """§7.6 问 5：思考模式 temperature/top_p 强制 1.0/0.95 → 不注入自定义采样参数。"""
     caps = _caps("mimo-v2.5-pro")
     assert caps.accepts_temperature is False
     p, cfg = _resolve("mimo-v2.5-pro")
     kwargs = p.llm_kwargs(cfg, caps)
     assert "temperature" not in kwargs
+    assert "top_p" not in kwargs
 
 
 # ---- §7.6 ③：双主力差异（vision / variant / 定价） ------------------------
@@ -110,6 +118,9 @@ def test_cache_read_uses_nested_cached_tokens():
     assert caps.usage_fields.cache_read_flat == ()
     assert caps.usage_fields.cache_read_nested == (("prompt_tokens_details", "cached_tokens"),)
     assert caps.usage_fields.reasoning == ()
+    assert caps.usage_fields.reasoning_nested == (
+        ("completion_tokens_details", "reasoning_tokens"),
+    )
     assert p.extract_cache_read(
         {"prompt_tokens_details": {"cached_tokens": 64}}, caps
     ) == 64

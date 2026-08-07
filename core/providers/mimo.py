@@ -47,11 +47,12 @@ _MIMO_USAGE = UsageFieldMap(
     # §7.6 问 4：OpenAPI schema usage.prompt_tokens_details.cached_tokens（嵌套）
     cache_read_flat=(),
     cache_read_nested=(("prompt_tokens_details", "cached_tokens"),),
-    # §7.6 问 4/5：缓存写入限时免费（无单价）；reasoning_content 在 message/delta，
-    # usage 另有 completion_tokens_details.reasoning_tokens——清空 A12 承载的默认嵌套路径
+    # §7.6 问 4：缓存写入限时免费（无单价）→ cache_write_nested 清空
     cache_write_nested=(),
-    reasoning_nested=(),
-    reasoning=(),  # reasoning_content 在 message/delta，不在 usage
+    # §7.6 问 5：usage 另有 completion_tokens_details.reasoning_tokens（§7.6 ③ 原文）
+    reasoning_nested=(("completion_tokens_details", "reasoning_tokens"),),
+    # reasoning_content 在 message/delta，不在 usage 内容字段
+    reasoning=(),
 )
 
 # §7.6 问 2：官方表述「1M / 128K」，精确整数未找到 → 项目侧启发式（须注释）
@@ -139,9 +140,10 @@ class MIMOProvider(BaseProvider):
         name = model_name.lower()
         # §7.6 ③：xiaomimimo / mimo.mi.com url，或模型名以 mimo- 开头 → 命中。
         # 勿用宽泛 "mimo" in url——第三方网关路径含 mimo 字样会误伤（A16 卡常见坑）。
+        # §7.6 ③ 仅认 mimo- 前缀（不含 mimo_v）。
         if "xiaomimimo" in url or "mimo.mi.com" in url:
             return True
-        return name.startswith(("mimo-", "mimo_v"))
+        return name.startswith("mimo-")
 
     def capabilities(self, model_config: dict) -> ModelCapabilities:
         model_name = str(model_config.get("model_name") or "").lower()
