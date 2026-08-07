@@ -41,6 +41,10 @@ _KIMI_USAGE = UsageFieldMap(
     # §7.3 问 4：官方 OpenAPI 用顶层 cached_tokens（不嵌套）
     cache_read_flat=("cached_tokens",),
     cache_read_nested=(),
+    # §7.3 问 4/5：缓存写入单价官方未找到；reasoning 在 message.reasoning_content，
+    # 非 usage 嵌套字段——显式清空 A12 承载的全局默认嵌套路径，避免误导
+    cache_write_nested=(),
+    reasoning_nested=(),
     reasoning=(),  # reasoning 在 message.reasoning_content，非 usage 嵌套字段
 )
 
@@ -53,6 +57,9 @@ _K2X_COMPACTION = 236_000
 
 # §7.3 问 7：定价按型号分条（CNY / 1M，中国区；as_of=2026-08-02；勿填国际站 USD）。
 # cache_write 单价官方未找到 → None（不得静默当 0）。
+# 注：ModelPricing 类文档泛称「美元」，但 §7.3 ③ 明确本批定价按 CNY 填写
+# （「货币：CNY（中国区）；勿填国际站 USD」）——货币语义由 Phase E 的
+# CostAccountant 按 as_of/source_url 结算，本卡只承载调研数值。
 _KIMI_PRICING: dict[str, ModelPricing] = {
     "kimi-k3": ModelPricing(
         input_per_mtok=20.00,
@@ -113,8 +120,10 @@ def _family(model_name: str) -> str | None:
 
 
 def _prompt_variant(model_name: str) -> str:
+    # 未调研变体保持 DEFAULT_CAPABILITIES.prompt_variant（"default"），
+    # 与 A12 一致：只对调研覆盖的型号声明专属 variant，未知变体不套用。
     family = _family(model_name)
-    return family if family is not None else "kimi"
+    return family if family is not None else "default"
 
 
 def _pricing_for(model_name: str) -> ModelPricing:
@@ -161,13 +170,18 @@ class KimiProvider(BaseProvider):
                 supports_reasoning=True,
                 thinking_default_on=True,  # k3 始终推理；k2.x 始终/默认思考
                 supports_prompt_cache=True,
+                # §7.3 ③ 列 K3 structured_output="json_schema"，但 RxyCode 的
+                # StructuredOutputMode 仅支持 function_calling / json_in_text（A12 同裁决，
+                # 以 function_calling 声明，json_schema 属 Phase E 扩展，不在本卡落地）。
                 structured_output="function_calling",
                 prompt_variant=_prompt_variant(model_name),
                 # §7.3 问 5：采样参数固定，勿显式传（改值报错）
                 accepts_temperature=False,
                 # §7.3 问 6：官方无 tiktoken → chars:1.75 启发式（精确走 estimate-token-count / usage）
                 tokenizer="chars:1.75",
-                # §7.3 问 5：仅 k3 支持 reasoning_effort（low/high/max，无 medium）
+                # §7.3 问 5：仅 k3 支持 reasoning_effort（low/high/max，无 medium）。
+                # 注：这是 RxyCode 的档位映射（默认档 balanced→high）；K3 官方原生默认
+                # reasoning_effort=max（省略参数时）。调用方显式传档位时走本映射。
                 effort_presets=(
                     {"fast": "low", "balanced": "high", "deep": "max"}
                     if family == "kimi-k3"

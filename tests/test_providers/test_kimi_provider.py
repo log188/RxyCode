@@ -84,6 +84,16 @@ def test_kimi_fixed_temperature_not_injected():
     assert "temperature" not in kwargs
 
 
+def test_fixed_sampling_params_never_injected():
+    """§7.3 问 5：top_p/presence/frequency 等固定采样参数不得显式发送。"""
+    p, cfg = _resolve("kimi-k3")
+    caps = p.capabilities(cfg)
+    kwargs = p.llm_kwargs(cfg, caps)
+    for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
+        assert key not in kwargs, f"{key} must not be injected for Kimi"
+    assert "reasoning_effort" not in kwargs  # A13 未接线，effort 由 A21 消费
+
+
 # ---- §7.3 问 2/5：k2.7-code / highspeed / k2.6 -------------------------
 
 
@@ -131,6 +141,20 @@ def test_unknown_kimi_model_gets_explicit_none_pricing():
     assert caps.pricing.source_url
 
 
+def test_unknown_kimi_variant_stays_conservative():
+    """未调研型号不套用调研能力：仅 provider/usage/pricing 变化，能力字段保守。"""
+    for name in ["kimi-k2.5", "moonshot-v1-32k", "kimi-unknown-variant"]:
+        caps = _caps(name)
+        assert caps.provider == "kimi"
+        assert caps.context_window == DEFAULT_CAPABILITIES.context_window == 256_000
+        assert caps.max_output_tokens is None
+        assert caps.supports_reasoning is False
+        assert caps.supports_vision is False
+        assert caps.effort_presets == {}
+        # 未调研变体不套用专属 prompt_variant（与 A12 一致：保持 "default"）
+        assert caps.prompt_variant == DEFAULT_CAPABILITIES.prompt_variant == "default"
+
+
 # ---- §7.3 问 4：usage 字段 cached_tokens（非 prompt_cache_hit_tokens） ----
 
 
@@ -140,6 +164,9 @@ def test_cache_read_uses_flat_cached_tokens():
     caps = p.capabilities({"base_url": _MOONSHOT_CN, "model_name": "kimi-k3"})
     assert caps.usage_fields.cache_read_flat == ("cached_tokens",)
     assert caps.usage_fields.cache_read_nested == ()
+    # §7.3 问 4/5：缓存写入价与 reasoning 计数官方未找到 → 嵌套路径显式清空
+    assert caps.usage_fields.cache_write_nested == ()
+    assert caps.usage_fields.reasoning_nested == ()
     assert p.extract_cache_read({"cached_tokens": 42}, caps) == 42
     # 嵌套 / prompt_cache_hit_tokens 不应被误读
     assert p.extract_cache_read({"prompt_cache_hit_tokens": 99}, caps) == 0
