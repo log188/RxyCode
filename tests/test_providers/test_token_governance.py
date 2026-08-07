@@ -44,55 +44,6 @@ def test_fields_are_append_only():
     assert caps.max_output_tokens is None
 
 
-# ---- 消费点：_get_core_tools 按 tool_send_policy（fake provider） -----------
-
-
-class _FakeAgent:
-    """Minimal fake carrying the fields _get_core_tools reads."""
-
-    def __init__(self, caps: ModelCapabilities, tools: list):
-        self._caps = caps
-        self._tools = tools
-
-    def _tool_list(self):
-        return list(self._tools)
-
-
-def _apply_tool_send_policy(agent) -> list:
-    """A20 消费点：按 caps.tool_send_policy 过滤工具列表。"""
-    tools = list(agent._tools)
-    policy = getattr(agent._caps, "tool_send_policy", None)
-    if policy == "subset":
-        # 会话内固定的确定性子集：保留前 8 个工具（按名字排序稳定）
-        return sorted(tools, key=lambda t: getattr(t, "name", ""))[:8]
-    return tools
-
-
-def test_tool_send_policy_default_full():
-    """默认（None）→ 全量发送，现状不变。"""
-    tools = [SimpleNamespace(name=f"t{i}") for i in range(12)]
-    agent = _FakeAgent(DEFAULT_CAPABILITIES, tools)
-    assert len(_apply_tool_send_policy(agent)) == 12
-
-
-def test_tool_send_policy_subset():
-    """subset → 保留确定性子集（前 8 个按名排序）。"""
-    tools = [SimpleNamespace(name=f"t{i:02d}") for i in range(12)]
-    caps = ModelCapabilities(tool_send_policy="subset")
-    agent = _FakeAgent(caps, tools)
-    out = _apply_tool_send_policy(agent)
-    assert len(out) == 8
-    assert [t.name for t in out] == sorted(t.name for t in tools)[:8]
-
-
-def test_tool_send_policy_subset_small_pool():
-    """工具少于 8 个时 subset 返回全部（不截断）。"""
-    tools = [SimpleNamespace(name=f"t{i}") for i in range(4)]
-    caps = ModelCapabilities(tool_send_policy="subset")
-    agent = _FakeAgent(caps, tools)
-    assert len(_apply_tool_send_policy(agent)) == 4
-
-
 # ---- 真实消费点：AgentV2._get_core_tools（fake orchestrator） -------------
 
 
@@ -123,6 +74,13 @@ def test_agent_get_core_tools_subset():
     assert [t.name for t in out] == sorted(t.name for t in tools)[:8]
 
 
+def test_agent_get_core_tools_subset_small_pool():
+    """工具少于 8 个时 subset 返回全部（不截断）。"""
+    tools = [SimpleNamespace(name=f"tool{i:02d}") for i in range(4)]
+    agent = _new_agent(ModelCapabilities(tool_send_policy="subset"), tools)
+    assert len(agent._get_core_tools()) == 4
+
+
 def test_agent_include_few_shot_none_true():
     """few_shot_policy=None（现状）→ include_few_shot=True。"""
     agent = _new_agent(DEFAULT_CAPABILITIES, [])
@@ -139,6 +97,55 @@ def test_agent_include_few_shot_full_true():
     """few_shot_policy="full" → include_few_shot=True。"""
     agent = _new_agent(ModelCapabilities(few_shot_policy="full"), [])
     assert agent._include_few_shot() is True
+
+
+# ---- 真实消费点：_truncate_tool_text（文本副本，不改 ToolMessage） ----------
+
+
+def test_truncate_tool_text_none_no_change():
+    """tool_output_token_limit=None → 原样返回（现状不截断）。"""
+    agent = _new_agent(DEFAULT_CAPABILITIES, [])
+    text = "x" * 5000
+    assert agent._truncate_tool_text(text) == text
+
+
+def test_truncate_tool_text_returns_copy_keeps_original():
+    """截断返回文本副本，原始内容不变（ToolMessage 契约）。"""
+    agent = _new_agent(ModelCapabilities(tool_output_token_limit=50), [])
+    text = "A" * 300 + "B" * 300 + "C" * 300
+    out = agent._truncate_tool_text(text)
+    assert text == "A" * 300 + "B" * 300 + "C" * 300  # original untouched
+    assert "[truncated]" in out
+    assert out.startswith("A" * 50)
+    assert out.endswith("C" * 50)
+    assert "B" * 300 not in out
+
+
+def test_truncate_tool_text_short_untouched():
+    agent = _new_agent(ModelCapabilities(tool_output_token_limit=1000), [])
+    assert agent._truncate_tool_text("short") == "short"
+
+
+def test_truncate_tool_text_empty_ok():
+    agent = _new_agent(ModelCapabilities(tool_output_token_limit=50), [])
+    assert agent._truncate_tool_text("") == ""
+
+
+# ---- 真实消费点：RAG 分支也应用 subset -------------------------------------
+
+
+def test_agent_get_core_tools_subset_with_rag():
+    """RAG 开启时 subset 仍生效（不绕过）。"""
+    tools = [SimpleNamespace(name=f"tool{i:02d}") for i in range(12)]
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = object.__new__(AgentV2)
+    agent._capabilities = ModelCapabilities(tool_send_policy="subset")
+    agent._tool_orchestrator = SimpleNamespace(get_all=lambda: {t.name: t for t in tools})
+    agent._memory = SimpleNamespace(_rag_enabled=True)
+    out = agent._get_core_tools()
+    assert len(out) == 8
+    assert [t.name for t in out] == sorted(t.name for t in tools)[:8]
 
 
 # ---- 消费点：max_output_tokens 经 resolver 生效（Phase 3 M4） ---------------
@@ -169,36 +176,17 @@ def test_few_shot_policy_values():
 
 
 # ---- 消费点：tool_output_token_limit 驱动截断阈值 ---------------------------
+# （真实实现 _truncate_tool_text 见上方；此处仅保留字段语义测试）
 
 
-def _truncate_if_limited(content: str, limit: int | None) -> str:
-    """A20 消费点：tool_output_token_limit 设定时按阈值截断（保留头尾）。"""
-    if limit is None:
-        return content
-    # 简化：3 字符/token 估算（同 compressor._middle_truncate 的 chars_per_token）
-    chars = limit * 3
-    if len(content) <= chars * 2 + 100:
-        return content
-    return content[:chars] + "\n...[truncated]...\n" + content[-chars:]
+def test_few_shot_policy_none_keeps_current():
+    """None → 保持现状（include_few_shot 沿用 A9 前行为）。"""
+    caps = DEFAULT_CAPABILITIES
+    assert caps.few_shot_policy is None
 
 
-def test_tool_output_limit_none_no_truncation():
-    """默认 None → 不截断。"""
-    content = "x" * 5000
-    assert _truncate_if_limited(content, None) == content
-
-
-def test_tool_output_limit_truncates_middle():
-    """设 limit → 保留头尾，中间截断。"""
-    content = "A" * 300 + "B" * 300 + "C" * 300
-    out = _truncate_if_limited(content, 50)
-    assert "[truncated]" in out
-    assert out.startswith("A" * 50)
-    assert out.endswith("C" * 50)
-    assert "B" * 300 not in out
-
-
-def test_tool_output_limit_short_content_untouched():
-    """内容足够短时不截断。"""
-    content = "short"
-    assert _truncate_if_limited(content, 1000) == content
+def test_few_shot_policy_values():
+    """few_shot_policy 允许 full / first2 / none。"""
+    for v in ("full", "first2", "none"):
+        caps = ModelCapabilities(few_shot_policy=v)
+        assert caps.few_shot_policy == v

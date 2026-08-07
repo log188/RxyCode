@@ -1532,6 +1532,23 @@ class AgentV2:
             return False
         return True
 
+    def _truncate_tool_text(self, text: str) -> str:
+        """A20: 按 tool_output_token_limit 对工具结果文本副本截断。
+
+        返回截断后的**文本副本**（保留头尾、中间插入标记）；**不改动任何
+        ToolMessage 对象**（tool_call_id 契约不受影响）。limit=None → 原样返回。
+        调用点：构造 ToolMessage(content=...) 之前（_fast_reply_with_tools）。
+        """
+        caps = getattr(self, "_capabilities", None)
+        limit = getattr(caps, "tool_output_token_limit", None) if caps else None
+        if limit is None or not text:
+            return text
+        chars = max(1, int(limit) * 3)
+        keep = chars
+        if len(text) <= keep * 2 + 100:
+            return text
+        return text[:keep] + "\n...[truncated]...\n" + text[-keep:]
+
     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
         """Phase 3 M4：请求层解析最终 max_tokens（含 context 钳制）。
 
@@ -2129,8 +2146,9 @@ class AgentV2:
                 tool_calls=[call for call, _url, _content in verified_fetches],
             ))
             for fetch_call, url, content in verified_fetches:
+                fetch_text = f"Successfully fetched source URL: {url}\n\n{content}"
                 messages.append(ToolMessage(
-                    content=f"Successfully fetched source URL: {url}\n\n{content}",
+                    content=self._truncate_tool_text(fetch_text),
                     tool_call_id=fetch_call["id"],
                 ))
 
@@ -2308,7 +2326,7 @@ class AgentV2:
                         if fetched_url and fetched_url not in research_sources:
                             research_sources.append(fetched_url)
 
-                    messages.append(ToolMessage(content=str(result), tool_call_id=tool_id or tool_name))
+                    messages.append(ToolMessage(content=self._truncate_tool_text(str(result)), tool_call_id=tool_id or tool_name))
             else:
                 # Exceeded max rounds - give LLM one tool-free synthesis pass
                 if tui and hasattr(tui, "write_progress"):
@@ -2422,15 +2440,17 @@ class AgentV2:
         """Return Agent-local tools for the tool-aware fast path.
 
         A20: tool_send_policy=="subset" 时按会话内固定的确定性子集裁剪
-        （按名字排序保留前 8 个），其余策略（None/full）全量返回，现状不变。
+        （按名字排序保留前 8 个）；RAG 分支也应用该策略；其余（None/full）
+        全量返回，现状不变。
         """
         orchestrator = getattr(self, "_tool_orchestrator", None)
         if orchestrator is None:
             return []
         tools = list(orchestrator.get_all().values())
         if getattr(self._memory, "_rag_enabled", False):
-            return tools
-        tools = [tool for tool in tools if getattr(tool, "name", "") != "code_search"]
+            tools = list(tools)
+        else:
+            tools = [tool for tool in tools if getattr(tool, "name", "") != "code_search"]
         caps = getattr(self, "_capabilities", None)
         policy = getattr(caps, "tool_send_policy", None) if caps is not None else None
         if policy == "subset":
@@ -2557,7 +2577,6 @@ class AgentV2:
 
         # Trim oldest tool results first (most often long logs/stdout).
         compressor = ContextCompressor()
-        limit = getattr(self._capabilities, "tool_output_token_limit", None)
         for m in messages:
             if total <= budget:
                 break
@@ -2565,20 +2584,7 @@ class AgentV2:
                 content = getattr(m, "content", "") or ""
                 if _estimate_tokens(content, self._tokenizer_spec()) <= 200:
                     continue
-                if limit is None:
-                    # A20 默认（None）：现状行为——固定 middle-truncate。
-                    new_content = compressor._middle_truncate(content)
-                else:
-                    # A20：按 tool_output_token_limit 保留头尾、截断中间。
-                    # 只改注入上下文的文本副本，不改 ToolMessage 对象（tool_call_id 契约）。
-                    chars = max(1, int(limit) * 3)
-                    keep = chars
-                    if len(content) > keep * 2 + 100:
-                        new_content = (
-                            content[:keep] + "\n...[truncated]...\n" + content[-keep:]
-                        )
-                    else:
-                        new_content = content
+                new_content = compressor._middle_truncate(content)
                 try:
                     m.content = new_content  # type: ignore[attr-defined]
                 except Exception:
