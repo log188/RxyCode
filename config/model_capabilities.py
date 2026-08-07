@@ -30,6 +30,21 @@ StructuredOutputMode = Literal["function_calling", "json_in_text"]
 
 
 @dataclass(frozen=True)
+class ModelPricing:
+    """每百万 token 单价（美元）。Phase E 的 CostAccountant 用它做成本核算。
+
+    字段来源必须是 A0 调研报告（§7.X）里带 URL 的官方定价页。
+    任何字段为 None 时调用方必须显式处理（保守高估或警告），不得静默当 0。
+    """
+
+    input_per_mtok: float | None = None
+    output_per_mtok: float | None = None
+    cached_input_per_mtok: float | None = None
+    as_of: str = ""
+    source_url: str = ""
+
+
+@dataclass(frozen=True)
 class UsageFieldMap:
     """不同 provider 的 token usage 字段名差异。
 
@@ -94,6 +109,24 @@ class ModelCapabilities:
 
     #: usage / reasoning 的字段名映射
     usage_fields: UsageFieldMap = field(default_factory=UsageFieldMap)
+
+    #: 定价（Phase E 用）。默认空对象 = "未知"，不改变任何现有行为。
+    pricing: ModelPricing = field(default_factory=ModelPricing)
+
+    #: 推理力度档位映射：fast / balanced / deep → 厂商参数。
+    #: 例如 {"fast": "minimal", "balanced": "medium", "deep": "high"}。
+    #: A21 的延迟旋钮与 fast path 用它；为空表示该模型不支持档位控制。
+    effort_presets: dict[str, str] = field(default_factory=dict)
+
+    #: 该模型是否**默认开启 thinking（推理）模式**（API 层行为）。
+    #: True = 确认支持后默认打开（§7 各批第 5 问结论）；False = 不主动发
+    #: thinking 参数（保持现状行为）。
+    #: ⚠️ 与前端"thinking 面板"无关：面板只是**展示** reasoning_content
+    #: 思维链（_flush_thinking / write_reasoning 的显示层），模型开不开
+    #: thinking 是 **API 层**的行为，由本字段 + llm_kwargs 决定。面板开着
+    #: 而模型没开 thinking = 面板空转；面板关着而模型开了 = 思维链不展示
+    #: 但仍在消耗 token。二者不互相绑定。
+    thinking_default_on: bool = False
 
     #: 未归类的 provider 特有参数，会原样透传给 LLM 构造函数
     extra_body: dict[str, Any] = field(default_factory=dict)

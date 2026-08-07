@@ -20,11 +20,14 @@ from .qwen import QwenProvider
 _FALLBACK = OpenAIProvider()
 
 #: 注册顺序即匹配优先级。越具体的越靠前。
+#: OpenAIProvider 在 A12 起参与 matches() 显式命中（gpt-/o1-/o3-/o4- 或 openai.com）；
+#: 注册表全部落空时仍选 _FALLBACK 单例（与 _PROVIDERS 里的实例行为一致，无状态）。
 _PROVIDERS: list[BaseProvider] = [
     DeepSeekProvider(),
     DoubaoProvider(),
     AnthropicProvider(),
     QwenProvider(),
+    OpenAIProvider(),
 ]
 
 _BY_NAME: dict[str, BaseProvider] = {p.name: p for p in _PROVIDERS}
