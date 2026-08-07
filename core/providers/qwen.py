@@ -64,14 +64,18 @@ _MAX_OUTPUT_37 = 65_536
 _COMPACTION_RATIO = 0.9
 
 # §7.7 问 7：定价按型号分条（CNY / 1M，华北2 北京按量；as_of=2026-08-02；source_url=型号页）。
-# plus 按 ≤256k 档填；>256k 阶梯（6/24/1.2）由调用方按实际输入切换（§7.7 问 7a）。
+# 填「默认档」：plus ≤256k；max 统一；flash ≤32k。更高输入阶梯（plus 256k–1M 6/24/1.2、
+# flash 32k–256k / 256k–1M）由调用方按实际输入长度切换（§7.7 问 7a / ③「按实际输入长度
+# 切换阶梯」），Phase E CostAccountant 消费。
 # 3.8 仅 Token Plan（Credits）→ 单价 None，禁止填 3.7-max 的 12/36（§7.7 问 7b）。
 _QWEN_PRICING: dict[str, ModelPricing] = {
     "qwen3.7-plus": ModelPricing(
         input_per_mtok=2.0,
         output_per_mtok=8.0,
-        cached_input_per_mtok=0.4,  # 隐式命中；显式命中另用 0.2
+        cached_input_per_mtok=0.4,  # 隐式命中
         cache_write_per_mtok=None,
+        cache_creation_per_mtok=2.5,  # 显式创建（≤256k 档）
+        explicit_cache_hit_per_mtok=0.2,  # 显式命中（≤256k 档）
         as_of="2026-08-02",
         source_url="https://help.aliyun.com/zh/model-studio/qwen3-7-plus",
     ),
@@ -80,6 +84,8 @@ _QWEN_PRICING: dict[str, ModelPricing] = {
         output_per_mtok=36.0,
         cached_input_per_mtok=2.4,
         cache_write_per_mtok=None,
+        cache_creation_per_mtok=15.0,  # 显式创建
+        explicit_cache_hit_per_mtok=1.2,  # 显式命中
         as_of="2026-08-02",
         source_url="https://help.aliyun.com/zh/model-studio/qwen3-7-max",
     ),
@@ -88,6 +94,8 @@ _QWEN_PRICING: dict[str, ModelPricing] = {
         output_per_mtok=0.8,
         cached_input_per_mtok=0.04,
         cache_write_per_mtok=None,
+        cache_creation_per_mtok=0.25,  # 显式创建（≤32k 档）
+        explicit_cache_hit_per_mtok=0.02,  # 显式命中（≤32k 档）
         as_of="2026-08-02",
         source_url="https://help.aliyun.com/zh/model-studio/qwen3-7-flash",
     ),
@@ -164,7 +172,9 @@ class QwenProvider(BaseProvider):
     def matches(self, base_url: str, model_name: str) -> bool:
         url = base_url.lower()
         name = model_name.lower()
-        if name.startswith(("qwen", "qwen2", "qwen3")) or "qwen" in name:
+        # §7.7 ③：仅认 qwen / qwen2 / qwen3 前缀或 qwen 端点。
+        # 勿用 "qwen" in name（会把 my-qwen-model 等误判为 Qwen，违反 DC1）。
+        if name.startswith(("qwen", "qwen2", "qwen3")):
             return True
         return (
             "dashscope" in url

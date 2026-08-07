@@ -43,6 +43,12 @@ class ModelPricing:
     #: 写缓存 token 单价（§7.2 ③：5.6+ 按 uncached input × 1.25 计费）。
     #: 更早型号写缓存无额外费，通常为 None。
     cache_write_per_mtok: float | None = None
+    #: 显式缓存创建价（§7.7 问 7a：cache_control 显式标记创建，如 Qwen 2.5/7.5 等）。
+    #: None = 未找到 / 不适用。
+    cache_creation_per_mtok: float | None = None
+    #: 显式缓存命中价（§7.7 问 7a：cache_control 显式命中，如 Qwen 0.2/0.6 等）。
+    #: None = 未找到 / 不适用。
+    explicit_cache_hit_per_mtok: float | None = None
     as_of: str = ""
     source_url: str = ""
 

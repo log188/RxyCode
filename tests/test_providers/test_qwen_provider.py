@@ -37,6 +37,14 @@ def test_unknown_model_does_not_match_qwen():
     assert isinstance(p, OpenAIProvider)
 
 
+def test_substring_qwen_model_name_not_matched():
+    """§7.7 ③：仅 qwen/qwen2/qwen3 前缀命中；my-qwen-model 等子串不误判（DC1）。"""
+    p = providers.resolve(
+        {"base_url": "https://relay.example/v1", "model_name": "my-qwen-model"}
+    )
+    assert isinstance(p, OpenAIProvider)
+
+
 def test_supports_function_calling():
     caps = providers.resolve({"model_name": "qwen3.7-plus"}).capabilities(
         {"model_name": "qwen3.7-plus"}
@@ -208,6 +216,18 @@ def test_per_model_pricing(name, inp, outp, cached):
     assert caps.pricing.cached_input_per_mtok == cached
     assert caps.pricing.as_of == "2026-08-02"
     assert caps.pricing.source_url
+
+
+@pytest.mark.parametrize("name,create,hit", [
+    ("qwen3.7-plus", 2.5, 0.2),
+    ("qwen3.7-max", 15.0, 1.2),
+    ("qwen3.7-flash", 0.25, 0.02),
+])
+def test_explicit_cache_pricing(name, create, hit):
+    """§7.7 问 7a：显式缓存创建 / 显式命中价格结构化承载。"""
+    caps = providers.resolve({"model_name": name}).capabilities({"model_name": name})
+    assert caps.pricing.cache_creation_per_mtok == create
+    assert caps.pricing.explicit_cache_hit_per_mtok == hit
 
 
 def test_38_preview_token_plan_pricing_none():
