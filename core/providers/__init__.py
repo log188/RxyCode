@@ -14,6 +14,7 @@ from .anthropic import AnthropicProvider
 from .base import BaseProvider
 from .deepseek import DeepSeekProvider
 from .doubao import DoubaoProvider
+from .glm import GLMProvider
 from .kimi import KimiProvider
 from .openai import OpenAIProvider
 from .qwen import QwenProvider
@@ -23,9 +24,11 @@ _FALLBACK = OpenAIProvider()
 #: 注册顺序即匹配优先级。越具体的越靠前。
 #: OpenAIProvider 在 A12 起参与 matches() 显式命中（gpt-/o1-/o3-/o4- 或 openai.com）；
 #: 注册表全部落空时仍选 _FALLBACK 单例（与 _PROVIDERS 里的实例行为一致，无状态）。
+#: GLM 的 Ark 入口必须双条件（volces.com + 模型名含 glm），避免抢走 Ark 上的豆包等模型。
 _PROVIDERS: list[BaseProvider] = [
     DeepSeekProvider(),
     KimiProvider(),
+    GLMProvider(),
     DoubaoProvider(),
     AnthropicProvider(),
     QwenProvider(),
