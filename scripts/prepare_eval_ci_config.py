@@ -25,7 +25,7 @@ def main() -> int:
 
     model = os.environ.get("RXYCODE_EVAL_MODEL", "deepseek-v4-flash").strip()
     base_url = os.environ.get(
-        "RXYCODE_EVAL_BASE_URL", "https://api.deepseek.com"
+        "RXYCODE_EVAL_BASE_URL", "https://opencode.ai/zen/go/v1"
     ).strip()
 
     data_dir.mkdir(parents=True, exist_ok=True)

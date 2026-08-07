@@ -181,7 +181,14 @@ def ensure_models_provider_metadata(
 
 
 def _credential_config(api_key: str) -> dict:
-    """Prefer an environment reference, otherwise use protected local storage."""
+    """Prefer an environment reference, otherwise use protected local storage.
+
+    When the pasted key matches an existing ``*_API_KEY`` / ``*_ACCESS_TOKEN``
+    environment variable, persist **both** ``api_key_env`` and
+    ``api_key_secret``. Child processes (embedded API / appserver worker) often
+    do not inherit the operator shell env; the secret is the durable fallback
+    already supported by ``resolve_model_config``.
+    """
     value = api_key.strip()
     match = re.fullmatch(r"(?:env:|\$\{)([A-Za-z_][A-Za-z0-9_]*)\}?", value)
     if match:
@@ -191,7 +198,10 @@ def _credential_config(api_key: str) -> dict:
         if not name.upper().endswith(("API_KEY", "ACCESS_TOKEN")) or not configured:
             continue
         if hmac.compare_digest(configured, value):
-            return {"api_key_env": name}
+            return {
+                "api_key_env": name,
+                "api_key_secret": store_credential(value, get_config_path()),
+            }
     return {"api_key_secret": store_credential(value, get_config_path())}
 
 
@@ -432,6 +442,32 @@ def set_active_model(name: str) -> bool:
     _touch_recent_models(cfg, name)
     save_config(cfg)
     return True
+
+
+def backfill_missing_api_key_secrets(cfg: Optional[dict] = None) -> int:
+    """Persist ``api_key_secret`` for models that only reference an env var.
+
+    Returns the number of models updated. Safe no-op when the env var is unset
+    or a secret already exists. Does not change resolve priority.
+    """
+    if cfg is None:
+        cfg = load_config()
+    models = cfg.get("models", {})
+    updated = 0
+    for entry in models.values():
+        if not isinstance(entry, dict):
+            continue
+        env_name = entry.get("api_key_env")
+        if not env_name or entry.get("api_key_secret"):
+            continue
+        value = os.environ.get(str(env_name), "")
+        if not str(value).strip():
+            continue
+        entry["api_key_secret"] = store_credential(value, get_config_path())
+        updated += 1
+    if updated:
+        save_config(cfg)
+    return updated
 
 
 def test_model_connection(name: str) -> dict:

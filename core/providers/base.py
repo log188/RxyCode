@@ -99,9 +99,18 @@ class BaseProvider:
                 f"{resolved!r}"
             )
         max_tokens = resolved
+        api_key = model_config.get("api_key")
+        # Reject explicit empty credentials (the OpenAI SDK Missing-credentials
+        # path). Omit/None is left to callers / unit tests that only assert
+        # kwargs shape; production always pre-checks via _build_llm_from_config.
+        if isinstance(api_key, str) and not api_key.strip():
+            raise ValueError(
+                "llm_kwargs requires a non-empty api_key; resolve credentials "
+                "before constructing ChatOpenAI (do not pass '')."
+            )
         kwargs: dict[str, Any] = {
             "model": model_config.get("model_name", "gpt-4o"),
-            "api_key": model_config.get("api_key"),
+            "api_key": api_key,
             "base_url": model_config.get("base_url"),
             "max_tokens": max_tokens,
             "max_retries": 3,

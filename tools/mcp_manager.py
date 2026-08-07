@@ -1,6 +1,7 @@
 """MCP Manager - Add, remove, and manage MCP servers from CLI."""
 
 import os
+import re
 import tempfile
 import threading
 import yaml
@@ -9,6 +10,48 @@ from ..config.settings import get_config_path
 
 
 _MCP_CONFIG_LOCK = threading.RLock()
+
+# MCP server names are configuration keys in config.yaml; keep them to the
+# same conservative character set so the resulting config is always parseable
+# and auto-connect does not spawn garbage ``npx -y <CJK>`` processes.
+_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_NPM_PACKAGE_RE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
+
+
+def is_valid_mcp_server_name(name: str) -> bool:
+    """Return True when ``name`` is a safe config.yaml key for an MCP server."""
+    return bool(name and _MCP_SERVER_NAME_RE.fullmatch(str(name)))
+
+
+def is_valid_npm_package_name(package: str) -> bool:
+    """Return True when ``package`` looks like a lowercase npm package id."""
+    return bool(package and _NPM_PACKAGE_RE.fullmatch(str(package)))
+
+
+def validate_mcp_add_args(
+    name: str,
+    *,
+    package: str = "",
+    command: str = "",
+) -> str | None:
+    """Validate add arguments, returning an error message or ``None``."""
+    if not str(name).strip():
+        return "[error: MCP server name is required for add operation]"
+    if not is_valid_mcp_server_name(name):
+        return (
+            "[error: MCP server name must start with an ASCII letter or digit "
+            "and contain only letters, digits, '.', '_', '-' (got "
+            f"{name!r})]"
+        )
+    if not command and not package:
+        return "[error: package or command is required for add operation]"
+    if not command and not is_valid_npm_package_name(package):
+        return (
+            "[error: invalid npm package name "
+            f"{package!r}; use a lowercase npm package (e.g. "
+            "@modelcontextprotocol/server-fetch)]"
+        )
+    return None
 
 
 def get_mcp_config() -> dict:
@@ -64,6 +107,12 @@ def save_mcp_config(mcp_servers: dict) -> tuple[bool, str]:
 
 def add_mcp_server(name: str, command: str, args: list[str] = None, env: dict = None) -> tuple[bool, str]:
     """Add an MCP server to the configuration."""
+    if not is_valid_mcp_server_name(name):
+        return False, (
+            "MCP server name must start with an ASCII letter or digit "
+            f"and contain only letters, digits, '.', '_', '-' (got {name!r})"
+        )
+
     with _MCP_CONFIG_LOCK:
         mcp_servers = get_mcp_config()
 

@@ -336,3 +336,39 @@ def test_download_mcp_rejects_invalid_server_name(monkeypatch):
 
     result = download_mcp("fetch-server", package="fetch")
     assert result.startswith("Successfully added"), result
+
+
+def test_add_mcp_server_rejects_invalid_name(tmp_path, monkeypatch):
+    from RxyCode.RxyCode1_1_0.tools.mcp_manager import add_mcp_server
+
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
+    ok, msg = add_mcp_server("\u5305", "npx", ["-y", "fetch"])
+    assert ok is False
+    assert "ASCII" in msg or "letter" in msg
+
+
+def test_load_mcp_servers_skips_invalid_names_without_connect(monkeypatch):
+    """Illegal leftover keys must not spawn connect() or emit connection failed."""
+    from RxyCode.RxyCode1_1_0.mcp import client as mcp_client
+
+    calls = []
+
+    class _Boom(mcp_client.MCPClient):
+        def connect(self):  # noqa: ANN001
+            calls.append(self.name)
+            raise AssertionError(f"must not connect invalid server {self.name!r}")
+
+    monkeypatch.setattr(mcp_client, "MCPClient", _Boom)
+    bad_cjk = "\u5305"
+    bad_long = "\u5b89\u88c5\u8be5\u6846\u67b6\u5e76\u5b9e\u9645\u542f\u52a8\u5192\u70df"
+    loaded = mcp_client.load_mcp_servers(
+        {
+            bad_cjk: {"command": "npx", "args": ["-y", bad_cjk]},
+            bad_long: {"command": "npx", "args": ["-y", bad_long]},
+        }
+    )
+    assert calls == []
+    assert loaded.clients == {}
+    assert loaded.tools == {}
+    assert loaded.errors[bad_cjk] == "InvalidServerName"
+    assert bad_long in loaded.errors

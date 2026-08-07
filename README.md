@@ -200,7 +200,9 @@ python -m pytest tests -m "serial and not live and not pty" -n 0 -q
 
 ## Configuration
 
-Configuration is stored at `~/.RxyCode/config.yaml`:
+Configuration is stored at `~/.RxyCode/config.yaml`. The active model's
+`base_url` is always the one you selected in the TUI — RxyCode does not
+silently rewrite it to another provider.
 
 ```yaml
 cache:
@@ -208,11 +210,19 @@ cache:
   prompt_prefix_cache: true   # Enable provider-side KV cache
   ttl: 3600
 
+# Example A: OpenCode Go (recommended when you onboard via OpenCode)
 models:
   - name: deepseek-v4-flash
     provider: openai
     api_key: <your-key>        # Stored outside the repo, never committed
-    base_url: https://api.deepseek.com
+    base_url: https://opencode.ai/zen/go/v1
+
+# Example B: DeepSeek official (only when you intentionally choose it)
+# models:
+#   - name: deepseek-v4-flash
+#     provider: openai
+#     api_key: <your-key>
+#     base_url: https://api.deepseek.com
 ```
 
 Use `/addmodel` in the TUI for a guided setup wizard.

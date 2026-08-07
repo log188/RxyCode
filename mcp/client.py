@@ -991,7 +991,18 @@ def load_mcp_servers(config: dict[str, Any]) -> MCPLoadResult:
     clients: dict[str, MCPClient] = {}
     tools: dict[str, StructuredTool] = {}
     errors: dict[str, str] = {}
+    # Keep in sync with tools.mcp_manager.is_valid_mcp_server_name. Checked
+    # here (not via tools import) to avoid an mcp -> tools dependency edge.
+    _server_name_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    skipped_invalid: list[str] = []
     for server_name, raw_config in config.items():
+        name = str(server_name)
+        if not _server_name_re.fullmatch(name):
+            # Do not spawn npx/connect for garbage keys (e.g. CJK leftovers).
+            # Record once; avoid logger.warning per entry which pollutes the TUI.
+            skipped_invalid.append(name)
+            errors[name] = "InvalidServerName"
+            continue
         client: MCPClient | None = None
         try:
             normalized = _normalize_server_config(raw_config)
@@ -1074,6 +1085,12 @@ def load_mcp_servers(config: dict[str, Any]) -> MCPLoadResult:
             errors[str(server_name)] = type(exc).__name__
             if client is not None:
                 client.disconnect()
+    if skipped_invalid:
+        logger.debug(
+            "Skipped %d MCP server(s) with invalid names: %s",
+            len(skipped_invalid),
+            skipped_invalid,
+        )
     return MCPLoadResult(clients, tools, errors, len(config))
 
 

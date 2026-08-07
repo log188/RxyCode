@@ -960,11 +960,20 @@ async def _execute_command(req: CommandRequest):
 
     if c == "/model" and args:
         from .config.settings import load_config, get_model_config
-        from .config.model_manager import set_active_model
+        from .config.model_manager import (
+            backfill_missing_api_key_secrets,
+            set_active_model,
+        )
         cfg = load_config()
         if args in cfg.get("models", {}):
-            set_active_model(args)
+            # Backfill secrets from env when possible so child processes that
+            # lack the operator shell still resolve credentials.
+            backfill_missing_api_key_secrets(cfg)
+            cfg = load_config()
             if not _state["agent"]:
+                # No live agent yet: persist first, then init against the new
+                # active model (init failure must not leave a half-switched LLM).
+                set_active_model(args)
                 try:
                     _init_agent()
                 except Exception as e:
@@ -972,18 +981,27 @@ async def _execute_command(req: CommandRequest):
                         "action": "error",
                         "message": f"Model set to {args}, but agent failed to init: {e}",
                     }
+                if _state["agent"] is None:
+                    return {
+                        "action": "error",
+                        "message": f"Model set to {args}, but agent is not available",
+                    }
+                return {"action": "model_changed", "message": f"Model switched: {args}"}
             active_agent = _state["agent"]
-            if active_agent is None:
+            switcher = getattr(type(active_agent), "switch_model", None)
+            try:
+                if callable(switcher):
+                    active_agent._cfg = cfg
+                    active_agent.switch_model(args)
+                else:
+                    active_agent.model_config = get_model_config(args, cfg)
+            except Exception as e:
                 return {
                     "action": "error",
-                    "message": f"Model set to {args}, but agent is not available",
+                    "message": f"切换失败：{e}",
                 }
-            switcher = getattr(type(active_agent), "switch_model", None)
-            if callable(switcher):
-                active_agent._cfg = load_config()
-                active_agent.switch_model(args)
-            else:
-                active_agent.model_config = get_model_config(args, cfg)
+            # Persist only after the live agent accepted the new model.
+            set_active_model(args)
             return {"action": "model_changed", "message": f"Model switched: {args}"}
         else:
             return {"action": "error", "message": f"Model not found: {args}"}

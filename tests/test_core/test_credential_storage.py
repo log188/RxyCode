@@ -86,10 +86,18 @@ def test_load_migrates_legacy_inline_credential_atomically(tmp_path, monkeypatch
     _assert_windows_acl_has_no_inheritance(config_path)
 
 
-def test_matching_environment_credential_never_creates_secret_file(
+def test_matching_environment_credential_also_persists_secret(
     tmp_path, monkeypatch
 ):
+    """Regression: env-matched keys used to store only api_key_env.
+
+    Embedded API / appserver workers often lack the operator shell env, so
+    switch_model then saw an empty api_key and crashed with OpenAI Missing
+    credentials. Matching an env var must also persist api_key_secret so
+    resolve_model_config can fall back.
+    """
     from RxyCode.RxyCode1_1_0.config.model_manager import add_model
+    from RxyCode.RxyCode1_1_0.config.settings import get_model_config
 
     monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
     credential = _opaque_value("environment")
@@ -102,8 +110,42 @@ def test_matching_environment_credential_never_creates_secret_file(
     )
 
     assert stored["api_key_env"] == "RXYCODE_TEST_API_KEY"
-    assert "api_key_secret" not in stored
-    assert not (tmp_path / "credentials.yaml").exists()
+    assert "api_key_secret" in stored
+    assert (tmp_path / "credentials.yaml").exists()
+
+    # Child process without the env var still resolves via secret.
+    monkeypatch.delenv("RXYCODE_TEST_API_KEY", raising=False)
+    resolved = get_model_config("environment-model")
+    assert resolved["api_key"] == credential
+
+
+def test_backfill_missing_api_key_secrets_from_env(tmp_path, monkeypatch):
+    from RxyCode.RxyCode1_1_0.config.model_manager import (
+        backfill_missing_api_key_secrets,
+    )
+    from RxyCode.RxyCode1_1_0.config.settings import load_config, save_config
+
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
+    credential = _opaque_value("backfill")
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", credential)
+    save_config(
+        {
+            "active_model": "zen-free",
+            "models": {
+                "zen-free": {
+                    "api_key_env": "OPENCODE_ZEN_API_KEY",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "model_name": "deepseek-v4-flash-free",
+                }
+            },
+        }
+    )
+
+    assert backfill_missing_api_key_secrets() == 1
+    entry = load_config()["models"]["zen-free"]
+    assert entry.get("api_key_secret")
+    # Idempotent when secret already present.
+    assert backfill_missing_api_key_secrets() == 0
 
 
 def test_save_config_strips_inline_credential_without_mutating_caller(

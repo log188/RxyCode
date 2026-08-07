@@ -187,7 +187,8 @@ python -m pytest tests -m "serial and not live and not pty" -n 0 -q
 
 ## 配置
 
-配置文件位于 `~/.RxyCode/config.yaml`：
+配置文件位于 `~/.RxyCode/config.yaml`。请求端点始终使用你在 TUI 中选定的
+`base_url`，**不会**被静默改写成其他厂商地址。
 
 ```yaml
 cache:
@@ -195,11 +196,19 @@ cache:
   prompt_prefix_cache: true   # 开启 Provider 侧 KV 缓存
   ttl: 3600
 
+# 示例 A：OpenCode Go（通过 OpenCode 接入时推荐）
 models:
   - name: deepseek-v4-flash
     provider: openai
     api_key: <your-key>        # 存储在仓库外，不会被提交
-    base_url: https://api.deepseek.com
+    base_url: https://opencode.ai/zen/go/v1
+
+# 示例 B：DeepSeek 官方（仅在你主动选择官方时使用）
+# models:
+#   - name: deepseek-v4-flash
+#     provider: openai
+#     api_key: <your-key>
+#     base_url: https://api.deepseek.com
 ```
 
 在 TUI 中使用 `/addmodel` 打开引导式设置向导。
