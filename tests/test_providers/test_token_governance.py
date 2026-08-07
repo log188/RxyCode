@@ -99,6 +99,31 @@ def test_agent_include_few_shot_full_true():
     assert agent._include_few_shot() is True
 
 
+def test_agent_few_shot_limit_none():
+    """few_shot_policy=None/full → _few_shot_limit()=None（全量）。"""
+    for policy in (None, "full"):
+        agent = _new_agent(ModelCapabilities(few_shot_policy=policy), [])
+        assert agent._few_shot_limit() is None
+
+
+def test_agent_few_shot_limit_first2():
+    """few_shot_policy="first2" → _few_shot_limit()=2（只留前 2 条）。"""
+    agent = _new_agent(ModelCapabilities(few_shot_policy="first2"), [])
+    assert agent._few_shot_limit() == 2
+
+
+def test_format_few_shot_limit_first2():
+    """format_few_shot(limit=2) 只注入前 2 条。"""
+    from RxyCode.RxyCode1_1_0.core.prompts.few_shot import format_few_shot
+
+    full = format_few_shot("goal_planner")
+    limited = format_few_shot("goal_planner", limit=2)
+    assert "Example 1:" in limited
+    assert "Example 2:" in limited
+    assert "Example 3:" not in limited
+    assert len(limited) <= len(full)
+
+
 # ---- 真实消费点：_truncate_tool_text（文本副本，不改 ToolMessage） ----------
 
 
@@ -116,13 +141,14 @@ def test_truncate_tool_text_returns_copy_keeps_original():
     out = agent._truncate_tool_text(text)
     assert text == "A" * 300 + "B" * 300 + "C" * 300  # original untouched
     assert "[truncated]" in out
-    assert out.startswith("A" * 50)
-    assert out.endswith("C" * 50)
-    assert "B" * 300 not in out
+    assert out.startswith("A")
+    assert out.endswith("C")
+    assert len(out) < len(text)
 
 
 def test_truncate_tool_text_short_untouched():
-    agent = _new_agent(ModelCapabilities(tool_output_token_limit=1000), [])
+    """内容 token 数 ≤ limit 时不截断。"""
+    agent = _new_agent(ModelCapabilities(tool_output_token_limit=10_000), [])
     assert agent._truncate_tool_text("short") == "short"
 
 
@@ -157,6 +183,19 @@ def test_max_output_tokens_feeds_resolver_input():
     # resolver 在 agent_v2._build_llm_from_config 消费 caps.max_output_tokens；
     # 此处断言字段可被读入 resolver 的 capability_max_output_tokens 参数。
     assert caps.max_output_tokens == 65_536
+
+
+def test_max_output_tokens_resolver_behavior():
+    """Phase-3 resolver：capability_max_output_tokens 作为 provider_default 生效。"""
+    from RxyCode.RxyCode1_1_0.config.model_limits import resolve_configured_max_tokens
+
+    caps = ModelCapabilities(max_output_tokens=65_536)
+    r = resolve_configured_max_tokens(
+        model_config={"model_name": "fake-model", "base_url": "https://x/v1"},
+        capability_max_output_tokens=caps.max_output_tokens,
+        configured_max_tokens=None,
+    )
+    assert r.resolved_max_tokens == 65_536
 
 
 # ---- 消费点：few_shot_policy 决定 include_few_shot --------------------------

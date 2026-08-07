@@ -162,6 +162,7 @@ class PromptRegistry:
         locale: str | None = None,
         include_few_shot: bool = True,
         variant: str = "default",
+        few_shot_limit: int | None = None,
         **format_kwargs,
     ) -> str:
         """Render a stage role prompt.
@@ -171,6 +172,7 @@ class PromptRegistry:
             locale: Override locale; defaults to config locale.
             include_few_shot: Whether to inject few-shot examples.
             variant: Model-specific variant key; falls back to "default".
+            few_shot_limit: A20 few_shot_policy="first2" → 只注入前 N 条；None=全量。
             **format_kwargs: Additional format variables for the template.
 
         Returns:
@@ -183,7 +185,7 @@ class PromptRegistry:
 
         few_shot_text = ""
         if include_few_shot:
-            few_shot_text = format_few_shot(key)
+            few_shot_text = format_few_shot(key, limit=few_shot_limit)
 
         fmt = {
             "few_shot_examples": few_shot_text,
@@ -235,11 +237,12 @@ def get_role_prompt(
     locale: str | None = None,
     include_few_shot: bool = True,
     variant: str = "default",
+    few_shot_limit: int | None = None,
     **format_kwargs,
 ) -> str:
     """Convenience: render a role prompt from the global registry."""
     return _registry.get_role_prompt(
-        key, locale, include_few_shot, variant, **format_kwargs
+        key, locale, include_few_shot, variant, few_shot_limit=few_shot_limit, **format_kwargs
     )
 
 

@@ -1519,12 +1519,11 @@ class AgentV2:
         return (caps or DEFAULT_CAPABILITIES).prompt_variant
 
     def _include_few_shot(self) -> bool:
-        """A20: few_shot_policy → include_few_shot。
+        """A20: few_shot_policy → include_few_shot 布尔开关。
 
-        - None（现状）/ "full" → True（全量注入，A9 前行为不变）
-        - "none" → False（不注入）
-        - "first2" → True（注入量由模板/registry 控制；A20 默认走现状路径，
-          细分首 2 条的裁剪留待 A9 模板扩展）
+        None（现状）/ "full" → True（全量注入，A9 前行为不变）
+        "none" → False（不注入）
+        "first2" → True（注入前 2 条，见 _few_shot_limit()）
         """
         caps = getattr(self, "_capabilities", None)
         policy = (caps or DEFAULT_CAPABILITIES).few_shot_policy
@@ -1532,22 +1531,38 @@ class AgentV2:
             return False
         return True
 
+    def _few_shot_limit(self) -> int | None:
+        """A20: few_shot_policy → few-shot 注入条数上限。
+
+        "first2" → 2（只留前 2 条）；其余 → None（全量，现状不变）。
+        """
+        caps = getattr(self, "_capabilities", None)
+        policy = (caps or DEFAULT_CAPABILITIES).few_shot_policy
+        if policy == "first2":
+            return 2
+        return None
+
     def _truncate_tool_text(self, text: str) -> str:
         """A20: 按 tool_output_token_limit 对工具结果文本副本截断。
 
-        返回截断后的**文本副本**（保留头尾、中间插入标记）；**不改动任何
-        ToolMessage 对象**（tool_call_id 契约不受影响）。limit=None → 原样返回。
-        调用点：构造 ToolMessage(content=...) 之前（_fast_reply_with_tools）。
+        返回截断后的**文本副本**（按 token 估算保留头尾、中间插入标记）；
+        **不改动任何 ToolMessage 对象**（tool_call_id 契约不受影响）。
+        limit=None → 原样返回。调用点：构造 ToolMessage(content=...) 之前。
         """
         caps = getattr(self, "_capabilities", None)
         limit = getattr(caps, "tool_output_token_limit", None) if caps else None
         if limit is None or not text:
             return text
-        chars = max(1, int(limit) * 3)
-        keep = chars
-        if len(text) <= keep * 2 + 100:
+        spec = self._tokenizer_spec()
+        total = _estimate_tokens(text, spec)
+        if total <= limit:
             return text
-        return text[:keep] + "\n...[truncated]...\n" + text[-keep:]
+        # 保留头尾：按比例把 limit 分配到两端（各一半），字符近似逐字保留。
+        ratio = max(0.1, float(limit) / max(1, total))
+        keep_chars = max(1, int(len(text) * ratio * 0.5))
+        if len(text) <= keep_chars * 2 + 100:
+            return text
+        return text[:keep_chars] + "\n...[truncated]...\n" + text[-keep_chars:]
 
     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
         """Phase 3 M4：请求层解析最终 max_tokens（含 context 钳制）。
@@ -2843,6 +2858,7 @@ class AgentV2:
             "compose_plan",
             user_input=user_input,
             include_few_shot=self._include_few_shot(),
+            few_shot_limit=self._few_shot_limit(),
             variant=self._prompt_variant(),
         )
         plan_prompt = build_user_message(plan_role, "")
@@ -2875,6 +2891,7 @@ class AgentV2:
                 plan_file=tmp_file.name,
                 plan_content=plan_response,
                 include_few_shot=self._include_few_shot(),
+                few_shot_limit=self._few_shot_limit(),
                 variant=self._prompt_variant(),
             )
             build_prompt = build_user_message(build_role, "")

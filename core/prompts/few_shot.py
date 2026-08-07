@@ -145,11 +145,17 @@ def get_few_shot(key: str) -> list[dict[str, str]]:
     return FEW_SHOT_EXAMPLES.get(key, [])
 
 
-def format_few_shot(key: str) -> str:
-    """Format few-shot examples as text for prompt injection."""
+def format_few_shot(key: str, limit: int | None = None) -> str:
+    """Format few-shot examples as text for prompt injection.
+
+    ``limit``：仅注入前 N 条（A20 few_shot_policy="first2" 用，N=2）；
+    None = 全量（现状行为不变）。
+    """
     examples = get_few_shot(key)
     if not examples:
         return ""
+    if limit is not None:
+        examples = examples[:limit]
     parts = []
     for i, ex in enumerate(examples, 1):
         parts.append(f"Example {i}:\nInput: {ex['input']}\nOutput: {ex['output']}")
