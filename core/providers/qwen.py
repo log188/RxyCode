@@ -228,6 +228,11 @@ class QwenProvider(BaseProvider):
                 # §7.7 ③：Chat 路径无 reasoning.effort（Responses 用 reasoning.effort，
                 # 由 A21 处理）→ 不设 effort_presets
                 effort_presets={},
+                # §7.7 问 4：显式 cache_control（最小 1024 / TTL 5min=300s）+ 隐式
+                # （最小 256）；无显式断点（cache_control 标记，非 Anthropic 断点布局）
+                cache_min_block_tokens=1024,
+                cache_ttl_s=300,
+                cache_breakpoints=(),
             )
         return caps.merged_with_overrides(model_config)
 

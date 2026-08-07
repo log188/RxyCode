@@ -118,6 +118,51 @@ class BaseProvider:
         """是否往消息上注入 cache_control。对应 agent_v2.py:411-441。"""
         return caps.supports_prompt_cache
 
+    def cache_params(self, caps: ModelCapabilities) -> dict:
+        """该模型族的缓存参数包，供消息链注入与命中率监控使用。
+
+        返回键固定为：min_block_tokens / ttl_s / breakpoints / hit_field_flat /
+        hit_field_nested。默认值 = "不适用"，各 provider 按 §7.X 覆写。
+        断点布局在此校验（§7.8：>4 / 乱序 / 动态块 → ValueError）。
+        """
+        self.validate_breakpoints(caps.cache_breakpoints)
+        return {
+            "min_block_tokens": caps.cache_min_block_tokens,
+            "ttl_s": caps.cache_ttl_s,
+            "breakpoints": list(caps.cache_breakpoints),
+            "hit_field_flat": list(caps.usage_fields.cache_read_flat),
+            "hit_field_nested": list(caps.usage_fields.cache_read_nested),
+        }
+
+    def validate_breakpoints(self, breakpoints: tuple[str, ...]) -> None:
+        """校验 Anthropic 系显式 cache_control 断点布局（A19）。
+
+        规则（§7.8 A3 / 常见坑）：
+          - 最多 4 个；
+          - 只允许打在恒定内容末尾，按"静态在前、动态在后"排序；
+          - 合法取值：tools → system → session_static → tail（前缀顺序）。
+        非法布局抛 ValueError；空元组 = 不用显式断点，合法。
+        """
+        allowed = ("tools", "system", "session_static", "tail")
+        if len(breakpoints) > 4:
+            raise ValueError(
+                f"breakpoint count {len(breakpoints)} > 4 (Anthropic limit)"
+            )
+        if not all(b in allowed for b in breakpoints):
+            raise ValueError(
+                f"breakpoints contain non-static block: {breakpoints!r}; "
+                "only tools/system/session_static/tail allowed, static-first"
+            )
+        order = {name: i for i, name in enumerate(allowed)}
+        if any(
+            order[breakpoints[i]] >= order[breakpoints[i + 1]]
+            for i in range(len(breakpoints) - 1)
+        ):
+            raise ValueError(
+                f"breakpoints out of order or tail-mid: {breakpoints!r}; "
+                "must be tools->system->session_static->tail"
+            )
+
 
 def _get_attr_or_key(obj: Any, key: str) -> Any:
     """OpenAI SDK 的 delta 有时是对象、有时是 dict，两种都要能取。"""

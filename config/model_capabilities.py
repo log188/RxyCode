@@ -72,6 +72,9 @@ class UsageFieldMap:
     cache_write_nested: tuple[tuple[str, str], ...] = (
         ("prompt_tokens_details", "cache_write_tokens"),
     )
+    #: 写入前缀缓存的 token 数所在顶层 usage 字段（§7.8 ③：Anthropic 顶层
+    #: `usage.cache_creation_input_tokens`；与 OpenAI 嵌套 cache_write_tokens 不同）。
+    cache_write_flat: tuple[str, ...] = ()
     #: 推理 token 数所在嵌套路径（§7.2 ⑤：Chat Completions 的
     #: `completion_tokens_details.reasoning_tokens`——是**计数**而非内容；
     #: OpenAI 不暴露原始 reasoning 文本）。
@@ -163,6 +166,21 @@ class ModelCapabilities:
     #: 而模型没开 thinking = 面板空转；面板关着而模型开了 = 思维链不展示
     #: 但仍在消耗 token。二者不互相绑定。
     thinking_default_on: bool = False
+
+    #: 该模型族 prompt cache 的最小可缓存前缀（token）。Anthropic 系有明确
+    #: 下限（如 512/1024/4096）；OpenAI/Kimi/MiniMax 自动缓存有各自要求；
+    #: 未找到明确下限 → None（A19，§7 各批第 4 问）。
+    cache_min_block_tokens: int | None = None
+
+    #: 缓存 TTL（秒）。None = 不适用（自动缓存 / 未知 / 官方未承诺固定 TTL）。
+    #: Anthropic/Qwen 显式缓存 TTL 5min=300s；OpenAI GPT-5.6 30m=1800s（A19，§7 第 4 问）。
+    cache_ttl_s: int | None = None
+
+    #: 断点布局（Anthropic 系显式 cache_control 用，最多 4 个）。
+    #: 取值按"静态在前、动态在后"排序，只允许打在恒定内容末尾：
+    #:   ["tools", "system", "session_static", "tail"]
+    #: 空元组 = 不用显式断点。A8 的 _apply_cache_control 读取它（A19）。
+    cache_breakpoints: tuple[str, ...] = ()
 
     #: 未归类的 provider 特有参数，会原样透传给 LLM 构造函数
     extra_body: dict[str, Any] = field(default_factory=dict)

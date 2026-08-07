@@ -84,6 +84,10 @@ class DeepSeekProvider(BaseProvider):
             supports_function_calling=True,
             structured_output="function_calling",
             prompt_variant=_prompt_variant(model_name),
+            # §7.1 第 4 问：自动 disk 缓存，最小 64-token prefix unit；无显式断点/TTL
+            cache_min_block_tokens=64,
+            cache_ttl_s=None,
+            cache_breakpoints=(),
             # §7.1 启发式估算（非官方 tiktoken）；精确数以 API usage 为准
             tokenizer="chars:2.0",
         )

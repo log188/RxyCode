@@ -3029,6 +3029,8 @@ class AgentV2:
         )
         started_at = time.monotonic()
         token_start = (token_stats.input_tokens, token_stats.output_tokens)
+        # A19: 缓存命中 token 快照基线（run 级），用于 run.finished 的 cache_read 落盘
+        cache_start = token_stats.cache_hit_tokens
         status = "failed"
         evidence = []
         session_token = bind_session(session_id)
@@ -3204,6 +3206,8 @@ class AgentV2:
             }
             input_tokens = max(0, token_stats.input_tokens - token_start[0])
             output_tokens = max(0, token_stats.output_tokens - token_start[1])
+            # A19: 本 run 缓存命中 token（可观测，供 evals/trajectory 计算命中率）
+            cache_read = max(0, token_stats.cache_hit_tokens - cache_start)
             trajectory.record(
                 "run.finished",
                 {
@@ -3222,6 +3226,7 @@ class AgentV2:
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
                         "total_tokens": input_tokens + output_tokens,
+                        "cache_read": cache_read,
                     },
                     "tool_evidence_count": len(evidence),
                     "hook_event_count": len(self._active_hook_audit),
@@ -3247,6 +3252,7 @@ class AgentV2:
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
                         "total_tokens": input_tokens + output_tokens,
+                        "cache_read": cache_read,
                     },
                 },
             )

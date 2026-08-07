@@ -181,6 +181,10 @@ class MIMOProvider(BaseProvider):
                 tokenizer="chars:1.5",
                 # §7.6 ③：Chat 路径无 reasoning.effort → 不设 effort_presets
                 effort_presets={},
+                # §7.6 问 4：隐式 Prompt Cache，最小块/TTL 未找到 → None；无显式断点
+                cache_min_block_tokens=None,
+                cache_ttl_s=None,
+                cache_breakpoints=(),
             )
         return caps.merged_with_overrides(model_config)
 

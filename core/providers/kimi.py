@@ -195,5 +195,10 @@ class KimiProvider(BaseProvider):
                     if family == "kimi-k3"
                     else {}
                 ),
+                # §7.3 问 4：自动 Context Caching，前次 prompt > 256 才缓存；
+                # TTL 系统自动管理（无固定值）；无显式断点
+                cache_min_block_tokens=256,
+                cache_ttl_s=None,
+                cache_breakpoints=(),
             )
         return caps.merged_with_overrides(model_config)

@@ -243,6 +243,11 @@ class MiniMaxProvider(BaseProvider):
                 # §7.5 ③：Chat 路径无 reasoning.effort → 不设 effort_presets
                 # （勿把 DeepSeek/Kimi effort_presets 套到 Chat）
                 effort_presets={},
+                # §7.5 问 4：被动/自动缓存，输入 ≥512 tokens；TTL 自动调整（无固定值）；
+                # 无显式断点
+                cache_min_block_tokens=512,
+                cache_ttl_s=None,
+                cache_breakpoints=(),
             )
         return caps.merged_with_overrides(model_config)
 

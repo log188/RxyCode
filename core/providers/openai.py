@@ -139,6 +139,11 @@ class OpenAIProvider(BaseProvider):
                 },
                 # §7.2 问 6：项目侧启发式；未找到官方 5.6 encoding 名
                 tokenizer="tiktoken:o200k_base",
+                # §7.2 第 4 问：自动前缀缓存，GPT-5.6+ 最小 1024；TTL 30m=1800s；
+                # 无显式断点（自动/隐式模式）
+                cache_min_block_tokens=1024,
+                cache_ttl_s=1800,
+                cache_breakpoints=(),
             )
         if name.startswith(("o1-", "o3-", "o4-")):
             # §7.2 问 5：旧 o 系列明文拒绝采样参数（5.6 未证实，勿外推）
