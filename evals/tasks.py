@@ -114,6 +114,9 @@ class EvalTask:
     setup_files: dict[str, str] = field(default_factory=dict)
     checks: list[Check] = field(default_factory=list)
     source_path: Optional[Path] = None
+    #: 显式声明的任务副作用类型（"write"/"danger"/只读效果如 "search"/"read"）。
+    #: 只读/搜索类任务声明后，证据门不强制要求 WRITE/DANGER 工具证据。
+    effect: Optional[str] = None
 
     @property
     def needs_workdir(self) -> bool:
@@ -176,6 +179,7 @@ class EvalTask:
             setup_files=dict(setup_files),
             checks=checks,
             source_path=source_path,
+            effect=(data.get("effect") or None),
         )
 
 

@@ -34,7 +34,13 @@ class RawLLMBackend:
     def __init__(self, llm):
         self._llm = llm
 
-    async def run(self, prompt: str, workdir: Path | None) -> BackendResult:
+    async def run(
+        self,
+        prompt: str,
+        workdir: Path | None,
+        *,
+        effect: str | None = None,
+    ) -> BackendResult:
         from langchain_core.messages import HumanMessage
 
         from .runner import _extract_token_usage
@@ -166,7 +172,13 @@ class AgentBackend:
     def __init__(self, agent_factory):
         self._make_agent = agent_factory
 
-    async def run(self, prompt: str, workdir: Path | None) -> BackendResult:
+    async def run(
+        self,
+        prompt: str,
+        workdir: Path | None,
+        *,
+        effect: str | None = None,
+    ) -> BackendResult:
         from RxyCode.RxyCode1_1_0.core.session_runtime import (
             bind_session,
             clear_session_runtime,
@@ -196,7 +208,9 @@ class AgentBackend:
                         set_working_directory(workdir)
                     finally:
                         reset_session_binding(latest_token)
-                result = await agent.run(prompt, mode="build")
+                result = await agent.run(
+                    prompt, mode="build", effect=effect or "auto"
+                )
             answer = result if isinstance(result, str) else str(result or "")
             input_tokens = token_stats.input_tokens - token_start[0]
             output_tokens = token_stats.output_tokens - token_start[1]

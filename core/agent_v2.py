@@ -2845,13 +2845,21 @@ class AgentV2:
                 return True
         return False
 
-    async def run(self, user_input: str, mode: str = "build") -> str:
+    async def run(
+        self,
+        user_input: str,
+        mode: str = "build",
+        effect: str = "auto",
+    ) -> str:
         """Run one observable request while exposing a cancellation handle."""
         if mode not in VALID_AGENT_MODES:
             valid_modes = ", ".join(sorted(VALID_AGENT_MODES))
             raise ValueError(
                 f"Unsupported agent mode: {mode!r}. Valid modes: {valid_modes}"
             )
+        # 顶层显式声明的任务副作用类型（"write"/"danger"/只读效果）。默认 "auto"
+        # 走启发式；evals 只读任务可显式声明 effect="search" 避免被误判。
+        self._task_effect = (effect or "auto").strip().lower()
 
         # ``download_mcp`` writes config atomically.  Reading the fingerprint
         # here makes an add/remove effective on the next request without an
@@ -3052,11 +3060,15 @@ class AgentV2:
                         # as "Built by..." must not upgrade a read-only question.
                         result="",
                         effect=(
-                            "write"
-                            if getattr(
-                                self, "_side_effecting_tool_attempted", False
+                            str(getattr(self, "_task_effect", "") or "auto").strip().lower()
+                            if getattr(self, "_task_effect", "") not in ("", "auto")
+                            else (
+                                "write"
+                                if getattr(
+                                    self, "_side_effecting_tool_attempted", False
+                                )
+                                else "auto"
                             )
-                            else "auto"
                         ),
                     )
                     and not has_verified_side_effect(evidence)

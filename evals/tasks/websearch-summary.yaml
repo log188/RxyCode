@@ -1,5 +1,6 @@
 id: websearch-summary
 category: feature
+effect: search
 prompt: |
   使用 websearch 工具搜索 2026 年 AI 编程助手领域最重要的趋势（例如 Agentic coding、
   AI IDE、代码补全、自动化测试等方向），然后总结你认为最重要的 3 条趋势。

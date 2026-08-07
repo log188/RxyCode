@@ -58,6 +58,23 @@ _EXPLANATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: 请求正文中的**显式**解释/总结/搜索请求短语（非锚定，中段匹配）。
+#: 它比锚定的 _EXPLANATION_RE 弱：只覆盖 ACTION+ARTIFACT 启发式，
+#: **不**覆盖强副作用动词（见 task_requires_side_effect_evidence）。
+#: 覆盖两类真实场景：
+#:   - "请总结/帮我概括/总结一下" 式显式请求；
+#:   - "搜索 … 然后总结" 式只读研究-总结任务（如 evals websearch-summary，
+#:     其约束行含"创建/修改+文件"会误触发 ACTION+ARTIFACT）。
+_EXPLICIT_EXPLANATION_RE = re.compile(
+    r"(?:请|麻烦|帮我)\s*(?:总结|概括|说明|解释|分析|列出|汇总|介绍|展示|"
+    r"搜索|查询|检索)|"
+    r"please\s+(?:summarize|summarise|explain|describe|list|show)\b|"
+    r"(?:总结|概括|说明|解释|分析|汇总|搜索|查询|检索)(?:一下|一遍)|"
+    r"(?:搜索|检索|查询|websearch|research)\b[\s\S]{0,120}?(?:总结|概括|汇总|"
+    r"conclude|summarize)",
+    re.IGNORECASE,
+)
+
 # Task effects that by definition produce NO write/danger side effect.  A task
 # declared with one of these must never be forced to supply WRITE/DANGER tool
 # evidence -- for example a "verify file integrity" task whose description merely
@@ -108,13 +125,20 @@ def task_requires_side_effect_evidence(
             return True
 
     request = "\n".join((title, description, requirement)).strip()
-    explicit_explanation = bool(_EXPLANATION_RE.search(request))
-    if not explicit_explanation and (
-        _STRONG_ACTION_RE.search(request)
-        or (_ACTION_RE.search(request) and _ARTIFACT_RE.search(request))
+    # 锚定解释意图（请求以解释/总结词开头）：即使提到修复/重构话题也是只读
+    anchored_explanation = bool(_EXPLANATION_RE.search(request))
+    # 中段显式请求短语（请总结/总结一下/搜索…总结）：覆盖 ACTION+ARTIFACT
+    # 启发式，但**不**覆盖强副作用动词。
+    explicit_request = anchored_explanation or bool(
+        _EXPLICIT_EXPLANATION_RE.search(request)
+    )
+    if not anchored_explanation and _STRONG_ACTION_RE.search(request):
+        return True
+    if not explicit_request and (
+        _ACTION_RE.search(request) and _ARTIFACT_RE.search(request)
     ):
         return True
-    return not explicit_explanation and bool(
+    return not explicit_request and bool(
         _COMPLETION_CLAIM_RE.search(result or "")
     )
 

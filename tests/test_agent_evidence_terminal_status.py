@@ -96,3 +96,40 @@ async def test_write_failure_still_overrides_even_with_read_probe_failure():
 
     assert result.startswith("[evidence failed:")
     assert "claiming success" not in result
+
+
+@pytest.mark.asyncio
+async def test_declared_read_only_effect_skips_side_effect_gate():
+    """只读任务声明 effect=search 时，即使 prompt 含副作用措辞，
+    证据门也不应把完成答案替换为占位符（evals websearch-summary 修复）。"""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = object.__new__(AgentV2)
+
+    async def prose_run(_user_input: str, _mode: str) -> str:
+        return "已完成：2026 年 AI 编程助手的三大趋势。搜索工具已调用。"
+
+    agent._run_impl = prose_run
+    result = await agent.run("创建文件并实现功能", effect="search")
+
+    assert result.startswith("已完成")
+    assert "evidence failed" not in result
+
+
+@pytest.mark.asyncio
+async def test_declared_write_effect_forces_side_effect_gate():
+    """显式声明 effect=write 时，无 WRITE/DANGER 证据的完成声称仍被门拦截。"""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = object.__new__(AgentV2)
+
+    async def prose_run(_user_input: str, _mode: str) -> str:
+        return "已完成"
+
+    agent._run_impl = prose_run
+    result = await agent.run("搜索资料", effect="write")
+
+    assert result.startswith(
+        "[evidence failed: requested side effect has no verified "
+        "WRITE/DANGER tool execution]"
+    )

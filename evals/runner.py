@@ -440,7 +440,7 @@ async def run_task(
             )
             prompt = f"{task.prompt}\n\nExisting files in your workdir:\n{file_ctx}"
 
-        result = await backend.run(prompt, workdir)
+        result = await backend.run(prompt, workdir, effect=task.effect)
         agent_answer = result.answer
         token_usage = result.token_usage
         tools_used = list(result.tools_used)
