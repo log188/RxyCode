@@ -184,3 +184,48 @@ def test_anthropic_haiku_min_block_4096():
     """§7.8：Haiku 4.5 最小缓存块 4096（≠ Opus 512）。"""
     p, caps = _caps("https://api.anthropic.com/v1", "claude-haiku-4-5")
     assert p.cache_params(caps)["min_block_tokens"] == 4096
+
+
+@pytest.mark.parametrize("name,minblock", [
+    ("claude-opus-5", 512),
+    ("claude-fable-5", 512),
+    ("claude-sonnet-5", 1024),
+    ("claude-opus-4-8", 1024),
+    ("claude-haiku-4-5", 4096),
+])
+def test_anthropic_per_model_min_block(name, minblock):
+    """§7.8 问 4：Anthropic 按型号最小缓存块。"""
+    p, caps = _caps("https://api.anthropic.com/v1", name)
+    assert p.cache_params(caps)["min_block_tokens"] == minblock
+    assert p.cache_params(caps)["ttl_s"] == 300
+    assert p.cache_params(caps)["breakpoints"] == ["tools", "system", "session_static", "tail"]
+
+
+# ---- 8 族 hit-field 映射与 cache_params 逐族一致 -------------------------
+
+
+@pytest.mark.parametrize("u,model,flat,nested", [
+    ("https://api.deepseek.com/v1", "deepseek-v4-flash",
+     ["prompt_cache_hit_tokens"], []),
+    ("https://api.openai.com/v1", "gpt-5.6-sol",
+     ["prompt_cache_hit_tokens"],
+     [("prompt_tokens_details", "cached_tokens"), ("input_token_details", "cache_read")]),
+    ("https://api.moonshot.cn/v1", "kimi-k3",
+     ["cached_tokens"], []),
+    ("https://open.bigmodel.cn/api/paas/v4/", "glm-5.2",
+     [], [("prompt_tokens_details", "cached_tokens")]),
+    ("https://api.minimaxi.com/v1", "MiniMax-M3",
+     [], [("prompt_tokens_details", "cached_tokens")]),
+    ("https://api.xiaomimimo.com/v1", "mimo-v2.5-pro",
+     [], [("prompt_tokens_details", "cached_tokens")]),
+    ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.7-plus",
+     [], [("prompt_tokens_details", "cached_tokens")]),
+    ("https://api.anthropic.com/v1", "claude-opus-5",
+     ["cache_read_input_tokens"], []),
+])
+def test_family_hit_fields(u, model, flat, nested):
+    """8 族 cache_params() 命中字段映射与 §7 报告一致。"""
+    p, caps = _caps(u, model)
+    out = p.cache_params(caps)
+    assert out["hit_field_flat"] == flat
+    assert out["hit_field_nested"] == nested

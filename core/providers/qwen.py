@@ -229,7 +229,10 @@ class QwenProvider(BaseProvider):
                 # 由 A21 处理）→ 不设 effort_presets
                 effort_presets={},
                 # §7.7 问 4：显式 cache_control（最小 1024 / TTL 5min=300s）+ 隐式
-                # （最小 256）；无显式断点（cache_control 标记，非 Anthropic 断点布局）
+                # （最小 256，Qwen3.7 系列约 2000）；两者互斥（§7.7 问 4）。
+                # cache_min_block_tokens 单值字段承载显式 cache_control 阈值（与
+                # Anthropic 显式断点同一字段语义）；隐式路径是自动缓存，由
+                # cache_params() 注释说明，无独立字段。
                 cache_min_block_tokens=1024,
                 cache_ttl_s=300,
                 cache_breakpoints=(),
