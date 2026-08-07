@@ -103,6 +103,10 @@ TEST_MILESTONE.md
 # Eval-generated test residue (agent-generated tests that never landed in source)
 tests/test_llm_stream_resilience.py
 
+# --- 压力测试环境（不入库；tests/stress_test/ 为测试代码，artifacts/stress-* 为运行产物）---
+tests/stress_test/
+artifacts/stress-*/
+
 # --- Logs & runtime artifacts ---
 *.log
 *.err

@@ -1,8 +1,46 @@
 """Safety-gated skill and MCP configuration tools."""
 from __future__ import annotations
 
+import re
+
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
+
+
+# npm package names are lowercase, URL-safe, and may carry an @scope/ prefix.
+# Rejecting non-ASCII names (e.g. a CJK string the agent mistook for a package)
+# prevents malformed `npx -y <name>` config entries from being persisted.
+_NPM_PACKAGE_RE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
+
+# MCP server names are configuration keys in config.yaml; keep them to the
+# same conservative character set so the resulting config is always parseable.
+_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _validate_mcp_add_args(
+    name: str,
+    *,
+    package: str,
+    command: str,
+) -> str | None:
+    """Validate add arguments, returning an error message or ``None``."""
+    if not name.strip():
+        return "[error: MCP server name is required for add operation]"
+    if not _MCP_SERVER_NAME_RE.fullmatch(name):
+        return (
+            "[error: MCP server name must start with an ASCII letter or digit "
+            "and contain only letters, digits, '.', '_', '-' (got "
+            f"{name!r})]"
+        )
+    if not command and not package:
+        return "[error: package or command is required for add operation]"
+    if not command and not _NPM_PACKAGE_RE.fullmatch(package):
+        return (
+            "[error: invalid npm package name "
+            f"{package!r}; use a lowercase npm package (e.g. "
+            "@modelcontextprotocol/server-fetch)]"
+        )
+    return None
 
 
 class DownloadSkillInput(BaseModel):
@@ -125,9 +163,15 @@ def download_mcp(
     if operation != "add":
         return f"[error: unknown MCP operation '{operation}']"
 
+    validation_error = _validate_mcp_add_args(
+        name,
+        package=package,
+        command=command,
+    )
+    if validation_error is not None:
+        return validation_error
+
     if not command:
-        if not package:
-            return "[error: package or command is required for add operation]"
         command = "npx"
         args = ["-y", package]
 

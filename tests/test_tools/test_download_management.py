@@ -282,3 +282,57 @@ def test_download_mcp_supports_custom_add_and_remove(monkeypatch):
     assert added == [("files", "node", ["server.js"])]
     assert add_result.startswith("Successfully added")
     assert remove_result.startswith("Successfully removed")
+
+
+def test_download_mcp_rejects_invalid_npm_package_name(monkeypatch):
+    """Regression: CJK/non-ASCII 'package' values must not be persisted as MCP
+    config. A stress-test run passed `download_mcp(name='包', package='包')`,
+    which wrote a malformed `npx -y 包` entry to config.yaml that later failed
+    to connect. The tool must reject the argument up front instead.
+    """
+    from RxyCode.RxyCode1_1_0.tools import mcp_manager
+    from RxyCode.RxyCode1_1_0.tools.download_tool import download_mcp
+
+    added = []
+    monkeypatch.setattr(mcp_manager, "list_mcp_servers", lambda: [])
+    monkeypatch.setattr(
+        mcp_manager,
+        "add_mcp_server",
+        lambda name, command, args: (added.append((name, command, args)) or True, "saved"),
+    )
+
+    for bad_package in ("包", "安装框架并实际运行冒烟", "UPPER-case", "has space", ""):
+        result = download_mcp("demo", package=bad_package)
+        assert result.startswith("[error"), result
+        assert not added, bad_package
+
+    # Valid scoped and plain packages still go through.
+    for good_package in (
+        "@modelcontextprotocol/server-fetch",
+        "@modelcontextprotocol/server-filesystem",
+        "fetch",
+        "server-memory",
+    ):
+        download_mcp("demo", package=good_package)
+        assert added, good_package
+
+
+def test_download_mcp_rejects_invalid_server_name(monkeypatch):
+    """Regression: an ASCII-only server name is required so config.yaml keys
+    remain parseable and non-mojibake."""
+    from RxyCode.RxyCode1_1_0.tools import mcp_manager
+    from RxyCode.RxyCode1_1_0.tools.download_tool import download_mcp
+
+    monkeypatch.setattr(mcp_manager, "list_mcp_servers", lambda: [])
+    monkeypatch.setattr(
+        mcp_manager,
+        "add_mcp_server",
+        lambda name, command, args: (True, "saved"),
+    )
+
+    for bad_name in ("包", "", "has space", "name.with/ slash"):
+        result = download_mcp(bad_name, package="fetch")
+        assert result.startswith("[error"), result
+
+    result = download_mcp("fetch-server", package="fetch")
+    assert result.startswith("Successfully added"), result

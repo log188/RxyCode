@@ -215,6 +215,13 @@ class ShellExecutor:
         head = match.group("head")
         # The head may carry cmd-style chains (`cd /d X && python - <<'PY'`);
         # translate those bits the same way the powershell branch would.
+        head = self._translate_powershell_head(head)
+        prog = match.group("prog")
+        body = match.group("body").rstrip("\r\n")
+        return f"{head}{prog} -c @'\n{body}\n'@"
+
+    def _translate_powershell_head(self, head: str) -> str:
+        """Translate cmd/POSIX bits that commonly prefix a heredoc head."""
         if "&&" in head:
             head = re.sub(r"\s*&&\s*", "; ", head)
         head = re.sub(
@@ -231,9 +238,7 @@ class ShellExecutor:
             head,
             flags=re.IGNORECASE,
         )
-        prog = match.group("prog")
-        body = match.group("body").rstrip("\r\n")
-        return f"{head}{prog} -c @'\n{body}\n'@"
+        return head
 
     def _is_powershell_syntax(self, command: str) -> bool:
         patterns = [
@@ -303,7 +308,54 @@ class ShellExecutor:
                 command,
                 flags=re.IGNORECASE,
             )
-            # `start cmd /k ...` is cmd.exe syntax; Start-Process is the PS form.
+            # cmd.exe `dir /b <path>` (bare-name listing) → Get-ChildItem -Name.
+            # Without this, WinPS parses `/b` as a path and errors.
+            command = re.sub(
+                r"\bdir\s+/b\b(\s+\S+)?",
+                lambda m: "Get-ChildItem -Name" + (m.group(1) or ""),
+                command,
+                flags=re.IGNORECASE,
+            )
+            # cmd.exe `dir <path> /b` (flag after path) → same translation.
+            command = re.sub(
+                r"\bdir\b(\s+\S+)\s+/b\b",
+                lambda m: "Get-ChildItem -Name" + m.group(1),
+                command,
+                flags=re.IGNORECASE,
+            )
+            # cmd.exe stdout discard `2>nul` / `2>NUL` → PowerShell `2>$null`.
+            command = re.sub(
+                r"\b2>nul\b",
+                "2>$null",
+                command,
+                flags=re.IGNORECASE,
+            )
+            # bash `| head -N` / `| tail -N` → PowerShell Select-Object.
+            command = re.sub(
+                r"\|\s*head\s+-n\s+(\d+)",
+                lambda m: f"| Select-Object -First {m.group(1)}",
+                command,
+                flags=re.IGNORECASE,
+            )
+            command = re.sub(
+                r"\|\s*head\s+-(\d+)",
+                lambda m: f"| Select-Object -First {m.group(1)}",
+                command,
+                flags=re.IGNORECASE,
+            )
+            command = re.sub(
+                r"\|\s*tail\s+-n\s+(\d+)",
+                lambda m: f"| Select-Object -Last {m.group(1)}",
+                command,
+                flags=re.IGNORECASE,
+            )
+            command = re.sub(
+                r"\|\s*tail\s+-(\d+)",
+                lambda m: f"| Select-Object -Last {m.group(1)}",
+                command,
+                flags=re.IGNORECASE,
+            )
+            # cmd.exe `start cmd /k ...` is cmd.exe syntax; Start-Process is the PS form.
             # Common agent mistake: `start cmd /k python foo.py`
             start_cmd = re.match(
                 r"^\s*start\s+cmd\s+/k\s+(.+)$",

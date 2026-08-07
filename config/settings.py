@@ -274,6 +274,14 @@ def _default_config() -> dict:
             "max_parallel": 3,          # Semaphore limit to prevent API rate limits
             "max_graph_steps": 60,      # hard state-machine step budget
             "max_tool_rounds": 10,      # hard fast-path tool loop budget
+            # Global re-plan budget. Each replan round consumes several LangGraph
+            # super-steps, so an unbounded executor->validator->reflection->
+            # re_planner loop can exhaust recursion_limit and crash the build
+            # with GraphRecursionError (observed in stress tests where the agent
+            # repeatedly retried a failing tool). Once the budget is spent, every
+            # remaining failed task is cancelled and the pipeline synthesizes
+            # what it has instead of looping forever.
+            "max_replan_rounds": 8,
             "checkpoint_enabled": True,
             "checkpoint_retention": 50,
             "tool_journal_enabled": True,

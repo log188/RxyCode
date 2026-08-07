@@ -774,7 +774,17 @@ async def re_planner_node(state: AgentState) -> dict:
 
 
 async def reflection_node(state: AgentState) -> dict:
-    """Classify failed tasks before selecting retry, re-plan, or termination."""
+    """Classify failed tasks before selecting retry, re-plan, or termination.
+
+    A global re-plan budget guards against an unbounded
+    executor->validator->reflection->re_planner loop. Each replan round
+    consumes multiple LangGraph super-steps, so without this guard a task
+    whose tool calls keep failing (e.g. agent-typed POSIX syntax on Windows
+    PowerShell, or a side-effecting tool repeatedly blocked by the tool
+    journal) loops until recursion_limit is exhausted and the whole build
+    crashes with GraphRecursionError. When the budget is spent, remaining
+    failed tasks are cancelled and the pipeline synthesizes what it has.
+    """
     tree: TaskTree = state["task_tree"]
     reflector = Reflector(_model_for(state, "reflection"))
     failures = [
@@ -787,7 +797,42 @@ async def reflection_node(state: AgentState) -> dict:
     error: str | None = None
     memory: MemoryManager = state["_memory"]
 
+    cfg = _settings.load_config() or {}
+    max_replan_rounds = max(
+        0,
+        int(
+            (cfg.get("execution") or {}).get("max_replan_rounds", 8) or 8
+        ),
+    )
+    replan_count = int(state.get("replan_count", 0) or 0)
+    budget_exhausted = (
+        max_replan_rounds > 0 and replan_count >= max_replan_rounds
+    )
+
     for task in failures:
+        if budget_exhausted:
+            # No more re-planning rounds are allowed. Cancel the task so the
+            # tree can close and synthesis runs on whatever completed.
+            task.status = TaskStatus.CANCELLED
+            task.error_history.append(
+                "Re-plan budget exhausted "
+                f"({replan_count}/{max_replan_rounds}); task cancelled "
+                "instead of looping forever"
+            )
+            task.touch()
+            records.append(
+                {
+                    "task_id": task.id,
+                    "failure_type": "budget_exhausted",
+                    "reason": "Re-plan budget exhausted after "
+                    f"{replan_count} rounds",
+                    "action": "terminate",
+                    "corrective_action": "Fix the root cause before rerunning",
+                    "verification_steps": [],
+                    "lessons": [],
+                }
+            )
+            continue
         reflected = await reflector.reflect(task)
         record = {"task_id": task.id, **reflected.model_dump()}
         task.reflections = [*task.reflections[-4:], reflected.model_dump()]
@@ -818,7 +863,9 @@ async def reflection_node(state: AgentState) -> dict:
         elif error is None:
             error = reflected.reason
 
-    if "replan" in actions:
+    if budget_exhausted:
+        action = "terminate"
+    elif "replan" in actions:
         action = "replan"
         current_task_id = next(
             (

@@ -80,6 +80,51 @@ class TestShellExecutor:
         assert call_op.startswith("& '")
         assert "; " not in call_op
 
+    def test_powershell_translates_cmd_dir_and_redirects(self):
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+
+        bare, _ = executor.translate_command('dir /b "C:\\Users\\Administrator\\.rxycode\\skills"')
+        assert bare == 'Get-ChildItem -Name "C:\\Users\\Administrator\\.rxycode\\skills"'
+
+        bare_short, _ = executor.translate_command("dir /b")
+        assert bare_short == "Get-ChildItem -Name"
+
+        flag_after, _ = executor.translate_command('dir "C:\\tools" /b')
+        assert flag_after == 'Get-ChildItem -Name "C:\\tools"'
+
+        nul, _ = executor.translate_command("python run.py 2>nul")
+        assert nul == "python run.py 2>$null"
+
+    def test_powershell_translates_head_tail_pipes(self):
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+
+        head_n, _ = executor.translate_command("curl -s https://x.test | head -50")
+        assert head_n == "curl -s https://x.test | Select-Object -First 50"
+
+        head_short, _ = executor.translate_command("python -c \"print(1)\" | head -3")
+        assert head_short == "python -c \"print(1)\" | Select-Object -First 3"
+
+        tail_n, _ = executor.translate_command("Get-Content out.txt | tail -n 4")
+        assert tail_n == "Get-Content out.txt | Select-Object -Last 4"
+
+    def test_powershell_heredoc_translates_head_with_cmd_chain(self):
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        heredoc = (
+            "cd /d D:\\repo && python - <<'PY'\n"
+            "import os\n"
+            "print('ok')\n"
+            "PY"
+        )
+        cmd, shell = executor.translate_command(heredoc)
+        assert shell == "powershell"
+        assert "Set-Location" in cmd
+        assert "python -c" in cmd
+        assert "@'" in cmd
+        assert "&&" not in cmd
+
     def test_powershell_translates_posix_heredoc(self):
         executor = self._make_executor()
         executor.shell_type = "powershell"

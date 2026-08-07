@@ -1,5 +1,10 @@
 """A23: DoubaoProvider registration and capability declaration."""
 
+import importlib
+import os
+import subprocess
+import sys
+
 from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
 from RxyCode.RxyCode1_1_0.core import providers
 from RxyCode.RxyCode1_1_0.core.providers.doubao import DoubaoProvider
@@ -45,3 +50,37 @@ def test_overrides_apply():
         {"base_url": _ARK, "model_name": "doubao-seed-2.1-turbo", "tokenizer": "tiktoken:o200k_base"}
     )
     assert caps.tokenizer == "tiktoken:o200k_base"
+
+
+def test_doubao_imports_without_repo_root_on_sys_path():
+    """Regression: doubao.py must not require the repo root on sys.path.
+
+    Console scripts (rxycode.exe) and the embedded API server run with a
+    sys.path that lacks the repo root, so the top-level ``from config...`` /
+    ``from core...`` imports used to raise ModuleNotFoundError: No module
+    named 'config', aborting agent init with "Warning: Agent init failed".
+    The module must resolve via relative imports instead.
+    """
+    probe = (
+        "import importlib, sys\n"
+        "sys.path[:] = [p for p in sys.path if p not in ('', '.')]\n"
+        "import os\n"
+        "os.chdir(os.path.expanduser('~'))\n"
+        "m = importlib.import_module('RxyCode.RxyCode1_1_0.core.providers.doubao')\n"
+        "print(m.DoubaoProvider.__name__)\n"
+    )
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = ""  # 避免隐式依赖仓库根
+    env["PYTHONSAFEPATH"] = "1"
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
+    assert "DoubaoProvider" in result.stdout

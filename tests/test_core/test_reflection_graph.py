@@ -71,6 +71,69 @@ async def test_reflection_node_classifies_tool_failure_and_drives_retry():
 
 
 @pytest.mark.asyncio
+async def test_reflection_node_cancels_tasks_when_replan_budget_exhausted(
+    monkeypatch,
+):
+    """Regression: an unbounded executor->validator->reflection->re_planner
+    loop crashed long builds with GraphRecursionError after the LangGraph
+    recursion_limit was exhausted. Once the configured re-plan budget is spent
+    the reflection node must cancel remaining failed tasks and terminate
+    instead of looping forever."""
+    from RxyCode.RxyCode1_1_0.core.graph import (
+        reflection_node,
+        route_after_reflection,
+    )
+    from RxyCode.RxyCode1_1_0.core.state import TaskStatus
+
+    monkeypatch.setenv("RXYCODE_DATA_DIR", "replan-budget-test")
+    monkeypatch.setattr(
+        "RxyCode.RxyCode1_1_0.core.graph._settings.load_config",
+        lambda: {"execution": {"max_replan_rounds": 2}},
+    )
+
+    state, leaf = _failed_state(issue="Tool timeout: bash did not complete")
+    leaf.evidence = [{"tool": "bash", "status": "failed", "executed": True}]
+    state["replan_count"] = 2  # budget (2) already spent
+
+    update = await reflection_node(state)
+    state.update(update)
+
+    assert leaf.status == TaskStatus.CANCELLED
+    assert state["reflection_action"] == "terminate"
+    assert route_after_reflection(state) != "re_plan"
+    assert any(
+        "budget" in record.get("reason", "").lower()
+        for record in state["reflections"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_reflection_node_respects_budget_before_exhaustion(monkeypatch):
+    """Below the budget the normal reflection path still runs."""
+    from RxyCode.RxyCode1_1_0.core.graph import (
+        reflection_node,
+        route_after_reflection,
+    )
+
+    monkeypatch.setenv("RXYCODE_DATA_DIR", "replan-budget-test")
+    monkeypatch.setattr(
+        "RxyCode.RxyCode1_1_0.core.graph._settings.load_config",
+        lambda: {"execution": {"max_replan_rounds": 2}},
+    )
+
+    state, leaf = _failed_state(issue="Tool timeout: bash did not complete")
+    leaf.evidence = [{"tool": "bash", "status": "failed", "executed": True}]
+    state["replan_count"] = 1  # still within budget
+
+    update = await reflection_node(state)
+    state.update(update)
+
+    assert leaf.status != "cancelled"
+    assert state["reflection_action"] == "retry"
+    assert route_after_reflection(state) == "error"
+
+
+@pytest.mark.asyncio
 async def test_reflection_node_persists_failure_for_a_later_run(
     tmp_path, monkeypatch,
 ):
