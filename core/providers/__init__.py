@@ -17,6 +17,7 @@ from .doubao import DoubaoProvider
 from .glm import GLMProvider
 from .kimi import KimiProvider
 from .minimax import MiniMaxProvider
+from .mimo import MIMOProvider
 from .openai import OpenAIProvider
 from .qwen import QwenProvider
 
@@ -31,6 +32,7 @@ _PROVIDERS: list[BaseProvider] = [
     KimiProvider(),
     GLMProvider(),
     MiniMaxProvider(),
+    MIMOProvider(),
     DoubaoProvider(),
     AnthropicProvider(),
     QwenProvider(),
