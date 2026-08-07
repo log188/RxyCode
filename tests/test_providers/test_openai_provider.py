@@ -8,7 +8,11 @@ from core.providers.openai import OpenAIProvider
 
 
 def _resolve(model_name: str):
-    cfg = {"base_url": "https://api.openai.com/v1", "model_name": model_name}
+    cfg = {
+        "base_url": "https://api.openai.com/v1",
+        "model_name": model_name,
+        "resolved_max_tokens": 8192,  # resolver 产出值（Phase 3 M4）
+    }
     return providers.resolve(cfg), cfg
 
 
@@ -61,7 +65,8 @@ def test_reasoning_model_drops_temperature():
     caps = p.capabilities({"base_url": "https://api.openai.com/v1",
                            "model_name": "o4-mini"})
     kwargs = p.llm_kwargs({"base_url": "https://api.openai.com/v1",
-                           "model_name": "o4-mini"}, caps)
+                           "model_name": "o4-mini",
+                           "resolved_max_tokens": 8192}, caps)
     assert "temperature" not in kwargs
 
 
@@ -196,7 +201,8 @@ def test_o_series_reasoning_caps():
 
 def test_effort_ignored_when_no_presets():
     """兜底路径（DEFAULT_CAPABILITIES）无 effort_presets，不注入 reasoning_effort。"""
-    cfg = {"base_url": "https://relay.example/v1", "model_name": "mystery-1"}
+    cfg = {"base_url": "https://relay.example/v1", "model_name": "mystery-1",
+           "resolved_max_tokens": 8192}
     p = providers.resolve(cfg)
     caps = p.capabilities(cfg)
     assert caps == DEFAULT_CAPABILITIES

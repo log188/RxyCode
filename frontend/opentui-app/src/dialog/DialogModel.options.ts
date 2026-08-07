@@ -31,7 +31,9 @@ export function buildModelListOptions(
         return "";
       }
     })();
-    const description = [provider, vendor !== title ? vendor : "", host]
+    // Phase 3 M6：显示输出上限摘要（来源 + 解析值），缺失时静默省略。
+    const limit = modelLimitSummary(m);
+    const description = [provider, vendor !== title ? vendor : "", host, limit]
       .filter(Boolean)
       .join(" · ");
     const footer = m.active || m.id === active
@@ -89,4 +91,31 @@ export function buildModelListOptions(
   ];
 
   return { options: opts, categoryOrder };
+}
+
+/**
+ * Phase 3 M6：把模型输出上限摘要渲染成一行文本（缺失时返回空串）。
+ *
+ * - 明确"未知模型兜底"≠"官方上限"：limit_source=unknown_fallback 时标注 "兜底"。
+ * - 旧服务器缺失摘要字段时返回 ""（前端不自行计算/不猜模型族）。
+ */
+export function modelLimitSummary(m: ModelInfo): string {
+  const value = m.resolved_max_tokens;
+  const source = m.limit_source;
+  if (typeof value !== "number" || value <= 0 || !source) {
+    return "";
+  }
+  const sourceLabel: Record<string, string> = {
+    explicit_config: "显式",
+    catalog_exact_provider: "目录",
+    catalog_exact_model: "目录",
+    catalog_family: "目录族",
+    provider_default: "服务商默认",
+    unknown_fallback: "兜底",
+    context_cap: "上下文钳制",
+    explicit_clamped: "显式钳制",
+    legacy_server: "旧服务",
+  };
+  const label = sourceLabel[source] || source;
+  return `输出${label} ${value}`;
 }

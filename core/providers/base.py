@@ -84,29 +84,21 @@ class BaseProvider:
     def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
         """返回传给 ChatOpenAI 的关键字参数。
 
-        Phase 3（M4）：真实请求路径由 ``agent_v2`` 强制走 resolver——构造层
-        把 ``OutputLimitResolution.resolved_max_tokens`` 写入 ``model_config``，
-        此处优先读取它。直接构造 LLM 的单元测试 / evals 场景可能不带
-        resolved，此时按以下优先级：
-        - ``resolved_max_tokens``（正整数）→ 请求解析值；
-        - ``max_tokens``（正整数）→ 用户显式覆盖（等价 explicit_config）；
-        - 否则 → ``UNKNOWN_MODEL_FALLBACK``（与 resolver 的 unknown_fallback
-          数值一致，非历史 8192）。
-
-        注意：这不是绕过 resolver——请求路径（agent_v2._raw_stream）只接受
-        resolver 产出值；本方法的宽松分支仅服务直接构造场景。
+        Phase 3（M4/ML2/ML5/EXIT.6）：**只接受 resolver 产出的最终值**。
+        调用方（agent_v2._build_llm_from_config）负责把
+        ``OutputLimitResolution.resolved_max_tokens`` 写入 ``model_config``；
+        本方法不自行解析、不读取 raw ``max_tokens``、不 fallback。
+        缺少 ``resolved_max_tokens`` → 抛 ValueError（禁止绕过 resolver）。
         """
-        from RxyCode.RxyCode1_1_0.config.model_limits import UNKNOWN_MODEL_FALLBACK
-
         resolved = model_config.get("resolved_max_tokens")
-        if isinstance(resolved, int) and resolved > 0:
-            max_tokens = resolved
-        else:
-            raw = model_config.get("max_tokens")
-            if isinstance(raw, int) and raw > 0:
-                max_tokens = raw
-            else:
-                max_tokens = UNKNOWN_MODEL_FALLBACK
+        if not isinstance(resolved, int) or resolved <= 0:
+            raise ValueError(
+                "llm_kwargs requires resolved_max_tokens (positive int) from "
+                "OutputLimitResolution; call resolve_configured_max_tokens() "
+                "first (Phase 3 M4/EXIT.6). Got resolved_max_tokens="
+                f"{resolved!r}"
+            )
+        max_tokens = resolved
         kwargs: dict[str, Any] = {
             "model": model_config.get("model_name", "gpt-4o"),
             "api_key": model_config.get("api_key"),

@@ -297,3 +297,79 @@ def test_add_model_rejects_invalid_max_tokens(monkeypatch):
             raise AssertionError(f"should have rejected max_tokens={bad!r}")
         except ValueError:
             pass
+
+
+def test_add_model_duplicate_same_provider_fails_closed(monkeypatch):
+    """M5.5：同一 Provider + 同一 model_name（不同 key）→ 拒绝，不静默覆盖。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = _in_memory_config(monkeypatch, model_manager, {"models": {}})
+    model_manager.add_model(
+        "deepseek/deepseek-chat",
+        "sk-test",
+        "https://api.deepseek.com/v1",
+        model_name="deepseek-chat",
+        provider_id="deepseek",
+    )
+    # 用裸 key 再添加同一 vendor id → 拒绝
+    try:
+        model_manager.add_model(
+            "deepseek-chat",
+            "sk-other",
+            "https://api.deepseek.com/v1",
+            model_name="deepseek-chat",
+            provider_id="deepseek",
+        )
+        raise AssertionError("duplicate same-provider model should be rejected")
+    except ValueError:
+        pass
+    # 原配置保持不变
+    assert "deepseek/deepseek-chat" in state["cfg"]["models"]
+    assert "deepseek-chat" not in state["cfg"]["models"]
+
+
+def test_add_model_same_key_update_allowed(monkeypatch):
+    """M5.5：同 key 重新添加（更新）是允许的，不误判为冲突。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = _in_memory_config(monkeypatch, model_manager, {"models": {}})
+    model_manager.add_model(
+        "deepseek/deepseek-chat",
+        "sk-a",
+        "https://api.deepseek.com/v1",
+        model_name="deepseek-chat",
+        provider_id="deepseek",
+    )
+    model_manager.add_model(
+        "deepseek/deepseek-chat",
+        "sk-b",
+        "https://api.deepseek.com/v1",
+        model_name="deepseek-chat",
+        provider_id="deepseek",
+        max_tokens=4096,
+    )
+    entry = state["cfg"]["models"]["deepseek/deepseek-chat"]
+    assert entry["max_tokens"] == 4096
+
+
+def test_add_model_cross_provider_same_model_ok(monkeypatch):
+    """M5.5：不同 Provider 同名模型可共存。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = _in_memory_config(monkeypatch, model_manager, {"models": {}})
+    model_manager.add_model(
+        "deepseek/deepseek-chat",
+        "sk-a",
+        "https://api.deepseek.com/v1",
+        model_name="deepseek-chat",
+        provider_id="deepseek",
+    )
+    model_manager.add_model(
+        "other/deepseek-chat",
+        "sk-b",
+        "https://other.example/v1",
+        model_name="deepseek-chat",
+        provider_id="other",
+    )
+    assert "deepseek/deepseek-chat" in state["cfg"]["models"]
+    assert "other/deepseek-chat" in state["cfg"]["models"]

@@ -266,6 +266,8 @@ def _default_config() -> dict:
             "unknown_model_max_tokens": 32768,
             # 上下文安全余量（token），参与最终钳制。
             "context_safety_margin_tokens": 1024,
+            # 目录来源过期阈值（天）。超过视为来源过期，resolver 追加 warning。
+            "catalog_max_age_days": 90,
         },
         "execution": {
             "parallel_enabled": False,  # default off, gradual rollout

@@ -12,6 +12,12 @@ export type ModelInfo = {
   category?: string;
   provider_name?: string;
   provider_id?: string;
+  // Phase 3 M6：可选输出上限摘要（旧服务器缺失时 undefined）
+  max_tokens_mode?: "auto" | "explicit";
+  resolved_max_tokens?: number;
+  limit_source?: string;
+  context_window?: number | null;
+  warning?: string | null;
 };
 
 export async function probeModels(): Promise<{

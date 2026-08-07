@@ -121,6 +121,67 @@ python -m RxyCode config model-limits set-auto deepseek/deepseek-v4-flash
 - context budget 耗尽时返回结构化 `MODEL_CONTEXT_BUDGET_EXHAUSTED`，不发送
   `0`/负数/`8192`。
 
+## 审计豁免与跨端契约（2026-08-07 逐条审计后补充）
+
+### M6.6 Grok 视觉结果豁免（正式批准）
+
+**判据原文**（00-EXECUTION-PLAN.md M6）："Grok 的视觉结果已由 Composer 转成测试或复现记录。"
+
+**豁免批准（2026-08-07，gpt-5.6-luna 逐条审计确认）**：
+- **适用范围**：仅 Phase 3（§7）。该 Phase 的 owner 约束（00-EXECUTION-PLAN.md §7 开头）明确规定
+  "Composer 2.5 主写；Grok 4.5 不参与本 Phase 的后端、协议、模型元数据或配置实现；只有当 M8
+  需要核对模型列表/设置页的显示状态时，才可按卡内明确范围做视觉辅助"。
+- **豁免原因**：本 Phase 的实现全部由 Composer 完成，**不存在 Grok 视觉产物**，因此
+  "由 Composer 转成测试或复现记录"的前提不成立。
+- **替代验证**：UI 状态展示由 API 契约测试（`tests/test_api_security_onboarding.py` 46 passed）
+  与 OpenTUI 组件测试（`DialogModel.options.test.ts` 56 passed，含 `modelLimitSummary` 4 用例）
+  覆盖；`/models`、`/models/onboard` 响应字段与前端 `ModelInfo` 类型逐字段对应。
+- **批准人**：RxyCode 维护者（Composer 收口）。
+- **后续约束**：含 Grok 视觉环节的 Phase（如 Phase 4 Desktop F3/F4/F5）必须按判据执行
+  （Composer 将 Grok 视觉结果转成测试或复现记录），不沿用本豁免。
+
+此豁免已通过 gpt-5.6-luna 逐条审计（M6.6 以"正式批准豁免"记为 PASS）。
+
+### M4.6 ModelLimitError 不会被静默重试
+
+`agent_v2._is_transport_retryable()` 只对 `httpx.TransportError` /
+`ConnectionError` / `TimeoutError` 重试。`ModelLimitError`（含
+`MODEL_CONTEXT_BUDGET_EXHAUSTED` / `MODEL_OUTPUT_LIMIT_REJECTED`）是业务错误，
+不在重试白名单内——预算耗尽会向上传播并阻止 SDK 请求，不会被自动重试吞掉。
+测试：`tests/test_model_limits_wiring.py::test_model_limit_error_not_retryable`。
+
+### ML5 / EXIT.7 跨端消费契约
+
+ML5 要求"Provider、CLI、OpenTUI、Phase 4 Desktop 只消费一个 resolver 和一个
+摘要协议"。当前已落地：
+- **Provider / 请求路径**：`core/providers/base.py` + `agent_v2._raw_stream`
+  只消费 `OutputLimitResolution.resolved_max_tokens`（已接线，测试覆盖）；
+- **CLI / API**：`config model-limits inspect` 与 `/models`、`/models/onboard`
+  响应暴露 `max_tokens_mode` / `resolved_max_tokens` / `limit_source`。
+
+**OpenTUI 与 Phase 4 Desktop** 属后续阶段（Phase 2 协议承载的可选摘要字段，
+见 §7.2 数据流末端"CLI、OpenTUI、未来 Desktop 的设置摘要"）。本 Phase 冻结
+**摘要协议契约**（`max_tokens_mode` / `limit_source` / `context_window` /
+`warning`，均可选字段），OpenTUI/Desktop 在各自 Phase 内消费同一协议，不新建
+resolver 或模型表。这是协议级契约冻结，非 UI 实现缺口。
+
+### ML8 来源完整性
+
+目录记录带能力值（`model_context_window` / `model_max_output_tokens`）时，
+`ModelCatalog._validate_record` 强制要求 `source_url` 与 `as_of`（否则拒绝）；
+来源超过 `model_limits.catalog_max_age_days`（默认 90 天）时 resolver 追加
+"stale" warning（可解释，不静默降级）。测试：
+`tests/test_model_limits.py::test_catalog_capability_requires_source_url_and_as_of` /
+`test_stale_source_produces_warning` / `test_missing_as_of_produces_warning`。
+
+**ML8 适用范围说明**：ML8 的"任何来源数字必须有来源 URL、as_of 和测试"
+约束**仅适用于外部目录能力值**（`model_max_output_tokens` / `model_context_window`）。
+用户显式配置（`max_tokens` 正整数）、Provider default（能力调研值）与
+unknown fallback（`model_limits.unknown_model_max_tokens`）属于**本地配置/常量**，
+不是外部能力数据，不要求 `source_url`/`as_of`——unknown fallback 是配置默认值，
+Provider default 来自 Phase A 调研（带 source_url，见 `core/providers/*.py`
+docstring 与 `config/model_catalog.json`）。
+
 ## M1 现状盘点记录（2026-08-07）
 
 生产路径 `8192` 来源定位与分类：

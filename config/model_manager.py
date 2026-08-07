@@ -219,8 +219,30 @@ def add_model(
     meta = resolve_provider_meta(base_url, provider_id, provider_name)
     cfg = load_config()
     models = cfg.setdefault("models", {})
-    previous_reference = models.get(name, {}).get("api_key_secret", "")
+    # M5.5：同 Provider + 同 model_name 已存在（不同 key）→ fail closed，不静默覆盖。
     vendor_id = model_name or name
+    for existing_key, existing in models.items():
+        if existing_key == name:
+            continue  # 同 key 更新是允许的（重新保存/改配置）
+        if not isinstance(existing, dict):
+            continue
+        try:
+            same_url = normalize_provider_base_url(
+                existing.get("base_url", ""), require_https=False
+            ) == base_url
+        except ValueError:
+            same_url = False
+        existing_vendor = (existing.get("model_name") or existing_key).strip()
+        if (
+            same_url
+            and existing_vendor == vendor_id
+            and (existing.get("provider_id") or meta["id"]) == meta["id"]
+        ):
+            raise ValueError(
+                f"model '{vendor_id}' already exists for provider '{meta['id']}' "
+                f"at key '{existing_key}'; use that key instead of adding a duplicate"
+            )
+    previous_reference = models.get(name, {}).get("api_key_secret", "")
     entry = {
         **_credential_config(api_key),
         "base_url": base_url,

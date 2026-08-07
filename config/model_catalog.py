@@ -54,6 +54,19 @@ def _validate_record(record: dict[str, Any]) -> ModelLimitRecord:
     source = str(record.get("source") or "").strip()
     if not source:
         raise ValueError(f"catalog {provider_id}:{model_id} missing source")
+    # ML8：任何能力数字（context 或 output）都必须带来源 URL 与 as_of 时点；
+    # 无能力数字的占位记录可以省略（走 unknown_fallback）。
+    if context_window is not None or max_output is not None:
+        if not (record.get("source_url") and str(record["source_url"]).strip()):
+            raise ValueError(
+                f"catalog {provider_id}:{model_id} has capability values but "
+                "missing source_url (ML8)"
+            )
+        if not (record.get("as_of") and str(record["as_of"]).strip()):
+            raise ValueError(
+                f"catalog {provider_id}:{model_id} has capability values but "
+                "missing as_of (ML8)"
+            )
     return ModelLimitRecord(
         provider_id=provider_id,
         model_id=model_id,

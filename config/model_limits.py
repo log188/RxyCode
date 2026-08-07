@@ -104,6 +104,7 @@ def resolve_output_limit(
     provider_default: int | None,
     input_tokens: int | None,
     context_safety_margin: int = DEFAULT_CONTEXT_SAFETY_MARGIN,
+    catalog_max_age_days: int | None = None,
 ) -> OutputLimitResolution:
     """按冻结优先级解析一次请求的输出上限。
 
@@ -171,6 +172,7 @@ def resolve_output_limit(
             # resolved 由 provider_default / unknown_fallback 兜底，
             # 但来源标注仍体现"目录命中"。
             source = "catalog_exact_provider"
+            _warn_if_source_stale(catalog_record, warnings, catalog_max_age_days)
             if cap is not None:
                 selected = cap
             else:
@@ -283,6 +285,15 @@ def resolve_configured_max_tokens(
     margin = int(limits_cfg.get("context_safety_margin_tokens", 1024) or 0)
     if margin < 0:
         margin = 1024
+    max_age = limits_cfg.get("catalog_max_age_days")
+    if max_age is None:
+        max_age = 90  # 来源超过 90 天视为过期（可配置）
+    try:
+        max_age = int(max_age)
+    except (TypeError, ValueError):
+        max_age = 90
+    if max_age <= 0:
+        max_age = None  # 0 或负数 = 不检查过期
 
     catalog = catalog if catalog is not None else _global_catalog()
     catalog_record = None
@@ -302,6 +313,7 @@ def resolve_configured_max_tokens(
         provider_default=provider_default,
         input_tokens=input_tokens,
         context_safety_margin=margin,
+        catalog_max_age_days=max_age,
     )
     return resolution
 
@@ -310,3 +322,43 @@ def reset_catalog_cache() -> None:
     """清空目录缓存（测试用）。"""
     global _catalog_cache
     _catalog_cache = None
+
+
+def _warn_if_source_stale(
+    record: ModelLimitRecord,
+    warnings: list[str],
+    catalog_max_age_days: int | None,
+) -> None:
+    """ML6：目录来源过期/缺失 as_of 时追加可解释 warning（不静默降级）。
+
+    - ``as_of`` 缺失 → warning（来源不可核验时点）。
+    - ``as_of`` 超过 ``catalog_max_age_days``（默认 90）→ warning。
+    仅追加 warning，不改变 source（目录命中仍可信，但调用方可感知过期）。
+    """
+    from datetime import date, datetime
+
+    max_age = 90
+    if catalog_max_age_days is not None and catalog_max_age_days > 0:
+        max_age = catalog_max_age_days
+
+    as_of = record.as_of
+    if not as_of:
+        warnings.append(
+            f"catalog source for {record.provider_id}:{record.model_id} "
+            "has no as_of date; staleness cannot be verified"
+        )
+        return
+    try:
+        parsed = datetime.strptime(as_of, "%Y-%m-%d").date()
+    except ValueError:
+        warnings.append(
+            f"catalog source as_of={as_of!r} is not a valid YYYY-MM-DD date"
+        )
+        return
+    age = (date.today() - parsed).days
+    if age > max_age:
+        warnings.append(
+            f"catalog source for {record.provider_id}:{record.model_id} "
+            f"is {age} days old (as_of={as_of}, max allowed {max_age}); "
+            "consider refreshing"
+        )

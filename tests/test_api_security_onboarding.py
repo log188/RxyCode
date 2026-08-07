@@ -835,3 +835,97 @@ def test_model_listing_includes_output_limit_summary(monkeypatch):
     assert "api_key" not in response.text
     assert "sk-" not in response.text
 
+
+def test_onboarding_error_trace_never_contains_api_key():
+    """M7.4：异常消息与响应不含 API key/secret（覆盖 redact 行为）。"""
+    from unittest.mock import patch
+
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    secret = "sk-trace-secret-abcdef"
+    # 真实 discover 内部用 safe_error() 对 api_key 做 redact；
+    # 模拟传输异常路径（httpx.Client 抛错），验证返回的 error 不含 secret。
+    with patch("httpx.Client") as mock_client:
+        mock_client.return_value.__enter__.return_value.get.side_effect = (
+            RuntimeError(f"connection refused for {secret}")
+        )
+        result = model_manager.discover_provider_models(
+            api_key=secret, base_url="https://api.example.com/v1"
+        )
+    assert "connection refused" in result.get("error", "")
+    assert secret not in result.get("error", "")
+    assert secret not in str(result)
+
+    # safe_error redact：确认 discover 内部替换逻辑把 api_key 抹掉
+    assert "[REDACTED]" in result.get("error", "")
+
+
+def test_model_limits_inspect_never_leaks_credentials(monkeypatch):
+    """M7.4：inspect 报告不含 api_key / secret / 环境变量值。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(
+        model_manager,
+        "load_config",
+        lambda: {
+            "models": {
+                "demo/m": {
+                    "model_name": "m", "base_url": "https://api.example.com/v1",
+                    "provider_id": "demo", "api_key_env": "SECRET_ENV",
+                },
+            },
+            "model_limits": {},
+        },
+    )
+    report = model_manager.inspect_model_limits()
+    text = str(report)
+    assert "SECRET_ENV" not in text
+    assert "api_key" not in text or "api_key_env" not in text.split(":")[0]
+    assert "sk-" not in text
+
+
+def test_models_and_inspect_never_leak_generic_secret_fields(monkeypatch):
+    """M7.4：api_key 之外的通用 secret 字段（password/token/access_token/secret）
+    也不得出现在 /models 响应或 inspect 报告中。"""
+    from RxyCode.RxyCode1_1_0 import api_server
+    from RxyCode.RxyCode1_1_0.config import model_manager, settings
+
+    secret_password = "super-secret-password-xyz"
+    secret_token = "opaque-access-token-xyz"
+
+    config = {
+        "models": {
+            "demo/m": {
+                "model_name": "m",
+                "base_url": "https://api.example.com/v1",
+                "provider_id": "demo",
+                "api_key_secret": "sk-stored-secret",
+                "password": secret_password,
+                "access_token": secret_token,
+            },
+        },
+        "active_model": "demo/m",
+        "recent_models": [],
+        "model_limits": {},
+    }
+
+    # inspect 报告不泄漏
+    monkeypatch.setattr(model_manager, "load_config", lambda: config)
+    report_text = str(model_manager.inspect_model_limits())
+    assert secret_password not in report_text
+    assert secret_token not in report_text
+    assert "sk-stored-secret" not in report_text
+
+    # /models 响应不泄漏（含 password/token/secret 值）
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    monkeypatch.setattr(settings, "load_config", lambda: config)
+    token = api_server.configure_api_token("generic-secret-token")
+    with _client(api_server, token=token) as client:
+        response = client.get("/models")
+    assert response.status_code == 200
+    assert secret_password not in response.text
+    assert secret_token not in response.text
+    assert "sk-stored-secret" not in response.text
+    assert "password" not in response.text
+    assert "access_token" not in response.text
+

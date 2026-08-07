@@ -14,7 +14,7 @@ _ARK = "https://ark.cn-beijing.volces.com/api/coding/v3"
 
 
 def _resolve(model_name: str, base_url: str = _BIGMODEL):
-    cfg = {"base_url": base_url, "model_name": model_name}
+    cfg = {"base_url": base_url, "model_name": model_name, "resolved_max_tokens": 8192}
     return providers.resolve(cfg), cfg
 
 

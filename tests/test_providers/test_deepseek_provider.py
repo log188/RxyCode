@@ -45,7 +45,7 @@ def test_reasoner_drops_sampling_keeps_tools():
 def test_reasoner_llm_kwargs_omit_temperature():
     p = providers.resolve({"model_name": "deepseek-reasoner"})
     caps = p.capabilities({"model_name": "deepseek-reasoner"})
-    kwargs = p.llm_kwargs({"model_name": "deepseek-reasoner"}, caps)
+    kwargs = p.llm_kwargs({"model_name": "deepseek-reasoner", "resolved_max_tokens": 8192}, caps)
     assert "temperature" not in kwargs
 
 

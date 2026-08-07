@@ -14,7 +14,7 @@ _MOONSHOT_AI = "https://api.moonshot.ai/v1"
 
 
 def _resolve(model_name: str):
-    cfg = {"base_url": _MOONSHOT_CN, "model_name": model_name}
+    cfg = {"base_url": _MOONSHOT_CN, "model_name": model_name, "resolved_max_tokens": 8192}
     return providers.resolve(cfg), cfg
 
 

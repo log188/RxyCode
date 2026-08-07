@@ -130,12 +130,12 @@ def test_catalog_cross_provider_coexistence():
     cat.add_record({
         "provider_id": "a", "model_id": "same-model",
         "model_context_window": 1000, "model_max_output_tokens": 500,
-        "source": "test", "source_url": None, "as_of": "2026-08-03",
+        "source": "test", "source_url": "https://example.invalid/catalog", "as_of": "2026-08-03",
     })
     cat.add_record({
         "provider_id": "b", "model_id": "same-model",
         "model_context_window": 2000, "model_max_output_tokens": 1000,
-        "source": "test", "source_url": None, "as_of": "2026-08-03",
+        "source": "test", "source_url": "https://example.invalid/catalog", "as_of": "2026-08-03",
     })
     rec_a, key_a, _ = cat.lookup("a", "same-model")
     rec_b, key_b, _ = cat.lookup("b", "same-model")
@@ -150,13 +150,13 @@ def test_catalog_duplicate_same_provider_fails_closed():
     cat.add_record({
         "provider_id": "a", "model_id": "m",
         "model_context_window": 1000, "model_max_output_tokens": 500,
-        "source": "test", "source_url": None, "as_of": "2026-08-03",
+        "source": "test", "source_url": "https://example.invalid/catalog", "as_of": "2026-08-03",
     })
     with pytest.raises(ValueError):
         cat.add_record({
             "provider_id": "a", "model_id": "m",
             "model_context_window": 2000, "model_max_output_tokens": 900,
-            "source": "test", "source_url": None, "as_of": "2026-08-03",
+            "source": "test", "source_url": "https://example.invalid/catalog", "as_of": "2026-08-03",
         })
 
 
@@ -164,7 +164,7 @@ def test_catalog_family_pattern():
     cat = ModelCatalog()
     cat.add_family("kimi", "kimi-k2*", {
         "model_context_window": 262144, "model_max_output_tokens": None,
-        "source": "family", "source_url": None, "as_of": "2026-08-03",
+        "source": "family", "source_url": "https://example.invalid/catalog", "as_of": "2026-08-03",
     })
     rec, key, pattern = cat.lookup("kimi", "kimi-k2.6")
     assert rec is not None
@@ -213,7 +213,7 @@ def test_priority_family_pattern_hit():
     cat = ModelCatalog()
     cat.add_family("kimi", "kimi-k2*", {
         "model_context_window": 262144, "model_max_output_tokens": 131072,
-        "source": "family", "source_url": None, "as_of": "2026-08-03",
+        "source": "family", "source_url": "https://example.invalid/catalog", "as_of": "2026-08-03",
     })
     rec, key, pattern = cat.lookup("kimi", "kimi-k2.7-code")
     assert rec is not None
@@ -226,7 +226,7 @@ def test_priority_exact_beats_family():
     cat = ModelCatalog()
     cat.add_family("kimi", "kimi-k2*", {
         "model_context_window": 262144, "model_max_output_tokens": 131072,
-        "source": "family", "source_url": None, "as_of": "2026-08-03",
+        "source": "family", "source_url": "https://example.invalid/catalog", "as_of": "2026-08-03",
     })
     cat.add_record(_record(provider="kimi", model_id="kimi-k2.7-code",
                            cap=32768, ctx=262144))
@@ -269,7 +269,7 @@ def test_family_pattern_requires_explicit_registration():
     cat = ModelCatalog()
     cat.add_family("kimi", "kimi-k2*", {
         "model_context_window": 262144, "model_max_output_tokens": 131072,
-        "source": "family", "source_url": None, "as_of": "2026-08-03",
+        "source": "family", "source_url": "https://example.invalid/catalog", "as_of": "2026-08-03",
     })
     # 未登记的 provider → 不命中
     assert cat.lookup("other", "kimi-k2.6")[0] is None
@@ -277,3 +277,84 @@ def test_family_pattern_requires_explicit_registration():
     assert cat.lookup("kimi", "旗舰模型")[0] is None
     # 不匹配 pattern 的 id → 不命中
     assert cat.lookup("kimi", "kimi-k3")[0] is None
+
+
+# ---- ML6 来源过期 / ML8 来源完整性（审计要求） -----------------------
+
+
+def test_catalog_capability_requires_source_url_and_as_of():
+    """ML8：有能力值（context/output）的目录记录必须带 source_url 与 as_of。"""
+    from RxyCode.RxyCode1_1_0.config.model_catalog import ModelCatalog
+
+    cat = ModelCatalog()
+    # 缺 source_url → 拒绝
+    with pytest.raises(ValueError, match="source_url"):
+        cat.add_record({
+            "provider_id": "a", "model_id": "m",
+            "model_context_window": 8192, "model_max_output_tokens": 4096,
+            "source": "t", "as_of": "2026-08-03",
+        })
+    # 缺 as_of → 拒绝
+    with pytest.raises(ValueError, match="as_of"):
+        cat.add_record({
+            "provider_id": "a", "model_id": "m",
+            "model_context_window": 8192, "model_max_output_tokens": 4096,
+            "source": "t", "source_url": "https://example.invalid/cat",
+        })
+    # 无能力值（null）的占位记录可省略 URL/as_of
+    cat.add_record({
+        "provider_id": "a", "model_id": "placeholder",
+        "model_context_window": None, "model_max_output_tokens": None,
+        "source": "t",
+    })
+
+
+def test_stale_source_produces_warning():
+    """ML6：as_of 超过 catalog_max_age_days → 可解释 warning（不静默）。"""
+    import datetime as _dt
+
+    from RxyCode.RxyCode1_1_0.config.model_limits import (
+        ModelLimitRecord,
+        resolve_output_limit,
+    )
+
+    old_date = (_dt.date.today() - _dt.timedelta(days=365)).isoformat()
+    stale = ModelLimitRecord(
+        provider_id="a", model_id="m",
+        model_context_window=8192, model_max_output_tokens=4096,
+        source="t", source_url="https://example.invalid/cat", as_of=old_date,
+    )
+    result = resolve_output_limit(
+        provider_id="a", model_id="m",
+        configured_max_tokens=None,
+        catalog_record=stale,
+        provider_default=None,
+        input_tokens=100,
+        catalog_max_age_days=90,
+    )
+    assert any("days old" in w or "stale" in w for w in result.warnings)
+    # source 仍是 catalog 命中（不静默降级）
+    assert result.source == "catalog_exact_provider"
+
+
+def test_missing_as_of_produces_warning():
+    """ML6：as_of 缺失 → 可解释 warning。"""
+    from RxyCode.RxyCode1_1_0.config.model_limits import (
+        ModelLimitRecord,
+        resolve_output_limit,
+    )
+
+    no_date = ModelLimitRecord(
+        provider_id="a", model_id="m",
+        model_context_window=8192, model_max_output_tokens=4096,
+        source="t", source_url="https://example.invalid/cat", as_of=None,
+    )
+    result = resolve_output_limit(
+        provider_id="a", model_id="m",
+        configured_max_tokens=None,
+        catalog_record=no_date,
+        provider_default=None,
+        input_tokens=100,
+        catalog_max_age_days=90,
+    )
+    assert any("no as_of" in w or "as_of" in w for w in result.warnings)

@@ -12,18 +12,27 @@ import pytest
 
 
 def test_llm_kwargs_never_emits_auto_string():
-    """M4：max_tokens='auto' 时 llm_kwargs 产出正整数（resolved 或兜底）。"""
+    """M4：auto 不会以字符串进入 SDK——无 resolved 时抛错，有 resolved 时用正整数。"""
+    import pytest
+
     from core import providers
-    from config.model_limits import UNKNOWN_MODEL_FALLBACK
 
     p = providers.resolve({"base_url": "https://api.example.com/v1", "model_name": "m"})
     caps = p.capabilities({})
+    # auto 且无 resolved → 抛错（EXIT.6，不自行兜底）
+    with pytest.raises(ValueError):
+        p.llm_kwargs(
+            {"model_name": "m", "api_key": "k", "base_url": "b", "max_tokens": "auto"},
+            caps,
+        )
+    # auto + resolved → 用正整数
     kwargs = p.llm_kwargs(
-        {"model_name": "m", "api_key": "k", "base_url": "b", "max_tokens": "auto"},
+        {"model_name": "m", "api_key": "k", "base_url": "b", "max_tokens": "auto",
+         "resolved_max_tokens": 4096},
         caps,
     )
     assert isinstance(kwargs["max_tokens"], int)
-    assert kwargs["max_tokens"] > 0
+    assert kwargs["max_tokens"] == 4096
     assert kwargs["max_tokens"] != "auto"
 
 
@@ -64,7 +73,7 @@ def test_raw_stream_resolver_path_never_uses_capability_value_directly(monkeypat
     catalog = ModelCatalog.from_records([{
         "provider_id": "demo", "model_id": "m",
         "model_context_window": 262144, "model_max_output_tokens": 65536,
-        "source": "t", "source_url": None, "as_of": "t",
+        "source": "t", "source_url": "https://example.invalid/cat", "as_of": "2026-08-03",
     }])
 
     resolution = resolve_configured_max_tokens(
@@ -97,7 +106,7 @@ def test_context_budget_exhausted_propagates(monkeypatch):
     catalog = ModelCatalog.from_records([{
         "provider_id": "demo", "model_id": "tiny",
         "model_context_window": 500, "model_max_output_tokens": 200,
-        "source": "t", "source_url": None, "as_of": "t",
+        "source": "t", "source_url": "https://example.invalid/cat", "as_of": "2026-08-03",
     }])
 
     with pytest.raises(ModelLimitError) as exc:
@@ -120,7 +129,7 @@ def test_auto_resolves_to_positive_integer_through_resolver():
     catalog = ModelCatalog.from_records([{
         "provider_id": "demo", "model_id": "m",
         "model_context_window": 262144, "model_max_output_tokens": 65536,
-        "source": "t", "source_url": None, "as_of": "t",
+        "source": "t", "source_url": "https://example.invalid/cat", "as_of": "2026-08-03",
     }])
     resolution = resolve_configured_max_tokens(
         model_config={"provider_id": "demo", "model_name": "m", "max_tokens": "auto"},
@@ -132,3 +141,27 @@ def test_auto_resolves_to_positive_integer_through_resolver():
     assert isinstance(resolution.resolved_max_tokens, int)
     assert resolution.resolved_max_tokens == 65536
     assert resolution.source == "catalog_exact_provider"
+
+
+def test_model_limit_error_not_retryable():
+    """M4.6：ModelLimitError 不属于可重试的传输错误，不会被静默重试吞掉。
+
+    agent_v2 的 transport retry 只对 httpx.TransportError / ConnectionError /
+    TimeoutError 重试（_is_transport_retryable）。ModelLimitError（如
+    MODEL_CONTEXT_BUDGET_EXHAUSTED）是业务错误，不在重试白名单内。
+    """
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _is_transport_retryable
+    from RxyCode.RxyCode1_1_0.config.model_limits import (
+        MODEL_CONTEXT_BUDGET_EXHAUSTED,
+        ModelLimitError,
+    )
+
+    err = ModelLimitError(
+        MODEL_CONTEXT_BUDGET_EXHAUSTED, "effective_max_tokens < 1"
+    )
+    assert not _is_transport_retryable(err)
+    assert not _is_transport_retryable(RuntimeError("not transport"))
+    # 对照：传输错误应可重试
+    import httpx
+    assert _is_transport_retryable(httpx.ConnectError("boom"))
+    assert _is_transport_retryable(TimeoutError("slow"))

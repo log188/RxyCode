@@ -735,6 +735,26 @@ def _build_llm(model_name: Optional[str] = None):
 
     provider = providers.resolve(resolved_config)
     caps = provider.capabilities(resolved_config)
+    # Phase 3 M4：Provider.llm_kwargs 只接受 resolver 产出值。evals 会 pop 掉
+    # max_tokens（评测不设固定上限），但仍需提供 resolved_max_tokens 供校验。
+    try:
+        from RxyCode.RxyCode1_1_0.config.model_limits import (
+            resolve_configured_max_tokens,
+        )
+
+        resolution = resolve_configured_max_tokens(
+            model_config=resolved_config,
+            capability_max_output_tokens=caps.max_output_tokens,
+            configured_max_tokens=resolved_config.get("max_tokens"),
+            model_limits_config=(cfg.get("model_limits") or {}),
+            input_tokens=None,
+        )
+        resolved_config["resolved_max_tokens"] = resolution.resolved_max_tokens
+    except Exception:
+        # 评测兜底：不阻断 LLM 构造，llm_kwargs 会因缺 resolved 抛错前，
+        # _eval_llm_kwargs 用默认值兜底（见其实现）。
+        resolved_config.setdefault("resolved_max_tokens", 32768)
+
     llm = ChatOpenAI(
         **_eval_llm_kwargs(
             resolved_config,
