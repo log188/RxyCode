@@ -33,12 +33,13 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
 from .base import BaseProvider
 
 #: gpt-5.6 三档定价（USD/1M，Short context Standard；§7.2 问 7 / ③，定价按型号分条）。
-#: ModelPricing 无 cache_write 字段（卡 verbatim 结构），写入计费不在此表内。
+#: cache_write 按 uncached input × 1.25 计费（§7.2 问 4）。
 _OPENAI_PRICING: dict[str, ModelPricing] = {
     "gpt-5.6-sol": ModelPricing(
         input_per_mtok=5.00,
         output_per_mtok=30.00,
         cached_input_per_mtok=0.50,
+        cache_write_per_mtok=6.25,
         as_of="2026-08-02",
         source_url="https://platform.openai.com/docs/pricing",
     ),
@@ -46,6 +47,7 @@ _OPENAI_PRICING: dict[str, ModelPricing] = {
         input_per_mtok=2.00,
         output_per_mtok=12.00,
         cached_input_per_mtok=0.20,
+        cache_write_per_mtok=2.50,
         as_of="2026-08-02",
         source_url="https://platform.openai.com/docs/pricing",
     ),
@@ -53,6 +55,7 @@ _OPENAI_PRICING: dict[str, ModelPricing] = {
         input_per_mtok=0.20,
         output_per_mtok=1.20,
         cached_input_per_mtok=0.02,
+        cache_write_per_mtok=0.25,
         as_of="2026-08-02",
         source_url="https://platform.openai.com/docs/pricing",
     ),
@@ -63,30 +66,36 @@ _DEFAULT_OPENAI_PRICING = ModelPricing(
     input_per_mtok=None,
     output_per_mtok=None,
     cached_input_per_mtok=None,
+    cache_write_per_mtok=None,
     as_of="2026-08-02",
     source_url="https://platform.openai.com/docs/pricing",
 )
 
+#: gpt-5.6 三档 + 别名 `gpt-5.6`（§7.2 问 1：gpt-5.6-sol 的别名）。
+#: 只认这 4 个 id，`gpt-5.6-*` 未知变体不套调研能力。
+_5_6_FAMILY: dict[str, str] = {
+    "gpt-5.6": "gpt-5.6-sol",
+    "gpt-5.6-sol": "gpt-5.6-sol",
+    "gpt-5.6-terra": "gpt-5.6-terra",
+    "gpt-5.6-luna": "gpt-5.6-luna",
+}
 
-def _is_gpt_5_6(model_name: str) -> bool:
-    """§7.2 调研对象为 gpt-5.6 三档（sol/terra/luna）及其别名。"""
-    return "gpt-5.6" in model_name.lower()
+
+def _gpt_5_6_family(model_name: str) -> str | None:
+    """返回 gpt-5.6 家族规范名（含别名归一），非本家族返回 None。"""
+    return _5_6_FAMILY.get(model_name.lower())
 
 
 def _prompt_variant(model_name: str) -> str:
     """gpt-5.6 按型号取 prompt_variant；其余保持默认。"""
-    name = model_name.lower()
-    for key in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
-        if name == key:
-            return key
-    return "default"
+    family = _gpt_5_6_family(model_name)
+    return family if family is not None else "default"
 
 
 def _pricing_for(model_name: str) -> ModelPricing:
-    name = model_name.lower()
-    for key, pricing in _OPENAI_PRICING.items():
-        if name == key:
-            return pricing
+    family = _gpt_5_6_family(model_name)
+    if family is not None:
+        return _OPENAI_PRICING[family]
     return _DEFAULT_OPENAI_PRICING
 
 
@@ -115,12 +124,13 @@ class OpenAIProvider(BaseProvider):
                 "deep": "high",
             },
         )
-        if _is_gpt_5_6(name):
+        if _gpt_5_6_family(name) is not None:
             # §7.2 ③（2026-08-02 审计通过）：gpt-5.6 三档显式能力。
             caps = replace(
                 caps,
                 context_window=1_050_000,
                 compaction_threshold=945_000,
+                max_output_tokens=128_000,
                 supports_vision=True,
                 supports_reasoning=True,
                 thinking_default_on=True,  # 省略 effort → 默认 medium
@@ -146,7 +156,9 @@ class OpenAIProvider(BaseProvider):
             # §7.2 问 5：仅旧 o 系列有拒绝采样参数的明文；GPT-5.6 未找到，
             # 保留 temperature（accepts_temperature=True）。
             kwargs.pop("temperature", None)
-        if caps.effort_presets:
+        if caps.supports_reasoning and caps.effort_presets:
+            # 仅对推理模型注入 reasoning_effort（§7.2 ③ 调研范围为 gpt-5.6；
+            # gpt-4o/gpt-5.2 无数据，不得臆造参数）。
             effort = str(model_config.get("effort") or "balanced")
             preset = caps.effort_presets.get(effort, "medium")
             # §7.2 问 5 / ③：Chat Completions 顶层参数 reasoning_effort

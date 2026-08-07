@@ -68,17 +68,18 @@ def test_reasoning_model_drops_temperature():
 # ---- §7.2 ③ 显式能力（gpt-5.6 三档） -----------------------------------
 
 
-@pytest.mark.parametrize("name,inp,outp,cached", [
-    ("gpt-5.6-sol", 5.00, 30.00, 0.50),
-    ("gpt-5.6-terra", 2.00, 12.00, 0.20),
-    ("gpt-5.6-luna", 0.20, 1.20, 0.02),
+@pytest.mark.parametrize("name,inp,outp,cached,cwrite", [
+    ("gpt-5.6-sol", 5.00, 30.00, 0.50, 6.25),
+    ("gpt-5.6-terra", 2.00, 12.00, 0.20, 2.50),
+    ("gpt-5.6-luna", 0.20, 1.20, 0.02, 0.25),
 ])
-def test_per_model_pricing(name, inp, outp, cached):
-    """§7.2 问 7：定价按型号分条，带 as_of 与来源 URL。"""
+def test_per_model_pricing(name, inp, outp, cached, cwrite):
+    """§7.2 问 7：定价按型号分条，带 cache_write 与 as_of/source_url。"""
     caps = _caps(name)
     assert caps.pricing.input_per_mtok == inp
     assert caps.pricing.output_per_mtok == outp
     assert caps.pricing.cached_input_per_mtok == cached
+    assert caps.pricing.cache_write_per_mtok == cwrite
     assert caps.pricing.as_of == "2026-08-02"
     assert caps.pricing.source_url
 
@@ -101,11 +102,46 @@ def test_gpt_5_6_section_7_2_values(name, variant):
     caps = _caps(name)
     assert caps.context_window == 1_050_000
     assert caps.compaction_threshold == 945_000
+    assert caps.max_output_tokens == 128_000
     assert caps.supports_vision is True
     assert caps.supports_reasoning is True
     assert caps.thinking_default_on is True
     assert caps.supports_prompt_cache is True
     assert caps.prompt_variant == variant
+
+
+def test_gpt_5_6_alias_maps_to_sol():
+    """§7.2 问 1：gpt-5.6 是 gpt-5.6-sol 的别名。"""
+    caps = _caps("gpt-5.6")
+    assert caps.context_window == 1_050_000
+    assert caps.prompt_variant == "gpt-5.6-sol"
+    assert caps.pricing.input_per_mtok == 5.00
+
+
+def test_unknown_5_6_variant_is_not_researched():
+    """gpt-5.6-<unknown> 不得误套调研能力（收紧匹配）。"""
+    caps = _caps("gpt-5.6-unknown")
+    assert caps.context_window == 256_000
+    assert caps.max_output_tokens is None
+    assert caps.supports_reasoning is False
+    p, cfg = _resolve("gpt-5.6-unknown")
+    assert "reasoning_effort" not in p.llm_kwargs(cfg, caps)
+
+
+def test_non_researched_gpt_does_not_inject_reasoning_effort():
+    """gpt-4o/gpt-5.2 无 §7.2 数据：仅保留推理能力时注入 reasoning_effort。"""
+    caps = _caps("gpt-4o")
+    assert caps.supports_reasoning is False
+    p, cfg = _resolve("gpt-4o")
+    kwargs = p.llm_kwargs(cfg, caps)
+    assert "reasoning_effort" not in kwargs
+
+
+def test_usage_field_map_has_5_6_mappings():
+    """§7.2 ③：cache_write_nested / reasoning_nested usage 映射已承载。"""
+    caps = _caps("gpt-5.6-sol")
+    assert ("prompt_tokens_details", "cache_write_tokens") in caps.usage_fields.cache_write_nested
+    assert ("completion_tokens_details", "reasoning_tokens") in caps.usage_fields.reasoning_nested
 
 
 def test_gpt_5_6_keeps_temperature():

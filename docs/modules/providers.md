@@ -67,7 +67,7 @@ Provider 探测结果 > Provider 默认值。所有 provider 的 `capabilities()
 >
 > | 家族 | 调研 | 实现 | 当前路由 |
 > |---|---|---|---|
-> | OpenAI | §7.2 | OpenAIProvider（兜底） | 兜底即用 |
+> | OpenAI | §7.2 | OpenAIProvider（A12：兜底 + 显式能力） | 已注册 |
 > | DeepSeek | §7.1 | DeepSeekProvider | 已注册 |
 > | Anthropic | §7.8 | AnthropicProvider | 已注册 |
 > | Qwen | §7.7 | QwenProvider | 已注册 |

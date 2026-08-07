@@ -40,6 +40,9 @@ class ModelPricing:
     input_per_mtok: float | None = None
     output_per_mtok: float | None = None
     cached_input_per_mtok: float | None = None
+    #: 写缓存 token 单价（§7.2 ③：5.6+ 按 uncached input × 1.25 计费）。
+    #: 更早型号写缓存无额外费，通常为 None。
+    cache_write_per_mtok: float | None = None
     as_of: str = ""
     source_url: str = ""
 
@@ -57,6 +60,17 @@ class UsageFieldMap:
     cache_read_nested: tuple[tuple[str, str], ...] = (
         ("prompt_tokens_details", "cached_tokens"),
         ("input_token_details", "cache_read"),
+    )
+    #: 写入前缀缓存的 token 数所在嵌套路径（§7.2 ③：Chat Completions 5.6+ 的
+    #: `cache_write_tokens`；写入按 uncached input × 1.25 计费）。
+    cache_write_nested: tuple[tuple[str, str], ...] = (
+        ("prompt_tokens_details", "cache_write_tokens"),
+    )
+    #: 推理 token 数所在嵌套路径（§7.2 ⑤：Chat Completions 的
+    #: `completion_tokens_details.reasoning_tokens`——是**计数**而非内容；
+    #: OpenAI 不暴露原始 reasoning 文本）。
+    reasoning_nested: tuple[tuple[str, str], ...] = (
+        ("completion_tokens_details", "reasoning_tokens"),
     )
     #: 推理/思考内容所在字段（在 delta 或 message 上）
     reasoning: tuple[str, ...] = ("reasoning_content",)
@@ -79,6 +93,11 @@ class ModelCapabilities:
     #: 触发上下文压缩的阈值。默认 232000 来自 config/settings.py:299。
     #: 一般设为 context_window 的 ~90%。
     compaction_threshold: int = 232_000
+
+    #: 模型最大输出 token 上限（§7.2 ③ 等信息性能力值；默认 None = 未调研/未知）。
+    #: 仅承载调研数据，**不改变默认输出**：llm_kwargs 仍由用户 `max_tokens`
+    #: 配置决定（默认 8192），避免默认超大输出成本。
+    max_output_tokens: int | None = None
 
     #: token 估算方式。默认 gpt-4o 来自 core/agent_v2.py:207 的旧硬编码。
     tokenizer: TokenizerSpec = "tiktoken:o200k_base"
