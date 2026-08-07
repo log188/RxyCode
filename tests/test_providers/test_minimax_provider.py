@@ -127,13 +127,30 @@ def test_reasoning_is_in_message_delta_not_usage():
 
 
 def test_llm_kwargs_injects_chat_thinking():
-    """§7.5 ③：Chat thinking 经 extra_body thinking=adaptive + reasoning_split=True。"""
+    """§7.5 ③：M3 Chat thinking 经 extra_body thinking=adaptive + reasoning_split=True。"""
     p, cfg = _resolve("MiniMax-M3")
     caps = p.capabilities(cfg)
     kwargs = p.llm_kwargs(cfg, caps)
     body = kwargs.get("extra_body") or {}
     assert body.get("thinking") == {"type": "adaptive"}
     assert body.get("reasoning_split") is True
+
+
+def test_llm_kwargs_m2x_only_reasoning_split():
+    """§7.5 ③：M2.x 思考关不掉——不注入 adaptive，仅 reasoning_split=True。"""
+    for name in ["MiniMax-M2.7", "MiniMax-M2", "MiniMax-M2.5-highspeed"]:
+        p, cfg = _resolve(name)
+        caps = p.capabilities(cfg)
+        kwargs = p.llm_kwargs(cfg, caps)
+        body = kwargs.get("extra_body") or {}
+        assert "thinking" not in body, f"{name} must not inject M3-only adaptive"
+        assert body.get("reasoning_split") is True
+
+
+def test_m2x_vision_stays_false():
+    """§7.5 问 1：仅 M3 有官方 image/video 证据；M2.x 不臆造 supports_vision。"""
+    for name in ["MiniMax-M2.7", "MiniMax-M2", "MiniMax-M2.1-highspeed"]:
+        assert _caps(name).supports_vision is False
 
 
 # ---- §7.5 问 7：定价按型号分条（CNY） -----------------------------------

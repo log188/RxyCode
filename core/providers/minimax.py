@@ -240,11 +240,14 @@ class MiniMaxProvider(BaseProvider):
 
     def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
         kwargs = super().llm_kwargs(model_config, caps)
-        # §7.5 ③：Chat thinking 经 extra_body={"thinking": {"type": "adaptive"|"disabled"}}
-        # M2.x 思考关不掉；reasoning_split=true 便于回传 reasoning_content/details。
+        # §7.5 ③：Chat thinking 契约——
+        #   M3：extra_body={"thinking": {"type": "adaptive"|"disabled"}, "reasoning_split": True}
+        #   M2.x：thinking 关不掉（不臆造 adaptive 参数）；仍建议 reasoning_split=True 便于回传
         # A15 仅接线 Chat 路径；Responses 的 reasoning.effort 差异由 A21 处理。
         if caps.supports_reasoning and caps.thinking_default_on:
+            family = _family(str(model_config.get("model_name") or ""))
             body = kwargs.setdefault("extra_body", {})
-            body.setdefault("thinking", {"type": "adaptive"})
+            if family is not None and _is_m3(family):
+                body.setdefault("thinking", {"type": "adaptive"})
             body.setdefault("reasoning_split", True)
         return kwargs
