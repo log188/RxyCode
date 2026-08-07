@@ -14,6 +14,7 @@ from .anthropic import AnthropicProvider
 from .base import BaseProvider
 from .deepseek import DeepSeekProvider
 from .doubao import DoubaoProvider
+from .kimi import KimiProvider
 from .openai import OpenAIProvider
 from .qwen import QwenProvider
 
@@ -24,6 +25,7 @@ _FALLBACK = OpenAIProvider()
 #: 注册表全部落空时仍选 _FALLBACK 单例（与 _PROVIDERS 里的实例行为一致，无状态）。
 _PROVIDERS: list[BaseProvider] = [
     DeepSeekProvider(),
+    KimiProvider(),
     DoubaoProvider(),
     AnthropicProvider(),
     QwenProvider(),
