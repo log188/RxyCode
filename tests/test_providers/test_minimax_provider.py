@@ -60,6 +60,7 @@ def test_m3_section_7_5_values():
     caps = _caps("MiniMax-M3")
     assert caps.provider == "minimax"
     assert caps.context_window == 1_000_000
+    assert caps.compaction_threshold == 900_000  # ≈90%（同 DeepSeek/OpenAI 惯例）
     assert caps.max_output_tokens == 524_288
     assert caps.supports_function_calling is True
     assert caps.supports_vision is True
@@ -94,9 +95,11 @@ def test_m3_keeps_temperature():
 def test_m2x_window(name):
     caps = _caps(name)
     assert caps.context_window == 204_800
+    assert caps.compaction_threshold == 184_320  # ≈90%，且不得高于 context_window（默认 232k 会超窗口）
     assert caps.max_output_tokens == 204_800
     assert caps.supports_reasoning is True
     assert caps.thinking_default_on is True
+    assert caps.prompt_variant == "minimax-m2x"  # A15 卡裁决：M2.x 家族变体（文档已定义）
 
 
 # ---- §7.5 问 4：usage 嵌套 cached_tokens ---------------------------------

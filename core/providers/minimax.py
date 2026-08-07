@@ -57,6 +57,11 @@ _M2X_CONTEXT = 204_800
 # §7.5 ③：max_completion_tokens 上限（M3 524288 / M2.x 204800）
 _M3_MAX_OUTPUT = 524_288
 _M2X_MAX_OUTPUT = 204_800
+# compaction ≈90% of context（与 DeepSeek 943_718 / OpenAI 945_000 同惯例）。
+# 关键：M2.x 若沿用默认 232_000 会**高于**其 context_window 204_800（阈值>窗口，
+# 压缩永不触发），必须按型号设置。
+_M3_COMPACTION = 900_000
+_M2X_COMPACTION = 184_320
 
 # §7.5 问 7：定价按型号分条（CNY / 1M，中国区按量；as_of=2026-08-02；source_url=MM8）。
 # M3 被动写入无额外价 → cache_write=None；highspeed 独立定价（不得与普通版共用）。
@@ -210,6 +215,9 @@ class MiniMaxProvider(BaseProvider):
             caps = replace(
                 caps,
                 context_window=context_window,
+                compaction_threshold=(
+                    _M3_COMPACTION if _is_m3(family) else _M2X_COMPACTION
+                ),
                 # §7.5 ③：M3 max_completion_tokens 上限 524288；M2.x 204800
                 max_output_tokens=(
                     _M3_MAX_OUTPUT if _is_m3(family) else _M2X_MAX_OUTPUT
