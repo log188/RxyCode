@@ -261,6 +261,12 @@ def _default_config() -> dict:
                 "reserved_output_tokens": 8192,
             },
         },
+        "model_limits": {
+            # Phase 3：未知模型高位兜底（不再回退 8192），可配置。
+            "unknown_model_max_tokens": 32768,
+            # 上下文安全余量（token），参与最终钳制。
+            "context_safety_margin_tokens": 1024,
+        },
         "execution": {
             "parallel_enabled": False,  # default off, gradual rollout
             "max_parallel": 3,          # Semaphore limit to prevent API rate limits

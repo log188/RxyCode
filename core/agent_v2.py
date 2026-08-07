@@ -1289,9 +1289,41 @@ class AgentV2:
 
         provider 的默认实现（OpenAIProvider）复刻了改造前的参数，因此未识别
         的模型行为不变。差异化只发生在显式声明了差异的 provider 上。
+
+        Phase 3（M4）：构造前先解析输出上限，把 ``resolved_max_tokens`` 写入
+        model_config（副本），供 provider.llm_kwargs 与 _raw_stream 消费。
+        不在构造层做 context 钳制（那时还不知道本次输入 token 数）。
         """
+        from RxyCode.RxyCode1_1_0.config.model_limits import (
+            resolve_configured_max_tokens,
+        )
+        from RxyCode.RxyCode1_1_0.config.settings import load_config as _load_cfg
+
         provider = providers.resolve(model_config)
         caps = provider.capabilities(model_config)
+
+        cfg = {}
+        try:
+            cfg = _load_cfg() or {}
+        except Exception:
+            cfg = {}
+
+        model_config = dict(model_config)
+        try:
+            resolution = resolve_configured_max_tokens(
+                model_config=model_config,
+                capability_max_output_tokens=caps.max_output_tokens,
+                configured_max_tokens=model_config.get("max_tokens"),
+                model_limits_config=(cfg.get("model_limits") or {}),
+                input_tokens=None,
+            )
+            model_config["resolved_max_tokens"] = resolution.resolved_max_tokens
+            model_config["limit_source"] = resolution.source
+            self._resolved_limits = resolution
+        except Exception:
+            # 解析失败不阻断 LLM 构造（保持可启动）；运行时 _raw_stream 会再试。
+            self._resolved_limits = None
+
         raw_llm = ChatOpenAI(**provider.llm_kwargs(model_config, caps))
 
         return UsageTrackingLLM(
@@ -1486,6 +1518,43 @@ class AgentV2:
         caps = getattr(self, "_capabilities", None)
         return (caps or DEFAULT_CAPABILITIES).prompt_variant
 
+    def _resolve_request_max_tokens(self, input_tokens: int) -> int:
+        """Phase 3 M4：请求层解析最终 max_tokens（含 context 钳制）。
+
+        优先用构造层已解析的 ``resolved_max_tokens``；构造层缺失时（例如
+        LLM 通过其他路径构造）在此重试一次解析。已知 context_window 时按
+        本次 input_tokens + 安全余量钳制。
+
+        预算耗尽（ModelLimitError）向上传播：调用方必须阻止 SDK 请求，
+        不得发送 0 / 负数 / 8192 / 32768。
+        """
+        from RxyCode.RxyCode1_1_0.config.model_limits import (
+            resolve_configured_max_tokens,
+        )
+        from RxyCode.RxyCode1_1_0.config.settings import load_config as _load_cfg
+
+        resolved = getattr(self, "_resolved_limits", None)
+        if resolved is not None and resolved.context_window is None:
+            return resolved.resolved_max_tokens
+
+        cfg = {}
+        try:
+            cfg = _load_cfg() or {}
+        except Exception:
+            cfg = {}
+        caps = getattr(self, "_capabilities", None)
+        resolution = resolve_configured_max_tokens(
+            model_config=self.model_config,
+            capability_max_output_tokens=(
+                caps.max_output_tokens if caps is not None else None
+            ),
+            configured_max_tokens=self.model_config.get("max_tokens"),
+            model_limits_config=(cfg.get("model_limits") or {}),
+            input_tokens=input_tokens,
+        )
+        # ModelLimitError（预算耗尽）向上传播：调用方必须阻止 SDK 请求。
+        return resolution.resolved_max_tokens
+
     async def _raw_stream(self, messages, tools=None):
         """Stream from the raw OpenAI client, yielding native chunks.
 
@@ -1525,7 +1594,7 @@ class AgentV2:
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": self.model_config.get("temperature", 0.7),
-            "max_tokens": self.model_config.get("max_tokens", 8192),
+            "max_tokens": self._resolve_request_max_tokens(input_tokens),
         }
         if tools:
             caps = getattr(self, "_capabilities", None)

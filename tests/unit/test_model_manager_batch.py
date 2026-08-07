@@ -224,3 +224,76 @@ def test_ensure_models_provider_metadata_stamps_from_url(monkeypatch):
     entry = state["cfg"]["models"]["deepseek-v4-flash"]
     assert entry["provider_id"] == "opencode-go"
     assert entry["provider_name"] == "OpenCode Go"
+
+
+def test_add_model_defaults_max_tokens_auto_not_8192(monkeypatch):
+    """M5：新增模型默认 max_tokens='auto'，不再写入固定 8192。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = _in_memory_config(monkeypatch, model_manager, {"models": {}})
+    model_manager.add_model(
+        "deepseek-v4-flash",
+        "sk-test",
+        "https://api.deepseek.com/v1",
+        model_name="deepseek-v4-flash",
+        provider_id="deepseek",
+        provider_name="DeepSeek",
+    )
+    entry = state["cfg"]["models"]["deepseek-v4-flash"]
+    assert entry["max_tokens"] == "auto"
+
+
+def test_add_model_explicit_max_tokens_preserved(monkeypatch):
+    """M5：用户显式 max_tokens 正整数 → 保持为显式覆盖。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = _in_memory_config(monkeypatch, model_manager, {"models": {}})
+    model_manager.add_model(
+        "custom/manual",
+        "sk-test",
+        "https://api.example.com/v1",
+        model_name="manual",
+        max_tokens=4096,
+    )
+    entry = state["cfg"]["models"]["custom/manual"]
+    assert entry["max_tokens"] == 4096
+
+
+def test_batch_onboard_writes_auto_not_fixed_default(monkeypatch):
+    """M5：批量添加不把统一数字抄进每个模型。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = _in_memory_config(monkeypatch, model_manager, {"models": {}})
+    model_manager.onboard_models_batch(
+        api_key="sk-test",
+        base_url="https://api.deepseek.com/v1",
+        model_ids=["deepseek-v4-flash", "deepseek-v4-pro"],
+        provider_id="deepseek",
+        provider_name="DeepSeek",
+        active_model_id="deepseek-v4-flash",
+        skip_probe=True,
+    )
+    flash = state["cfg"]["models"]["deepseek/deepseek-v4-flash"]
+    pro = state["cfg"]["models"]["deepseek/deepseek-v4-pro"]
+    assert flash["max_tokens"] == "auto"
+    assert pro["max_tokens"] == "auto"
+    assert flash["max_tokens"] == pro["max_tokens"]  # 都是 auto，不是同数字
+
+
+def test_add_model_rejects_invalid_max_tokens(monkeypatch):
+    """M5：0/负数/空串/浮点/布尔 → 拒绝。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    _in_memory_config(monkeypatch, model_manager, {"models": {}})
+    for bad in (0, -5, 1.5, "", "yes", True):
+        try:
+            model_manager.add_model(
+                f"m-{type(bad).__name__}",
+                "sk-test",
+                "https://api.example.com/v1",
+                model_name="m",
+                max_tokens=bad,
+            )
+            raise AssertionError(f"should have rejected max_tokens={bad!r}")
+        except ValueError:
+            pass

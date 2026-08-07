@@ -594,11 +594,15 @@ def cli(ctx, model, api, api_port, log_level, print_logs):
 @cli.command()
 @click.argument("subcommand", default="list")
 @click.argument("name", default="")
-def config(subcommand, name):
+@click.argument("extra", default="")
+@click.option("--dry-run", is_flag=True, default=False, help="Dry-run mode for model-limits migration.")
+def config(subcommand, name, extra, dry_run):
     """Manage model configuration."""
     from .config import model_manager
     from .config.settings import load_config
 
+    if subcommand == "model-limits":
+        return _config_model_limits(name, extra, dry_run=dry_run)
     if subcommand == "list":
         cfg = load_config()
         models = cfg.get("models", {})
@@ -632,7 +636,43 @@ def config(subcommand, name):
         else:
             print(f"Model '{name}' not found")
     else:
-        print("Subcommands: list, test-model, set-active, remove")
+        print("Subcommands: list, test-model, set-active, remove, model-limits")
+
+
+def _config_model_limits(action: str, model_name: str, *, dry_run: bool = False) -> None:
+    """M5/M6：模型输出上限诊断与迁移（inspect / set-auto）。"""
+    from .config import model_manager
+
+    if action in ("", "inspect"):
+        report = model_manager.inspect_model_limits(model_name or None)
+        print("== Model output limit sources ==")
+        for m in report["models"]:
+            print(
+                f"{m['key']}: mode={m['max_tokens_mode']} "
+                f"resolved={m['resolved_max_tokens']} "
+                f"source={m['limit_source']} "
+                f"ctx={m['context_window']}"
+                + (f" | {m['warning']}" if m["warning"] else "")
+            )
+        if not report["models"]:
+            print("(no models configured)")
+        return
+
+    if action == "set-auto":
+        if not model_name:
+            print("Usage: RxyCode config model-limits set-auto <model> [--dry-run]")
+            return
+        result = model_manager.set_auto_model_limits(
+            model_name, dry_run=dry_run, backup=True
+        )
+        print(result["message"])
+        if result.get("backup_path"):
+            print(f"Backup: {result['backup_path']}")
+        if result.get("old_value") is not None:
+            print(f"Old value: {result['old_value']}")
+        return
+
+    print("model-limits actions: inspect, set-auto")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ import hmac
 import os
 import re
 import time
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlsplit
 
 from .credential_store import delete_credential, store_credential
@@ -200,12 +200,21 @@ def add_model(
     api_key: str,
     base_url: str,
     model_name: Optional[str] = None,
-    max_tokens: int = 8192,
+    max_tokens: int | Literal["auto"] | None = None,
     temperature: float = 0.7,
     provider_id: Optional[str] = None,
     provider_name: Optional[str] = None,
     nickname: Optional[str] = None,
 ) -> dict:
+    """M5：max_tokens 只接受正整数 / "auto" / None；0/负数/空串/浮点拒绝。"""
+    if max_tokens is not None and max_tokens != "auto":
+        if not isinstance(max_tokens, int) or isinstance(max_tokens, bool):
+            raise ValueError(
+                "max_tokens must be a positive integer, 'auto', or omitted; "
+                f"got {max_tokens!r}"
+            )
+        if max_tokens <= 0:
+            raise ValueError(f"max_tokens must be a positive integer; got {max_tokens}")
     base_url = normalize_provider_base_url(base_url, require_https=True)
     meta = resolve_provider_meta(base_url, provider_id, provider_name)
     cfg = load_config()
@@ -216,7 +225,7 @@ def add_model(
         **_credential_config(api_key),
         "base_url": base_url,
         "model_name": vendor_id,
-        "max_tokens": max_tokens,
+        "max_tokens": max_tokens if max_tokens is not None else "auto",
         "temperature": temperature,
         "provider_id": meta["id"],
         "provider_name": meta["name"],
@@ -437,8 +446,32 @@ def _friendly_transport_error(error_text: str) -> Optional[str]:
     return None
 
 
+#: Discovery allowlist（§7.2 / M3 步骤 1）：只有这些字段能进入发现记录，
+#: 未知字段一律不得当成能力。任何额外能力字段必须显式加入 allowlist。
+_DISCOVERY_ALLOWLIST = (
+    "id",
+    "owned_by",
+    "context_window",
+    "max_output_tokens",
+    "max_completion_tokens",
+)
+
+
+def _discovery_allow_int(entry: dict, key: str) -> int | None:
+    """Allowlist 内的可选整型能力字段；非正整数一律视为缺失。"""
+    raw = entry.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw if raw > 0 else None
+
+
 def _parse_discovered_models(payload: object) -> list[dict]:
-    """Extract model entries from an OpenAI-compatible ``GET /models`` body."""
+    """Extract model entries from an OpenAI-compatible ``GET /models`` body.
+
+    M3：只保留 allowlist 字段（id / owned_by / context_window /
+    max_output_tokens / max_completion_tokens），未知字段忽略。model id 是
+    唯一主键；nickname / owned_by / UI label 不得替代它。
+    """
     if isinstance(payload, dict):
         entries = payload.get("data")
         if not isinstance(entries, list):
@@ -454,17 +487,27 @@ def _parse_discovered_models(payload: object) -> list[dict]:
         if isinstance(entry, str):
             model_id = entry.strip()
             owned_by = ""
+            advertised_ctx = advertised_max_out = advertised_max_completion = None
         elif isinstance(entry, dict):
             model_id = str(entry.get("id") or entry.get("model") or entry.get("name") or "").strip()
             owned_by = str(entry.get("owned_by") or "").strip()
+            advertised_ctx = _discovery_allow_int(entry, "context_window")
+            advertised_max_out = _discovery_allow_int(entry, "max_output_tokens")
+            advertised_max_completion = _discovery_allow_int(entry, "max_completion_tokens")
         else:
             continue
         if not model_id or model_id in seen:
             continue
         seen.add(model_id)
-        model = {"id": model_id}
+        model: dict = {"id": model_id}
         if owned_by:
             model["owned_by"] = owned_by
+        if advertised_ctx is not None:
+            model["context_window"] = advertised_ctx
+        if advertised_max_out is not None:
+            model["max_output_tokens"] = advertised_max_out
+        if advertised_max_completion is not None:
+            model["max_completion_tokens"] = advertised_max_completion
         models.append(model)
     return models
 
@@ -621,3 +664,143 @@ def probe_model_connection(
             "elapsed": elapsed,
             "error": _friendly_transport_error(estr) or estr,
         }
+
+
+def inspect_model_limits(model_name: Optional[str] = None) -> dict:
+    """M5/M6：只读报告每个模型的 max_tokens 来源（不写磁盘、不泄漏凭证）。
+
+    返回 ``{"models": [ {key, provider_id, model_name, max_tokens_mode,
+    resolved_max_tokens, limit_source, context_window, warning} ]}``。
+    """
+    from .model_limits import resolve_configured_max_tokens
+    from .settings import load_config
+
+    cfg = load_config()
+    models = cfg.get("models", {})
+    model_limits_cfg = cfg.get("model_limits") or {}
+    report = []
+    for key, entry in models.items():
+        if not isinstance(entry, dict):
+            continue
+        if model_name and key != model_name:
+            continue
+        try:
+            resolution = resolve_configured_max_tokens(
+                model_config=entry,
+                capability_max_output_tokens=None,
+                configured_max_tokens=entry.get("max_tokens"),
+                model_limits_config=model_limits_cfg,
+                input_tokens=None,
+            )
+            report.append({
+                "key": key,
+                "provider_id": entry.get("provider_id", ""),
+                "model_name": entry.get("model_name", ""),
+                "max_tokens_mode": (
+                    "auto"
+                    if entry.get("max_tokens") in (None, "auto")
+                    else "explicit"
+                ),
+                "resolved_max_tokens": resolution.resolved_max_tokens,
+                "limit_source": resolution.source,
+                "context_window": resolution.context_window,
+                "warning": "; ".join(resolution.warnings) or None,
+            })
+        except Exception as exc:  # noqa: BLE001
+            report.append({
+                "key": key,
+                "provider_id": entry.get("provider_id", ""),
+                "model_name": entry.get("model_name", ""),
+                "max_tokens_mode": "error",
+                "resolved_max_tokens": None,
+                "limit_source": None,
+                "context_window": None,
+                "warning": f"{type(exc).__name__}: {exc}",
+            })
+    return {"models": report}
+
+
+def set_auto_model_limits(
+    model_name: str,
+    *,
+    dry_run: bool = False,
+    backup: bool = True,
+) -> dict:
+    """M5/M6：把单个模型迁移到 max_tokens: auto。
+
+    - 只迁移**当前为正整数**的模型；已是 auto 的跳过。
+    - ``dry_run=True`` 时不写磁盘，只返回将发生的变更。
+    - ``backup=True`` 时先写备份文件（``config.yaml.bak-<ts>``）。
+    - 旧值写入迁移审计记录（``model_limits_migration`` 段）。
+    返回 ``{"dry_run", "changed", "skipped", "backup_path", "old_value",
+    "message"}``。
+    """
+    import shutil
+    import time as _time
+
+    from .settings import get_config_path, load_config, save_config
+
+    cfg = load_config()
+    models = cfg.get("models", {})
+    entry = models.get(model_name)
+    if not isinstance(entry, dict):
+        return {
+            "dry_run": dry_run,
+            "changed": False,
+            "skipped": True,
+            "backup_path": None,
+            "old_value": None,
+            "message": f"Model '{model_name}' not found",
+        }
+    old = entry.get("max_tokens")
+    if old in (None, "auto"):
+        return {
+            "dry_run": dry_run,
+            "changed": False,
+            "skipped": True,
+            "backup_path": None,
+            "old_value": old,
+            "message": f"'{model_name}' already auto (old={old!r})",
+        }
+    if not isinstance(old, int) or old <= 0:
+        return {
+            "dry_run": dry_run,
+            "changed": False,
+            "skipped": True,
+            "backup_path": None,
+            "old_value": old,
+            "message": f"'{model_name}' max_tokens is not a positive integer; "
+            f"refusing to auto-migrate ({old!r})",
+        }
+
+    backup_path = None
+    if backup and not dry_run:
+        config_path = get_config_path()
+        if config_path.is_file():
+            backup_path = config_path.with_name(
+                f"config.yaml.bak-{int(_time.time())}"
+            )
+            shutil.copy2(config_path, backup_path)
+
+    if not dry_run:
+        entry["max_tokens"] = "auto"
+        migration = cfg.setdefault("model_limits_migration", {})
+        migration[model_name] = {
+            "from": old,
+            "to": "auto",
+            "when": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "backup": str(backup_path) if backup_path else None,
+        }
+        save_config(cfg)
+
+    return {
+        "dry_run": dry_run,
+        "changed": True,
+        "skipped": False,
+        "backup_path": str(backup_path) if backup_path else None,
+        "old_value": old,
+        "message": (
+            f"{'[dry-run] would migrate' if dry_run else 'Migrated'} "
+            f"'{model_name}' max_tokens {old} -> auto"
+        ),
+    }

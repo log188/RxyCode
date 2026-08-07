@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rxycode.dev/schemas/model_catalog.json",
+  "title": "RxyCode model catalog",
+  "description": "Versioned model capability catalog consumed by OutputLimitResolver (Phase 3). Keys are provider_id + model_id (casefold+strip). Records require a verifiable source.",
+  "type": "object",
+  "required": ["schema_version", "records"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "note": { "type": "string" },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["provider_id", "model_id", "source"],
+        "properties": {
+          "provider_id": { "type": "string", "minLength": 1 },
+          "model_id": { "type": "string", "minLength": 1 },
+          "model_context_window": {
+            "type": ["integer", "null"],
+            "exclusiveMinimum": 0
+          },
+          "model_max_output_tokens": {
+            "type": ["integer", "null"],
+            "exclusiveMinimum": 0
+          },
+          "source": { "type": "string", "minLength": 1 },
+          "source_url": { "type": ["string", "null"] },
+          "as_of": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "families": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["provider_id", "pattern", "source"],
+        "properties": {
+          "provider_id": { "type": "string", "minLength": 1 },
+          "pattern": { "type": "string", "minLength": 1 },
+          "model_context_window": {
+            "type": ["integer", "null"],
+            "exclusiveMinimum": 0
+          },
+          "model_max_output_tokens": {
+            "type": ["integer", "null"],
+            "exclusiveMinimum": 0
+          },
+          "source": { "type": "string", "minLength": 1 },
+          "source_url": { "type": ["string", "null"] },
+          "as_of": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

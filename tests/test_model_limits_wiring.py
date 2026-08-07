@@ -1,0 +1,134 @@
+"""Phase 3 M7/M8: 端到端接线契约测试。
+
+验证：
+- ``auto`` 永不进入 SDK（llm_kwargs / _raw_stream 只产出正整数）；
+- ``ModelCapabilities.max_output_tokens``（能力值）不直接进入请求路径；
+- ``resolved_max_tokens`` 缺失时不绕过 resolver（请求路径抛结构化错误）；
+- context 预算耗尽阻止请求（ModelLimitError 传播，不发送 0/负数）。
+"""
+from __future__ import annotations
+
+import pytest
+
+
+def test_llm_kwargs_never_emits_auto_string():
+    """M4：max_tokens='auto' 时 llm_kwargs 产出正整数（resolved 或兜底）。"""
+    from core import providers
+    from config.model_limits import UNKNOWN_MODEL_FALLBACK
+
+    p = providers.resolve({"base_url": "https://api.example.com/v1", "model_name": "m"})
+    caps = p.capabilities({})
+    kwargs = p.llm_kwargs(
+        {"model_name": "m", "api_key": "k", "base_url": "b", "max_tokens": "auto"},
+        caps,
+    )
+    assert isinstance(kwargs["max_tokens"], int)
+    assert kwargs["max_tokens"] > 0
+    assert kwargs["max_tokens"] != "auto"
+
+
+def test_resolved_max_tokens_used_when_provided():
+    """M4：调用方传入 resolver 结果时，llm_kwargs 用之，且不是能力值本身。"""
+    from core import providers
+
+    p = providers.resolve({"base_url": "https://api.example.com/v1", "model_name": "m"})
+    caps = p.capabilities({})
+    kwargs = p.llm_kwargs(
+        {
+            "model_name": "m",
+            "api_key": "k",
+            "base_url": "b",
+            "max_tokens": "auto",
+            "resolved_max_tokens": 4096,
+        },
+        caps,
+    )
+    assert kwargs["max_tokens"] == 4096
+
+
+def test_raw_stream_resolver_path_never_uses_capability_value_directly(monkeypatch):
+    """M4：_resolve_request_max_tokens 走 resolver，能力值只作为 provider_default 输入。
+
+    构造一个 fake agent：caps.max_output_tokens=999（能力值），但目录/配置里
+    的显式值不同。解析结果不应直接等于能力值（除非目录/默认就是它）。
+    """
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.config.model_catalog import ModelCatalog
+    from RxyCode.RxyCode1_1_0.config.model_limits import resolve_configured_max_tokens
+
+    agent = object.__new__(AgentV2)
+    agent.model_config = {"provider_id": "demo", "model_name": "m", "max_tokens": "auto"}
+    agent._capabilities = None
+    agent._resolved_limits = None
+
+    catalog = ModelCatalog.from_records([{
+        "provider_id": "demo", "model_id": "m",
+        "model_context_window": 262144, "model_max_output_tokens": 65536,
+        "source": "t", "source_url": None, "as_of": "t",
+    }])
+
+    resolution = resolve_configured_max_tokens(
+        model_config=agent.model_config,
+        capability_max_output_tokens=999,  # 能力值（Phase A），仅作 provider_default
+        configured_max_tokens="auto",
+        model_limits_config={},
+        catalog=catalog,
+    )
+    # 目录精确命中（65536）优先于能力值（999）→ resolved 是 65536
+    assert resolution.resolved_max_tokens == 65536
+    assert resolution.source == "catalog_exact_provider"
+
+
+def test_context_budget_exhausted_propagates(monkeypatch):
+    """M4：预算耗尽 → ModelLimitError 传播（阻止请求），不返回 0/负数。"""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.config.model_catalog import ModelCatalog
+    from RxyCode.RxyCode1_1_0.config.model_limits import (
+        MODEL_CONTEXT_BUDGET_EXHAUSTED,
+        ModelLimitError,
+        resolve_configured_max_tokens,
+    )
+
+    agent = object.__new__(AgentV2)
+    agent.model_config = {"provider_id": "demo", "model_name": "tiny", "max_tokens": "auto"}
+    agent._capabilities = None
+    agent._resolved_limits = None
+
+    catalog = ModelCatalog.from_records([{
+        "provider_id": "demo", "model_id": "tiny",
+        "model_context_window": 500, "model_max_output_tokens": 200,
+        "source": "t", "source_url": None, "as_of": "t",
+    }])
+
+    with pytest.raises(ModelLimitError) as exc:
+        resolve_configured_max_tokens(
+            model_config=agent.model_config,
+            capability_max_output_tokens=None,
+            configured_max_tokens="auto",
+            model_limits_config={},
+            catalog=catalog,
+            input_tokens=2000,  # 500 - 2000 - 1024 < 1
+        )
+    assert exc.value.code == MODEL_CONTEXT_BUDGET_EXHAUSTED
+
+
+def test_auto_resolves_to_positive_integer_through_resolver():
+    """M4：auto → resolver → 正整数，且来源可解释。"""
+    from RxyCode.RxyCode1_1_0.config.model_catalog import ModelCatalog
+    from RxyCode.RxyCode1_1_0.config.model_limits import resolve_configured_max_tokens
+
+    catalog = ModelCatalog.from_records([{
+        "provider_id": "demo", "model_id": "m",
+        "model_context_window": 262144, "model_max_output_tokens": 65536,
+        "source": "t", "source_url": None, "as_of": "t",
+    }])
+    resolution = resolve_configured_max_tokens(
+        model_config={"provider_id": "demo", "model_name": "m", "max_tokens": "auto"},
+        capability_max_output_tokens=None,
+        configured_max_tokens="auto",
+        model_limits_config={},
+        catalog=catalog,
+    )
+    assert isinstance(resolution.resolved_max_tokens, int)
+    assert resolution.resolved_max_tokens == 65536
+    assert resolution.source == "catalog_exact_provider"

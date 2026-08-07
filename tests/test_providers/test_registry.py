@@ -2,6 +2,7 @@
 import pytest
 
 from config.model_capabilities import DEFAULT_CAPABILITIES
+from config.model_limits import UNKNOWN_MODEL_FALLBACK
 from core import providers
 from core.providers.openai import OpenAIProvider
 
@@ -37,11 +38,41 @@ def test_llm_kwargs_reproduce_legacy_arguments():
         {"model_name": "gpt-4o", "api_key": "k", "base_url": "b"}, caps,
     )
     assert kwargs["model"] == "gpt-4o"
-    assert kwargs["max_tokens"] == 8192
+    # Phase 3 M4：不再回退固定 8192；无解析值时用未知模型高位兜底。
+    assert kwargs["max_tokens"] == UNKNOWN_MODEL_FALLBACK
     assert kwargs["temperature"] == 0.7
     assert kwargs["max_retries"] == 3
     assert kwargs["streaming"] is True
     assert kwargs["stream_usage"] is True
+
+
+def test_llm_kwargs_uses_resolved_max_tokens_when_provided():
+    """M4：调用方已解析时，resolved_max_tokens 优先于 fallback。"""
+    p = providers.resolve({})
+    caps = p.capabilities({})
+    kwargs = p.llm_kwargs(
+        {
+            "model_name": "gpt-5.6-luna",
+            "api_key": "k",
+            "base_url": "b",
+            "resolved_max_tokens": 128000,
+        },
+        caps,
+    )
+    assert kwargs["max_tokens"] == 128000
+
+
+def test_llm_kwargs_auto_falls_back_to_unknown():
+    """M4：max_tokens='auto' 且无 resolved 时 → 未知兜底，不返回 'auto'。"""
+    p = providers.resolve({})
+    caps = p.capabilities({})
+    kwargs = p.llm_kwargs(
+        {"model_name": "m", "api_key": "k", "base_url": "b", "max_tokens": "auto"},
+        caps,
+    )
+    assert isinstance(kwargs["max_tokens"], int)
+    assert kwargs["max_tokens"] > 0
+    assert kwargs["max_tokens"] == UNKNOWN_MODEL_FALLBACK
 
 
 @pytest.mark.parametrize("usage,expected", [

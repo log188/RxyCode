@@ -84,14 +84,34 @@ class BaseProvider:
     def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
         """返回传给 ChatOpenAI 的关键字参数。
 
-        默认实现完全复刻 core/agent_v2.py:1207-1219 的原参数。
-        子类可以删掉不支持的参数（例如推理模型不接受 temperature）。
+        Phase 3（M4）：真实请求路径由 ``agent_v2`` 强制走 resolver——构造层
+        把 ``OutputLimitResolution.resolved_max_tokens`` 写入 ``model_config``，
+        此处优先读取它。直接构造 LLM 的单元测试 / evals 场景可能不带
+        resolved，此时按以下优先级：
+        - ``resolved_max_tokens``（正整数）→ 请求解析值；
+        - ``max_tokens``（正整数）→ 用户显式覆盖（等价 explicit_config）；
+        - 否则 → ``UNKNOWN_MODEL_FALLBACK``（与 resolver 的 unknown_fallback
+          数值一致，非历史 8192）。
+
+        注意：这不是绕过 resolver——请求路径（agent_v2._raw_stream）只接受
+        resolver 产出值；本方法的宽松分支仅服务直接构造场景。
         """
+        from RxyCode.RxyCode1_1_0.config.model_limits import UNKNOWN_MODEL_FALLBACK
+
+        resolved = model_config.get("resolved_max_tokens")
+        if isinstance(resolved, int) and resolved > 0:
+            max_tokens = resolved
+        else:
+            raw = model_config.get("max_tokens")
+            if isinstance(raw, int) and raw > 0:
+                max_tokens = raw
+            else:
+                max_tokens = UNKNOWN_MODEL_FALLBACK
         kwargs: dict[str, Any] = {
             "model": model_config.get("model_name", "gpt-4o"),
             "api_key": model_config.get("api_key"),
             "base_url": model_config.get("base_url"),
-            "max_tokens": model_config.get("max_tokens", 8192),
+            "max_tokens": max_tokens,
             "max_retries": 3,
             "streaming": True,
             "stream_usage": True,

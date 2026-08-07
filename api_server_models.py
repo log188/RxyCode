@@ -126,6 +126,7 @@ async def get_models():
     cfg = ensure_models_provider_metadata(load_config(), persist=False)
     models = cfg.get("models", {})
     active = cfg.get("active_model", "")
+    model_limits_cfg = cfg.get("model_limits") or {}
     result = []
     for name, mcfg in models.items():
         vendor_id = mcfg.get("model_name", name)
@@ -141,7 +142,7 @@ async def get_models():
             or "其他"
         )
         provider_id = inferred.get("id") or mcfg.get("provider_id") or ""
-        result.append({
+        item = {
             "id": name,
             "name": vendor_id,
             "nickname": display,
@@ -151,7 +152,35 @@ async def get_models():
             "category": provider_name or "其他",
             "provider_name": provider_name or "",
             "provider_id": provider_id or "",
-        })
+        }
+        # Phase 3 M6：可选输出上限摘要（不含任何凭证）。
+        try:
+            from .config.model_limits import resolve_configured_max_tokens
+
+            resolution = resolve_configured_max_tokens(
+                model_config=mcfg,
+                capability_max_output_tokens=None,
+                configured_max_tokens=mcfg.get("max_tokens"),
+                model_limits_config=model_limits_cfg,
+                input_tokens=None,
+            )
+            item["max_tokens_mode"] = (
+                "auto"
+                if mcfg.get("max_tokens") in (None, "auto")
+                else "explicit"
+            )
+            item["resolved_max_tokens"] = resolution.resolved_max_tokens
+            item["limit_source"] = resolution.source
+            item["context_window"] = resolution.context_window
+            item["warning"] = "; ".join(resolution.warnings) or None
+        except Exception:
+            # 旧客户端/未知场景：字段可选，缺失时前端显示 legacy_server。
+            item["max_tokens_mode"] = "auto"
+            item["resolved_max_tokens"] = None
+            item["limit_source"] = "legacy_server"
+            item["context_window"] = None
+            item["warning"] = None
+        result.append(item)
     return {"models": result, "active": active, "recent": prune_recent_models(cfg)}
 
 
@@ -259,18 +288,39 @@ async def onboard_model(req: ModelOnboardingRequest):
             detail=f"Failed to save model: {_redact_explicit(exc, api_key)}",
         ) from exc
 
+    model_item = {
+        "id": config_key,
+        "nickname": nickname,
+        "provider_model_id": provider_model_id,
+        "provider_id": meta["id"],
+        "provider_name": meta["name"],
+        "base_url": base_url,
+        "active": True,
+    }
+    # Phase 3 M6：可选输出上限摘要（不含任何凭证）。
+    try:
+        from .config.model_limits import resolve_configured_max_tokens
+        from .config.settings import load_config
+
+        resolution = resolve_configured_max_tokens(
+            model_config=model_item,
+            capability_max_output_tokens=None,
+            configured_max_tokens="auto",
+            model_limits_config=(load_config().get("model_limits") or {}),
+            input_tokens=None,
+        )
+        model_item["max_tokens_mode"] = "auto"
+        model_item["resolved_max_tokens"] = resolution.resolved_max_tokens
+        model_item["limit_source"] = resolution.source
+    except Exception:
+        model_item["max_tokens_mode"] = "auto"
+        model_item["resolved_max_tokens"] = None
+        model_item["limit_source"] = "legacy_server"
+
     return {
         "action": "model_added",
         "message": f"Model '{nickname}' added and connection tested successfully",
-        "model": {
-            "id": config_key,
-            "nickname": nickname,
-            "provider_model_id": provider_model_id,
-            "provider_id": meta["id"],
-            "provider_name": meta["name"],
-            "base_url": base_url,
-            "active": True,
-        },
+        "model": model_item,
         "probe": {"elapsed": probe.get("elapsed")},
     }
 

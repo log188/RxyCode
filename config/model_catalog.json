@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "note": "模型能力目录（Phase 3）。数字来自 Phase A §7 调研/审计（core/providers/*.py 的 ModelCapabilities 值），带 source_url + as_of。未找到官方精确值时保留 null，由 unknown_fallback 处理。",
+  "records": [
+    {
+      "provider_id": "deepseek",
+      "model_id": "deepseek-v4-flash",
+      "model_context_window": 1048576,
+      "model_max_output_tokens": null,
+      "source": "phase-a:deepseek",
+      "source_url": "https://api-docs.deepseek.com/guides/thinking_mode",
+      "as_of": "2026-08-02"
+    },
+    {
+      "provider_id": "deepseek",
+      "model_id": "deepseek-v4-pro",
+      "model_context_window": 1048576,
+      "model_max_output_tokens": null,
+      "source": "phase-a:deepseek",
+      "source_url": "https://api-docs.deepseek.com/guides/thinking_mode",
+      "as_of": "2026-08-02"
+    },
+    {
+      "provider_id": "openai",
+      "model_id": "gpt-5.6-luna",
+      "model_context_window": 1050000,
+      "model_max_output_tokens": 128000,
+      "source": "phase-a:openai",
+      "source_url": "https://platform.openai.com/docs/models",
+      "as_of": "2026-08-02"
+    },
+    {
+      "provider_id": "opencode-go",
+      "model_id": "gpt-5.6-luna",
+      "model_context_window": 1050000,
+      "model_max_output_tokens": 128000,
+      "source": "phase-a:openai",
+      "source_url": "https://platform.openai.com/docs/models",
+      "as_of": "2026-08-02"
+    },
+    {
+      "provider_id": "kimi",
+      "model_id": "kimi-k3",
+      "model_context_window": 1048576,
+      "model_max_output_tokens": 131072,
+      "source": "phase-a:kimi",
+      "source_url": "https://platform.kimi.com",
+      "as_of": "2026-08-02"
+    },
+    {
+      "provider_id": "kimi",
+      "model_id": "kimi-k2.7-code",
+      "model_context_window": 262144,
+      "model_max_output_tokens": null,
+      "source": "phase-a:kimi",
+      "source_url": "https://platform.kimi.com",
+      "as_of": "2026-08-02"
+    },
+    {
+      "provider_id": "qwen",
+      "model_id": "qwen3.7-max",
+      "model_context_window": 1000000,
+      "model_max_output_tokens": 65536,
+      "source": "phase-a:qwen",
+      "source_url": "https://help.aliyun.com/zh/model-studio",
+      "as_of": "2026-08-02"
+    },
+    {
+      "provider_id": "qwen",
+      "model_id": "qwen3.8-max-preview",
+      "model_context_window": 983616,
+      "model_max_output_tokens": null,
+      "source": "phase-a:qwen-codex-metadata",
+      "source_url": "https://help.aliyun.com/zh/model-studio/codex",
+      "as_of": "2026-08-02"
+    },
+    {
+      "provider_id": "anthropic",
+      "model_id": "claude-sonnet-4.5",
+      "model_context_window": 1000000,
+      "model_max_output_tokens": 128000,
+      "source": "phase-a:anthropic",
+      "source_url": "https://docs.anthropic.com/en/docs/about-claude/models",
+      "as_of": "2026-08-02"
+    },
+    {
+      "provider_id": "anthropic",
+      "model_id": "claude-haiku-4.5",
+      "model_context_window": 200000,
+      "model_max_output_tokens": 128000,
+      "source": "phase-a:anthropic",
+      "source_url": "https://docs.anthropic.com/en/docs/about-claude/models",
+      "as_of": "2026-08-02"
+    }
+  ],
+  "families": [
+    {
+      "provider_id": "kimi",
+      "pattern": "kimi-k2*",
+      "model_context_window": 262144,
+      "model_max_output_tokens": null,
+      "source": "phase-a:kimi-family",
+      "source_url": "https://platform.kimi.com",
+      "as_of": "2026-08-02"
+    }
+  ]
+}

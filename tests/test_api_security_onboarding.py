@@ -789,3 +789,49 @@ def test_batch_onboarding_returns_400_when_nothing_added(monkeypatch):
     assert response.status_code == 400
     assert "sk-batch-empty" not in response.text
 
+
+def test_model_listing_includes_output_limit_summary(monkeypatch):
+    """M6/M7：/models 响应含可选输出上限摘要，且不含 API key。"""
+    from RxyCode.RxyCode1_1_0 import api_server
+    from RxyCode.RxyCode1_1_0.config import settings
+
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    monkeypatch.setattr(
+        settings,
+        "load_config",
+        lambda: {
+            "models": {
+                "deepseek/deepseek-v4-flash": {
+                    "model_name": "deepseek-v4-flash",
+                    "base_url": "https://api.deepseek.com/v1",
+                    "provider_id": "deepseek",
+                    "max_tokens": "auto",
+                },
+            },
+            "active_model": "deepseek/deepseek-v4-flash",
+            "recent_models": [],
+            "model_limits": {
+                "unknown_model_max_tokens": 32768,
+                "context_safety_margin_tokens": 1024,
+            },
+        },
+    )
+    token = api_server.configure_api_token("summary-token")
+
+    with _client(api_server, token=token) as client:
+        response = client.get("/models")
+
+    assert response.status_code == 200
+    model = response.json()["models"][0]
+    assert model["max_tokens_mode"] in ("auto", "explicit")
+    assert isinstance(model.get("resolved_max_tokens"), int)
+    assert model["resolved_max_tokens"] > 0
+    assert model["limit_source"] in (
+        "explicit_config", "catalog_exact_provider", "catalog_exact_model",
+        "catalog_family", "provider_default", "unknown_fallback",
+        "context_cap", "explicit_clamped", "legacy_server",
+    )
+    # API key 永不泄漏
+    assert "api_key" not in response.text
+    assert "sk-" not in response.text
+
