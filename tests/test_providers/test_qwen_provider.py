@@ -159,6 +159,38 @@ def test_38_preview_vision_not_written_true():
     assert caps.supports_vision is False
 
 
+def test_38_preview_fc_not_found_none():
+    """§7.7 ③ 主力 D：3.8 无型号页勾选表 → supports_function_calling=None（未找到）。"""
+    caps = providers.resolve({"model_name": "qwen3.8-max-preview"}).capabilities(
+        {"model_name": "qwen3.8-max-preview"}
+    )
+    assert caps.supports_function_calling is None
+
+
+def test_38_preview_builtin_tools_not_found_none():
+    """§7.7 ③ 主力 D：3.8 内置工具未找到 → None（禁止继承写 True）。"""
+    caps = providers.resolve({"model_name": "qwen3.8-max-preview"}).capabilities(
+        {"model_name": "qwen3.8-max-preview"}
+    )
+    assert caps.supports_builtin_tools is None
+
+
+def test_38_preview_billing_token_plan():
+    """§7.7 问 7b：3.8 仅 Token Plan Credits。"""
+    caps = providers.resolve({"model_name": "qwen3.8-max-preview"}).capabilities(
+        {"model_name": "qwen3.8-max-preview"}
+    )
+    assert caps.billing == "token_plan_credits"
+
+
+@pytest.mark.parametrize("name", ["qwen3.7-plus", "qwen3.7-max", "qwen3.7-flash"])
+def test_37_series_builtin_tools_true(name):
+    """§7.7 ③ Q1 第 3 列：3.7 三主力内置工具=True（Harness 不得覆盖）。"""
+    caps = providers.resolve({"model_name": name}).capabilities({"model_name": name})
+    assert caps.supports_builtin_tools is True
+    assert caps.billing == ""
+
+
 # ---- §7.7 问 7：定价按型号分条（CNY） ----
 
 

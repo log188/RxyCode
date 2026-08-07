@@ -104,7 +104,18 @@ class ModelCapabilities:
 
     #: 是否支持 OpenAI 风格的原生 function calling。
     #: False 时 fast path 必须降级到 json_in_text。
-    supports_function_calling: bool = True
+    #: None = 未调研/未证实（§7.7 ③：qwen3.8-max-preview 无型号页勾选表），消费方
+    #: 按 falsy 处理（不启用 FC），不得与「明确不支持」混淆但行为同为保守关闭。
+    supports_function_calling: bool | None = True
+
+    #: 是否支持厂商内置工具（§7.7 ③ Q1 第 3 能力列「内置工具」）。
+    #: 仅承载调研数据（产品层 / Harness 不得覆盖）；None = 未找到。
+    #: 默认 None 不改变任何现有行为。
+    supports_builtin_tools: bool | None = None
+
+    #: 计费形态标识（§7.7 问 7b：qwen3.8-max-preview 仅 Token Plan Credits）。
+    #: 空串 = 按量（默认）；"token_plan_credits" 等由 Phase E CostAccountant 消费。
+    billing: str = ""
 
     #: 是否是推理型模型（会产出 reasoning/thinking 内容）。
     supports_reasoning: bool = False

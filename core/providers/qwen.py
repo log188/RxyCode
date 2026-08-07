@@ -185,13 +185,20 @@ class QwenProvider(BaseProvider):
         )
         if family is not None:
             context_window = _context_window(family)
+            is_38 = family == "qwen3.8-max-preview"
             caps = replace(
                 caps,
                 context_window=context_window,
                 compaction_threshold=int(context_window * _COMPACTION_RATIO),
                 # §7.7 问 2：3.7=65536；3.8 未找到官方整数 → None
                 max_output_tokens=_max_output(family),
-                supports_function_calling=(family != "qwen3.8-max-preview"),
+                # §7.7 ③：3.7 FC=True（Q1 证实）；3.8 无型号页勾选表 → None（未找到）
+                supports_function_calling=(None if is_38 else True),
+                # §7.7 ③ Q1 第 3 列「内置工具」：plus/max/flash=True（Harness 不得覆盖）；
+                # 3.8 未找到 → None（禁止继承写 True）
+                supports_builtin_tools=(None if is_38 else True),
+                # §7.7 问 7b：3.8 仅 Token Plan Credits；3.7 按量（空串）
+                billing=("token_plan_credits" if is_38 else ""),
                 # §7.7 ③：plus/flash 多模态；max 纯文本；3.8 不写入 True
                 supports_vision=_supports_vision(family),
                 supports_reasoning=True,
