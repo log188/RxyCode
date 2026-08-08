@@ -23,12 +23,14 @@ try:
     from ...config.model_capabilities import (
         DEFAULT_CAPABILITIES,
         ModelCapabilities,
+        ModelPricing,
         UsageFieldMap,
     )
 except ImportError:  # pragma: no cover - repo-root layout (tests)
     from config.model_capabilities import (
         DEFAULT_CAPABILITIES,
         ModelCapabilities,
+        ModelPricing,
         UsageFieldMap,
     )
 from .base import BaseProvider
@@ -39,9 +41,50 @@ _DEEPSEEK_USAGE = UsageFieldMap(
     reasoning=("reasoning_content",),
 )
 
-# §7.1：v4-flash / v4-pro 均为 1M context；compaction ≈90%
+# §7.1：v4-flash / v4-pro 均为 1M context；max output 384K；compaction ≈90%
 _CONTEXT_WINDOW = 1_048_576
+_MAX_OUTPUT = 384_000
 _COMPACTION_THRESHOLD = 943_718
+
+# §7.1 问 7：定价分条（USD / 1M；as_of=2026-08-02；source_url=S2）。
+# 缓存写入价：无单独写入价（自动磁盘缓存）→ None。
+_DEEPSEEK_PRICING: dict[str, ModelPricing] = {
+    "deepseek-v4-flash": ModelPricing(
+        input_per_mtok=0.14,
+        output_per_mtok=0.28,
+        cached_input_per_mtok=0.0028,
+        cache_write_per_mtok=None,
+        as_of="2026-08-02",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+    ),
+    "deepseek-v4-pro": ModelPricing(
+        input_per_mtok=0.435,
+        output_per_mtok=0.87,
+        cached_input_per_mtok=0.003625,
+        cache_write_per_mtok=None,
+        as_of="2026-08-02",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+    ),
+}
+
+#: 未调研/旧型号 → 价格显式 None（来源 URL 仍在），不得静默当 0。
+_DEFAULT_DEEPSEEK_PRICING = ModelPricing(
+    input_per_mtok=None,
+    output_per_mtok=None,
+    cached_input_per_mtok=None,
+    cache_write_per_mtok=None,
+    as_of="2026-08-02",
+    source_url="https://api-docs.deepseek.com/quick_start/pricing",
+)
+
+
+def _pricing_for(model_name: str) -> ModelPricing:
+    name = model_name.lower()
+    if "v4-pro" in name or name == "deepseek-v4-pro":
+        return _DEEPSEEK_PRICING["deepseek-v4-pro"]
+    if "v4-flash" in name or name == "deepseek-v4-flash":
+        return _DEEPSEEK_PRICING["deepseek-v4-flash"]
+    return _DEFAULT_DEEPSEEK_PRICING
 
 
 def _thinking_default_on(model_name: str) -> bool:
@@ -70,13 +113,17 @@ class DeepSeekProvider(BaseProvider):
     def capabilities(self, model_config: dict) -> ModelCapabilities:
         model_name = str(model_config.get("model_name") or "").lower()
         thinking_on = _thinking_default_on(model_name)
+        is_v4 = "v4" in model_name or model_name in ("deepseek-v4-flash", "deepseek-v4-pro")
 
         caps = replace(
             DEFAULT_CAPABILITIES,
             provider=self.name,
             context_window=_CONTEXT_WINDOW,
             compaction_threshold=_COMPACTION_THRESHOLD,
+            # §7.1 问 2：仅 v4 系 max output 384K；旧型号/未知变体保持 None（DC1）
+            max_output_tokens=(_MAX_OUTPUT if is_v4 else None),
             usage_fields=_DEEPSEEK_USAGE,
+            pricing=_pricing_for(model_name),
             supports_reasoning=thinking_on,
             # §7.1：thinking 模式下 temperature 不报错但无效
             accepts_temperature=not thinking_on,
