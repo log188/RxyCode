@@ -1686,15 +1686,16 @@ class AgentV2:
             prov_cfg.setdefault("resolved_max_tokens", payload["max_tokens"])
             prov_cfg.setdefault("api_key", "raw-stream")
             prov_cfg.setdefault("effort", str(self.model_config.get("effort") or "balanced"))
-            try:
-                pkwargs = provider.llm_kwargs(prov_cfg, caps)
-            except Exception:
-                pkwargs = {}
+            # 委托 provider.llm_kwargs 决定 thinking/effort/temperature——失败则中止
+            # 请求（避免用错误参数继续，尤其 DeepSeek 的 temperature 400 风险）。
+            pkwargs = provider.llm_kwargs(prov_cfg, caps)
             if pkwargs.get("extra_body"):
                 payload.setdefault("extra_body", {}).update(pkwargs["extra_body"])
             if "reasoning_effort" in pkwargs:
                 payload["reasoning_effort"] = pkwargs["reasoning_effort"]
-            if "temperature" not in pkwargs:
+            if "temperature" in pkwargs:
+                payload["temperature"] = pkwargs["temperature"]
+            else:
                 payload.pop("temperature", None)
         if tools:
             caps = getattr(self, "_capabilities", None)
