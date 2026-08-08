@@ -261,6 +261,11 @@ class MiniMaxProvider(BaseProvider):
             family = _family(str(model_config.get("model_name") or ""))
             body = kwargs.setdefault("extra_body", {})
             if family is not None and _is_m3(family):
-                body.setdefault("thinking", {"type": "adaptive"})
+                # 直接赋值：覆盖 base.py 的通用 enabled 回退（M3 走 adaptive）。
+                body["thinking"] = {"type": "adaptive"}
+            else:
+                # M2.x：thinking 关不掉，但 base 的通用 "enabled" 不适用
+                # （§7.5 ③：M2.x 不注入 adaptive/enabled 参数）；移除 base 回退。
+                body.pop("thinking", None)
             body.setdefault("reasoning_split", True)
         return kwargs

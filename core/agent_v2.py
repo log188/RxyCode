@@ -1321,6 +1321,9 @@ class AgentV2:
             cfg = {}
 
         model_config = dict(model_config)
+        # A21: effort 档位默认 balanced（= 现状行为，无额外注入）；
+        # fast path 可在入口置 effort="fast"（见 _effort_for）。
+        model_config.setdefault("effort", "balanced")
         api_key = str(model_config.get("api_key") or "").strip()
         if not api_key:
             env_name = model_config.get("api_key_env") or "the configured environment variable"
@@ -1672,6 +1675,13 @@ class AgentV2:
             "temperature": self.model_config.get("temperature", 0.7),
             "max_tokens": self._resolve_request_max_tokens(input_tokens),
         }
+        # A21: per-model 延迟旋钮——effort 档位顶层注入（Chat Completions 消费）。
+        caps = getattr(self, "_capabilities", None)
+        if caps is not None:
+            effort = str(self.model_config.get("effort") or "balanced")
+            preset = (caps.effort_presets or {}).get(effort)
+            if preset is not None:
+                payload["reasoning_effort"] = preset
         if tools:
             caps = getattr(self, "_capabilities", None)
             if caps is not None and not caps.supports_function_calling:
@@ -2008,6 +2018,18 @@ class AgentV2:
         directive = getattr(self, "_routing_directive", RoutingDirective.AUTO)
         return is_simple_query(text, directive=directive)
 
+    def _effort_for(self, mode: str, text: str) -> str:
+        """A21: 按任务性质选推理档位。
+
+        - plan → balanced
+        - build + 简单查询 → fast（快路径）
+        - 其余 → balanced（现状）
+        - deep 只由显式配置（effort=deep）触发，本方法不自动返回 deep（贵且慢）。
+        """
+        if mode == "build" and self._is_simple_query(text):
+            return "fast"
+        return "balanced"
+
     def _detect_download_intent(self, text: str) -> tuple[str, str, str] | None:
         return detect_download_intent(text)
 
@@ -2083,6 +2105,13 @@ class AgentV2:
         6. Update token stats and context tracking
         """
         await self._ensure_session_loaded()
+        # A21: fast path 按任务性质选 effort 档位（简单查询 → fast；其余 balanced）。
+        if mode is None:
+            mode = "build"
+        if getattr(self, "model_config", None) is None:
+            self.model_config = {}
+        self.model_config = dict(self.model_config)
+        self.model_config["effort"] = self._effort_for(mode, user_input)
         allowed_tool_names = self._resolve_fast_reply_tool_allowlist(
             user_input, allowed_tool_names
         )

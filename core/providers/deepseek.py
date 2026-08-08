@@ -84,7 +84,14 @@ class DeepSeekProvider(BaseProvider):
             supports_function_calling=True,
             structured_output="function_calling",
             prompt_variant=_prompt_variant(model_name),
-            # §7.1 第 4 问：自动 disk 缓存，最小 64-token prefix unit；无显式断点/TTL
+            # §7.1 问 5/③：v4 系 thinking 默认开启；effort 档位 low/high/max（默认 high）
+            thinking_default_on=thinking_on,
+            effort_presets=(
+                {"fast": "low", "balanced": "high", "deep": "max"}
+                if thinking_on
+                else {}
+            ),
+            # §7.1 问 4：自动 disk 缓存，最小 64-token prefix unit；无显式断点/TTL
             cache_min_block_tokens=64,
             cache_ttl_s=None,
             cache_breakpoints=(),

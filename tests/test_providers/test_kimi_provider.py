@@ -91,7 +91,8 @@ def test_fixed_sampling_params_never_injected():
     kwargs = p.llm_kwargs(cfg, caps)
     for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
         assert key not in kwargs, f"{key} must not be injected for Kimi"
-    assert "reasoning_effort" not in kwargs  # A13 未接线，effort 由 A21 消费
+    # A21 起：kimi-k3 有 effort_presets（§7.3 问 5）→ 默认档 balanced 注入 reasoning_effort
+    assert kwargs.get("reasoning_effort") == "high"
 
 
 # ---- §7.3 问 2/5：k2.7-code / highspeed / k2.6 -------------------------

@@ -121,6 +121,18 @@ class BaseProvider:
             kwargs["temperature"] = model_config.get("temperature", 0.7)
         if caps.extra_body:
             kwargs["extra_body"] = dict(caps.extra_body)
+        # A21: thinking 适配判断——supports_reasoning + thinking_default_on 的模型
+        # 默认注入 thinking enabled（extra_body）；effort_presets 非空时按档位注入
+        # reasoning_effort（顶层）。各 provider 覆写传输位置时调用 super() 继承；
+        # 若 provider 已显式设置 thinking，不覆盖其传输位置。
+        if caps.supports_reasoning and caps.thinking_default_on:
+            body = kwargs.setdefault("extra_body", {})
+            if "thinking" not in body:
+                body["thinking"] = {"type": "enabled"}
+            effort = str(model_config.get("effort") or "balanced")
+            preset = (caps.effort_presets or {}).get(effort)
+            if preset is not None:
+                kwargs["reasoning_effort"] = preset
         return kwargs
 
     def supports_prompt_cache(self, caps: ModelCapabilities) -> bool:
