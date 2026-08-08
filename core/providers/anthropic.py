@@ -17,6 +17,19 @@ capabilities 按原生 Messages 能力声明（生产主路径），兼容端点
 （无 prompt caching / thinking 细节不完整）由 A19 的缓存卡按真实端点行为处理，
 OpenAI 兼容层仅作评测用。
 
+**端点边界（A18 判据 3，可核验说明）**：
+- 原生端点 ``https://api.anthropic.com``（hostname 精确匹配、仅 HTTPS）→
+  ``supports_prompt_cache=True``（cache_control ephemeral，§7.8 A3）；
+- OpenAI 兼容 / 中转 / 伪原生子串（api.anthropic.com.evil.example、proxy path
+  含 api.anthropic.com、http/ftp）→ ``supports_prompt_cache=False``，不注入
+  cache_control（A6：兼容层不支持 prompt caching；Luna rev5-7 端点感知）；
+- thinking 走 content blocks（含 signature）：``llm_kwargs`` 不注入
+  ``extra_body.thinking: {"type":"enabled"}``（Claude 5 adaptive 默认开；
+  Opus 4.8 用 enabled 会 400）；用户显式 ``thinking`` 配置（Opus 4.8
+  adaptive、Haiku extended enabled+budget_tokens）原样透传；
+- 非默认采样（temperature≠1.0 / top_p≠1.0 / top_k 非空）显式传入顶层或
+  ``extra_body`` → ValueError（§7.8：HTTP 400）。
+
 数值来源（A0 §7.8）：
   - https://docs.anthropic.com/en/docs/about-claude/models/overview
   - https://docs.anthropic.com/en/docs/about-claude/pricing
@@ -131,6 +144,31 @@ _ANTHROPIC_FAMILY = {
     "claude-haiku-4-5",
 }
 
+#: §7.8 问 5（A4）：非默认 temperature/top_p/top_k 一律 400 的型号集合
+#: Fable / Mythos / Preview / Opus 5 / 4.8 / 4.7 / Sonnet 5（及同代 4.6/4.5 族）。
+#: 用函数判断（前缀覆盖），避免手工枚举遗漏（Luna rev13）。Haiku 不在 400 清单。
+#: §7.8 问 5（A4「Limits and feature compatibility」原文）：非默认
+#: temperature/top_p/top_k 一律 400 的型号——Fable / Mythos / Preview /
+#: Opus 5 / Opus 4.8 / Opus 4.7 / Sonnet 5。只列报告明确型号；4.6/4.5 及
+#: 未调研变体不继承该契约（DC1 保守，Luna rev13/rev14）。
+_SAMPLING_RESTRICTED = frozenset(
+    {
+        "claude-fable-5",
+        "claude-mythos-5",
+        "claude-mythos-5-preview",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-sonnet-5",
+    }
+)
+
+
+def _sampling_restricted(model_name: str) -> bool:
+    """§7.8 问 5（A4）：该型号是否受"非默认采样一律 400"契约约束。
+    仅报告明确列出的型号；旧代（claude-opus-3）与未调研变体不受限（DC1）。"""
+    return model_name.lower() in _SAMPLING_RESTRICTED
+
 
 def _family(model_name: str) -> str | None:
     """返回调研覆盖的型号规范名；未覆盖返回 None。"""
@@ -176,8 +214,129 @@ def _prompt_variant(model_name: str) -> str:
     return "claude" if family is not None else "default"
 
 
+def _is_native_anthropic_host(base_url: str) -> bool:
+    """§7.8 A6：原生 Messages 端点为 https://api.anthropic.com（端口 443 或未指定）。
+    防伪原生子串注入（api.anthropic.com.evil.example / proxy path 含
+    api.anthropic.com / http/ftp / 非标准端口均不得匹配，Luna rev6/rev7/rev13）。"""
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(base_url)
+        if parsed.scheme != "https":  # 原生 Messages 仅 HTTPS
+            return False
+        if (parsed.hostname or "").lower() != "api.anthropic.com":
+            return False
+        port = parsed.port
+        return port is None or port == 443
+    except ValueError:  # 畸形 URL：保守按非原生
+        return False
+
+
 class AnthropicProvider(BaseProvider):
     name = "anthropic"
+
+    def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
+        """§7.8 问 5 / A21：Anthropic 的 thinking 在 content blocks（含 signature），
+        不走 OpenAI 兼容的顶层 ``reasoning_effort``，也不由 base 注入
+        ``extra_body.thinking: {"type":"enabled"}``（A21 注记：Anthropic 走
+        content block，不注入 extra_body.thinking；且 Opus 4.8 用 type:enabled
+        会 400，Claude 5 adaptive 默认开无需配置）。
+
+        本覆写：
+        - 用户显式传入 ``model_config["extra_body"]["thinking"]`` → **完全尊重**
+          （Haiku 4.5 合法配置 ``enabled + budget_tokens``、Opus 4.8 开启须
+          ``adaptive``），不误删；若 Opus 4.8 显式传 ``enabled`` 则保留原样，
+          由 API 返回 400（§7.8 400 契约，不静默改写）；
+        - 用户未显式指定 thinking → 移除 base 对 thinking_default_on=True
+          自动注入的 ``type:"enabled"``（Claude 5 adaptive 默认开无需配置）；
+        - 显式传非默认 ``temperature/top_p/top_k`` → 拒绝（§7.8：非默认采样
+          一律 400）；
+        - 移除 ``reasoning_effort``（Anthropic 无此参数）。
+        """
+        kwargs = super().llm_kwargs(model_config, caps)
+        kwargs.pop("reasoning_effort", None)
+
+        model_name = str(model_config.get("model_name") or "").lower()
+        user_body = model_config.get("extra_body")
+        if not isinstance(user_body, dict):
+            user_body = {}
+
+        # §7.8 ③：Anthropic 无 reasoning_effort 参数（thinking 走 content block /
+        # output_config.effort）——顶层与合并后 extra_body 内均移除，防止绕过（Luna rev8/rev9）。
+        if "reasoning_effort" in user_body:
+            user_body = dict(user_body)
+            user_body.pop("reasoning_effort", None)
+
+        # §7.8 问 5：非默认 temperature/top_p/top_k 一律 400（与是否 thinking 无关）。
+        # 该契约适用于 §7.8 A4 列出的型号（Fable/Mythos/Preview/Opus 4.5+/Sonnet 4.5+）；
+        # 其他未知变体保持 DEFAULT 行为，可传自定义采样（DC1，Luna rev10/rev11/rev13）。
+        if _sampling_restricted(model_name):
+            merged_sampling = {}
+            for src in (model_config, user_body):
+                for key in ("temperature", "top_p", "top_k"):
+                    if key in src:
+                        merged_sampling[key] = src[key]
+            for key, value in merged_sampling.items():
+                # §7.8：仅"非默认值"一律 400；显式传 Anthropic 默认值放行。
+                # 默认值定义：temperature=1.0、top_p=1.0、top_k 官方默认即不传（None=未设）。
+                default_ok = (
+                    (key == "temperature" and value == 1.0)
+                    or (key == "top_p" and value == 1.0)
+                    or (key == "top_k" and value is None)
+                )
+                if default_ok:
+                    continue
+                raise ValueError(
+                    f"anthropic: {key} must be left at default "
+                    f"(custom sampling rejected with HTTP 400 per §7.8)"
+                )
+
+        has_user_thinking = "thinking" in user_body
+        if has_user_thinking:
+            # 显式传入（含 None 也原样保留，由调用方/API 校验层处理）→ 完全尊重。
+            # 唯一入口约定：显式 thinking 配置通过 model_config["extra_body"]["thinking"]
+            # 传入（项目无顶层 "thinking" 键约定，A21 由能力字段驱动默认注入）。
+            # §7.8 问 5（A4「关闭」行原文）：**Fable/Mythos 拒绝 disabled**（HTTP 400）。
+            if (
+                model_name == "claude-fable-5"
+                and isinstance(user_body["thinking"], dict)
+                and user_body["thinking"].get("type") == "disabled"
+            ):
+                raise ValueError(
+                    "anthropic: claude-fable-5 thinking cannot be disabled "
+                    "(HTTP 400 per §7.8)"
+                )
+            body = dict(kwargs.get("extra_body") or {})
+            body["thinking"] = user_body["thinking"]
+            kwargs["extra_body"] = body
+        # 合并用户其他显式 extra_body 键——用户值优先（覆盖 base 生成的同键默认值，
+        # Luna rev17 Minor；thinking 已单独处理，采样键对受限型号不注入）。
+        # 无用户 thinking 时，此处统一从当前 extra_body 拷贝并移除 base 注入的
+        # thinking.enabled / reasoning_effort（单一处理点，避免重复 else 分支）。
+        if user_body:
+            body = dict(kwargs.get("extra_body") or {})
+            strip_sampling = _sampling_restricted(model_name)
+            for key, value in user_body.items():
+                if key == "thinking":
+                    continue
+                if key in ("temperature", "top_p", "top_k") and strip_sampling:
+                    continue
+                body[key] = value  # 用户值优先（覆盖 base 生成的同键默认值）
+            body.pop("reasoning_effort", None)
+            if not has_user_thinking:
+                body.pop("thinking", None)
+            kwargs["extra_body"] = body
+        else:
+            body = dict(kwargs.get("extra_body") or {})
+            if not has_user_thinking:
+                body.pop("thinking", None)
+            body.pop("reasoning_effort", None)
+            # 强制重新赋值（即使 body 已空，避免 kwargs 仍指向 base 含 thinking 的 dict）
+            if body:
+                kwargs["extra_body"] = body
+            else:
+                kwargs.pop("extra_body", None)
+        return kwargs
 
     def matches(self, base_url: str, model_name: str) -> bool:
         url = base_url.lower()
@@ -189,6 +348,12 @@ class AnthropicProvider(BaseProvider):
     def capabilities(self, model_config: dict) -> ModelCapabilities:
         model_name = str(model_config.get("model_name") or "").lower()
         family = _family(model_name)
+        base_url = str(model_config.get("base_url") or "").lower()
+        # §7.8 A6：仅原生 Messages 端点（api.anthropic.com）支持显式 cache_control；
+        # OpenAI 兼容/中转端点不支持 prompt caching → supports_prompt_cache 按端点区分
+        # （Luna rev5/rev6）。用 hostname 精确校验，防伪原生子串注入
+        # （api.anthropic.com.evil.example 不得匹配）。
+        native_endpoint = _is_native_anthropic_host(base_url)
 
         caps = replace(
             DEFAULT_CAPABILITIES,
@@ -196,6 +361,16 @@ class AnthropicProvider(BaseProvider):
             usage_fields=_ANTHROPIC_USAGE,
             pricing=_pricing_for(family),
             prompt_variant=_prompt_variant(model_name),
+            # §7.8 A6：supports_prompt_cache 是端点级事实（非模型专属）——原生
+            # Messages 端点支持显式 cache_control，OpenAI 兼容/中转端点不支持。
+            # 对未知变体同样按端点设置（Luna rev12），模型专属的 min_block/ttl/
+            # breakpoints 仅对已调研五主力在下方分支设置。
+            supports_prompt_cache=native_endpoint,
+            # §7.8 问 5：采样 400 契约覆盖 Fable/Mythos/Preview/Opus5/4.8/4.7/Sonnet5
+            # （→ accepts_temperature=False）；Haiku 4.5 不在清单、未知变体保守
+            # （→ True）。放在外层使 capability 元数据与 llm_kwargs 拒绝行为一致
+            # （含 Mythos/Opus 4.7 等非五主力受限型号，Luna rev15/rev16）。
+            accepts_temperature=not _sampling_restricted(model_name),
         )
         if family is not None:
             context_window = _context_window(family)
@@ -211,16 +386,9 @@ class AnthropicProvider(BaseProvider):
                 supports_reasoning=True,
                 # §7.8 问 5：Claude 5 默认开；Opus 4.8 / Haiku 4.5 默认关
                 thinking_default_on=_thinking_default_on(family),
-                # §7.8 ③：原生 Messages 支持显式 cache_control（与 OpenAI 自动缓存不同）。
-                # OpenAI 兼容层不支持 cache（A6）——A19 按真实端点行为处理。
-                supports_prompt_cache=True,
                 # §7.8 ③ 未列 json_schema；StructuredOutputMode 仅支持 function_calling /
                 # json_in_text（A12–A17 同裁决；无运行时消费点）
                 structured_output="function_calling",
-                prompt_variant=_prompt_variant(model_name),
-                # §7.8 问 5：非默认 temperature/top_p/top_k 一律 400（与是否 thinking 无关）
-                # → 不传自定义采样参数，保持默认采样
-                accepts_temperature=False,
                 # §7.8 问 6：官方无 tiktoken → chars:3.0 启发式占位（A5 前）；
                 # 精确计数走 messages.count_tokens；4.7+ 族同文约 +30% tokens
                 tokenizer="chars:3.0",
@@ -233,4 +401,8 @@ class AnthropicProvider(BaseProvider):
                 cache_ttl_s=300,
                 cache_breakpoints=("tools", "system", "session_static", "tail"),
             )
-        return caps.merged_with_overrides(model_config)
+        # §7.8 A6：supports_prompt_cache 是端点级硬事实（非模型专属、不可被 override
+        # 绕过）——非原生端点恒 False；原生端点恒 True（Luna rev9/rev12/rev13 Minor）。
+        caps = caps.merged_with_overrides(model_config)
+        caps = replace(caps, supports_prompt_cache=native_endpoint)
+        return caps
