@@ -64,6 +64,7 @@ PLACEHOLDER_VALUE_MARKERS = (
     "runtime-secret-value",
     "test-key",
     "test-secret",
+    "trace-secret",
     "your-key",
     "your-token",
 )
