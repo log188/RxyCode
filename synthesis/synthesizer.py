@@ -1,4 +1,4 @@
-﻿"""OutputSynthesizer: aggregate all leaf task results into a final answer."""
+"""OutputSynthesizer: aggregate all leaf task results into a final answer."""
 
 from __future__ import annotations
 

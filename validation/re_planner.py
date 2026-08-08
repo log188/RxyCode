@@ -1,4 +1,4 @@
-﻿"""RePlanner: secondary decomposition of failed tasks.
+"""RePlanner: secondary decomposition of failed tasks.
 
 When a task fails validation, the RePlanner breaks it into finer-grained
 sub-tasks and inserts them into the TaskTree. This is the core innovation
