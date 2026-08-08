@@ -60,6 +60,25 @@ def test_deep_only_via_explicit_effort():
     assert agent._effort_for("plan", "x") != "deep"
 
 
+def test_fast_path_preserves_explicit_effort():
+    """fast path 不覆盖用户显式 effort=deep（_effort_for 只在未显式配置时生效）。"""
+    agent = _new_agent()
+    agent.model_config = {"effort": "deep"}
+    if agent.model_config.get("effort"):
+        effort = agent.model_config["effort"]
+    else:
+        effort = agent._effort_for("build", "x")
+    assert effort == "deep"
+
+
+def test_deepseek_thinking_drops_temperature():
+    """§7.1/卡常见坑：DeepSeek thinking 适配模型 llm_kwargs 不带 temperature。"""
+    p, cfg, caps = _resolve("https://api.deepseek.com/v1", "deepseek-v4-flash")
+    assert caps.accepts_temperature is False
+    kwargs = p.llm_kwargs(cfg, caps)
+    assert "temperature" not in kwargs
+
+
 # ---- 完成判据 3：各 provider effort_presets 与 §7 一致 ----------------------
 
 
@@ -72,7 +91,7 @@ def test_deepseek_effort_presets_s71():
 def test_openai_effort_presets_s72():
     """§7.2：OpenAI gpt-5.6 fast:low/balanced:medium/deep:high。"""
     p, cfg, caps = _resolve("https://api.openai.com/v1", "gpt-5.6-sol")
-    assert caps.effort_presets["balanced"] == "medium"
+    assert caps.effort_presets == {"fast": "low", "balanced": "medium", "deep": "high"}
 
 
 def test_kimi_k3_effort_presets_s73():

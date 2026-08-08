@@ -1675,13 +1675,20 @@ class AgentV2:
             "temperature": self.model_config.get("temperature", 0.7),
             "max_tokens": self._resolve_request_max_tokens(input_tokens),
         }
-        # A21: per-model 延迟旋钮——effort 档位顶层注入（Chat Completions 消费）。
+        # A21: per-model 延迟旋钮——按能力注入 thinking + effort 档位（Chat 消费）。
         caps = getattr(self, "_capabilities", None)
         if caps is not None:
+            # thinking 适配：supports_reasoning + thinking_default_on 才注入 thinking；
+            # 与 llm_kwargs() 的判定一致（真实快路径走 _raw_stream）。
+            if caps.supports_reasoning and caps.thinking_default_on:
+                payload.setdefault("extra_body", {})["thinking"] = {"type": "enabled"}
             effort = str(self.model_config.get("effort") or "balanced")
             preset = (caps.effort_presets or {}).get(effort)
             if preset is not None:
                 payload["reasoning_effort"] = preset
+            # §7.1 等：thinking 适配模型不接受自定义采样参数（如 DeepSeek temperature）。
+            if caps.supports_reasoning and not caps.accepts_temperature:
+                payload.pop("temperature", None)
         if tools:
             caps = getattr(self, "_capabilities", None)
             if caps is not None and not caps.supports_function_calling:
@@ -2106,12 +2113,14 @@ class AgentV2:
         """
         await self._ensure_session_loaded()
         # A21: fast path 按任务性质选 effort 档位（简单查询 → fast；其余 balanced）。
+        # 用户显式配置的 effort（如 deep）优先，不被 fast path 覆盖。
         if mode is None:
             mode = "build"
         if getattr(self, "model_config", None) is None:
             self.model_config = {}
         self.model_config = dict(self.model_config)
-        self.model_config["effort"] = self._effort_for(mode, user_input)
+        if not self.model_config.get("effort"):
+            self.model_config["effort"] = self._effort_for(mode, user_input)
         allowed_tool_names = self._resolve_fast_reply_tool_allowlist(
             user_input, allowed_tool_names
         )
