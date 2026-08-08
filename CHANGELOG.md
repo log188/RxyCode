@@ -11,6 +11,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.8] - 2026-08-08
+
+### Highlights
+
+Model-support release. Phase A of the model adaptation layer is complete:
+DeepSeek v4 (flash/pro) thinking-mode providers get exact capability
+isolation, the Doubao (ark) provider is finished with conservative pro
+boundaries, the Anthropic Claude 5 family (Opus/Sonnet/Fable/Haiku/Opus 4.8)
+is fully adapted with endpoint-aware prompt caching, and per-model
+capabilities, pricing, cache parameters and latency/thinking knobs are now
+carried through the provider layer. Phase A exit checks pass with zero eval
+regression (94.7% vs 89.5% baseline).
+
+### Added
+
+- **DeepSeek v4 support (A22)** — exact v4-flash/v4-pro identification, 1M
+  context, 384K max output, thinking-on by default with effort presets; legacy
+  deepseek-chat/reasoner keep A3 behavior.
+- **Doubao (ark) provider completion (A23)** — 256k context / soft 256k output,
+  `reasoning_content` extraction, function calling; pro stays conservative (R1).
+- **Anthropic Claude 5 family (A18)** — five mainstays (Opus 5 / Sonnet 5 /
+  Haiku 4.5 / Fable 5 / Opus 4.8), per-mainstay context/max-output/pricing,
+  endpoint-aware `supports_prompt_cache`, sampling 400 contract, thinking-block
+  handling.
+- **per-model optimization knobs (A19-A21)** — cache parameters (min block /
+  TTL / breakpoints), token governance, latency/effort presets.
+
+### Fixed
+
+- **Unknown-model capability leaks (DC1)** — unknown variants no longer inherit
+  researched capabilities (context, pricing, thinking, cache) across providers.
+- **Substring-based model matching** — replaced `"v4" in name` / `"ark" in url`
+  generalizations with exact hostname/model matching (prevents cross-model
+  stealing on shared endpoints).
+- **bash absolute-path escape and Windows recursive-delete safety (stress S1/S12).**
+
+### Changed
+
+- **Phase A exit checks pass** — ruff clean, 10412 tests green, evals GATE PASS
+  94.7% vs baseline 89.5%, no hardcoded gpt-4o tokenizer / 256000 context.
+
+---
+
 ## [1.2.7] - 2026-08-06
 
 ### Highlights
@@ -471,6 +514,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.8]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8
 [1.2.7]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7
 [1.2.6]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.6
 [1.2.5]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5

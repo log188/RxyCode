@@ -4,11 +4,11 @@
 
 **规划-执行型 AI 编程助手，带验证层与安全工具编排**
 
-[![Version](https://img.shields.io/badge/version-1.2.7-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7)
+[![Version](https://img.shields.io/badge/version-1.2.8-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-9965%20passed-brightgreen.svg)](#测试)
+[![Tests](https://img.shields.io/badge/tests-10412%20passed-brightgreen.svg)](#测试)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **[English](README.md)** | **[中文](README.zh-CN.md)**
@@ -30,10 +30,10 @@ RxyCode 是一个基于 LangGraph 的通用 AI Agent，采用分层"规划-执�
 - **防幻觉** — 专用验证器在报告成功前，会检查工具结果是否真正满足原始目标
 - **规划与执行** — 分层任务拆解 + 依赖感知的并行执行，而非线性 ReAct 循环
 - **默认安全** — 风险分级、写入白名单、审批对话框、完整审计日志
-- **极速响应** — 三层缓存（精确哈希 + 语义相似 + Provider KV）、50ms token 批处理、简单查询快速路径
+- **极速响应** — 三层缓存（精确哈希 + 语义相似 + Provider KV）、前端 SSE 渲染节流（50ms）、简单查询快速路径
 - **精美界面** — 默认 OpenTUI/React/TypeScript 前端：流式输出、ScrollBox 聊天、原生输入框、命令面板风格界面；一键安装会在缺少 Bun 时自动安装；Ink 可通过 `RXYCODE_TUI=ink` 回退
 - **30+ 内置工具** — 文件操作、Shell、网页搜索/抓取、Git、RAG、MCP、LSP 等
-- **评测说真话** — 评测体系跑完整 Agent 流程（规划→执行→验证→综合），断言工具真的被调用，与保存的基线对比，夜间 CI 对通过率回退自动告警——能力变化靠测量，不靠猜测
+- **评测说真话** — 评测体系跑完整 Agent 流程（规划→执行→验证→综合），断言工具真的被调用，与保存的基线对比，定时 CI 对通过率回退自动告警——能力变化靠测量，不靠猜测
 
 ## 快速开始
 
@@ -50,32 +50,32 @@ RxyCode 是一个基于 LangGraph 的通用 AI Agent，采用分层"规划-执�
 
 **Windows PowerShell：**
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.7/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.8/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux：**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.7/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.8/install.sh | sh
 rxycode
 ```
 
-安装脚本会自动引导安装 `uv`（如果需要），创建隔离的工具环境，并安装 **`v1.2.7`** 版本。
+安装脚本会自动引导安装 `uv`（如果需要），创建隔离的工具环境，并安装 **`v1.2.8`** 版本。
 无需手动 clone 仓库。
 
-**下载说明：** 仅最新版（**`v1.2.7`**）提供可安装的 wheel/sdist。更早的
+**下载说明：** 仅最新版（**`v1.2.8`**）提供可安装的 wheel/sdist。更早的
 GitHub Release 仍保留说明文字，但**不开放**安装包下载。
 
 ### 方式二：一次性运行
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.7" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.8" rxycode
 ```
 
 ### 方式三：永久安装
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.7"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.8"
 rxycode
 ```
 
@@ -168,7 +168,7 @@ _raw_stream()                              chatApi.ts / App.tsx
 | `lsp/` | LSP 集成（实验性） |
 | `core/safety/` | 风险分级、审批、写入白名单、审计 |
 | `evals/` | 评估框架（成功率、LLM-as-judge） |
-| `tests/` | Python 测试套件（9965 个确定性测试） |
+| `tests/` | Python 测试套件（10412 个确定性测试） |
 
 ## 测试
 
@@ -182,7 +182,7 @@ cd frontend/opentui-app && bun test   # OpenTUI：128 个测试
 ```bash
 python -m pytest tests -m "not live and not pty and not serial" -n 2 --dist loadscope -q
 python -m pytest tests -m "serial and not live and not pty" -n 0 -q
-# 9965 个确定性测试通过
+# 10412 个确定性测试通过
 ```
 
 ## 配置
@@ -198,17 +198,24 @@ cache:
 
 # 示例 A：OpenCode Go（通过 OpenCode 接入时推荐）
 models:
-  - name: deepseek-v4-flash
-    provider: openai
-    api_key: <your-key>        # 存储在仓库外，不会被提交
+  opencode-go/deepseek-v4-flash:
+    model_name: deepseek-v4-flash
+    provider_id: opencode-go
+    provider_name: OpenCode Go
+    api_key_env: OPENCODE_GO_API_KEY   # 或 api_key_secret，存储在仓库外
     base_url: https://opencode.ai/zen/go/v1
+    max_tokens: 8192
+    temperature: 0.7
 
 # 示例 B：DeepSeek 官方（仅在你主动选择官方时使用）
 # models:
-#   - name: deepseek-v4-flash
-#     provider: openai
-#     api_key: <your-key>
+#   deepseek/deepseek-v4-flash:
+#     model_name: deepseek-v4-flash
+#     provider_id: deepseek
+#     provider_name: DeepSeek
+#     api_key_env: DEEPSEEK_API_KEY
 #     base_url: https://api.deepseek.com
+#     max_tokens: 8192
 ```
 
 在 TUI 中使用 `/addmodel` 打开引导式设置向导。
@@ -234,11 +241,11 @@ models:
 | 快捷键 | 功能 |
 |--------|------|
 | `Tab` | 切换工作模式 |
-| `Ctrl+S` | 发送消息 |
-| `Ctrl+X` | 取消当前操作 |
-| `Ctrl+?` | 显示帮助 |
-| `Ctrl+E` | 外部编辑器 |
-| `Ctrl+C` | 退出程序 |
+| `Ctrl+P` | 命令面板（可搜索命令） |
+| `Ctrl+T` | 开关思考内容展示 |
+| `Esc` | 取消当前操作 |
+| `Ctrl+C` | 复制 / 取消流式 / 清空输入；2 秒内连按两次退出 |
+| `Ctrl+↑` / `Ctrl+↓` | 滚动输出 |
 
 ## 版本历史
 
@@ -255,6 +262,7 @@ models:
 | [v1.2.5](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5) | 2026-08 | 适配 DeepSeek / 通义千问 / Claude（思考模式、上下文窗口、Token 统计）；启动提速（延迟导入）；显式请求路由；stdio 传输 |
 | [v1.2.6](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.6) | 2026-08 | 可靠性修复：webfetch 解码、MCP 误路由、Windows 下 shell/编码修复；联网搜索加固 |
 | [v1.2.7](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7) | 2026-08 | 可靠性修复：完成的回答不再被只读探测失败丢弃；联网搜索更智能的搜索词；DeepSeek 思考模式推理内容回传；新增豆包（Doubao）模型支持 |
+| [v1.2.8](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8) | 2026-08 | 模型适配层完成：DeepSeek v4（flash/pro）、豆包（Doubao/ark）收尾、Anthropic Claude 5 家族五主力；能力声明精确隔离（DC1）；per-model 缓存 / Token / 思考档位；Phase A 出口检查零回归 |
 
 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
