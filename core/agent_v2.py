@@ -1675,19 +1675,26 @@ class AgentV2:
             "temperature": self.model_config.get("temperature", 0.7),
             "max_tokens": self._resolve_request_max_tokens(input_tokens),
         }
-        # A21: per-model 延迟旋钮——按能力注入 thinking + effort 档位（Chat 消费）。
+        # A21: per-model 延迟旋钮——委托 provider.llm_kwargs 决定 thinking/effort/
+        # temperature（各 provider 覆写已实现传输适配：MiniMax adaptive、M2.x 移除、
+        # Anthropic 走 content block 不注入 extra_body.thinking 等），使 raw path
+        # 与 llm_kwargs() 完全一致。
         caps = getattr(self, "_capabilities", None)
-        if caps is not None:
-            # thinking 适配：supports_reasoning + thinking_default_on 才注入 thinking；
-            # 与 llm_kwargs() 的判定一致（真实快路径走 _raw_stream）。
-            if caps.supports_reasoning and caps.thinking_default_on:
-                payload.setdefault("extra_body", {})["thinking"] = {"type": "enabled"}
-            effort = str(self.model_config.get("effort") or "balanced")
-            preset = (caps.effort_presets or {}).get(effort)
-            if preset is not None:
-                payload["reasoning_effort"] = preset
-            # §7.1 等：thinking 适配模型不接受自定义采样参数（如 DeepSeek temperature）。
-            if caps.supports_reasoning and not caps.accepts_temperature:
+        provider = getattr(self, "_provider", None)
+        if provider is not None and caps is not None:
+            prov_cfg = dict(self.model_config)
+            prov_cfg.setdefault("resolved_max_tokens", payload["max_tokens"])
+            prov_cfg.setdefault("api_key", "raw-stream")
+            prov_cfg.setdefault("effort", str(self.model_config.get("effort") or "balanced"))
+            try:
+                pkwargs = provider.llm_kwargs(prov_cfg, caps)
+            except Exception:
+                pkwargs = {}
+            if pkwargs.get("extra_body"):
+                payload.setdefault("extra_body", {}).update(pkwargs["extra_body"])
+            if "reasoning_effort" in pkwargs:
+                payload["reasoning_effort"] = pkwargs["reasoning_effort"]
+            if "temperature" not in pkwargs:
                 payload.pop("temperature", None)
         if tools:
             caps = getattr(self, "_capabilities", None)
