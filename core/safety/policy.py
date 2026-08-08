@@ -168,12 +168,33 @@ def is_write_allowed(path: str, config: dict) -> bool:
     - the RxyCode output dir (~/.rxycode/output/ or RXYCODE_OUTPUT_DIR)
     - every entry of config ``safety.allowed_write_paths``
     """
+    from ..session_runtime import current_working_directory
+
+    safety = (config or {}).get("safety", {}) or {}
+    allowed_extra = safety.get("allowed_write_paths", []) or []
+
+    # Windows drive paths (``C:\\...`` / ``C:/...``) are absolute on Windows but
+    # NOT on POSIX: Path("C:\\x").is_absolute() is False on Linux, so
+    # resolve_session_path would wrongly treat them as relative to the cwd and
+    # report them as "inside the workspace". On non-Windows hosts, treat any
+    # drive-prefixed path as an escape unless it is explicitly whitelisted
+    # (safety fix S12, Luna rev). On Windows this is already handled by
+    # Path.is_absolute(), so only apply when the platform does not see it as
+    # absolute.
+    drive_path = re.match(r"(?i)^[a-z]:[\\/]", path)
+    if drive_path and not Path(path).is_absolute():
+        for extra in allowed_extra:
+            try:
+                if _resolve(extra) == _resolve(path):
+                    return True
+            except Exception:
+                continue
+        return False
+
     try:
         target = _resolve(path)
     except Exception:
         return False
-
-    from ..session_runtime import current_working_directory
 
     roots: list[Path] = [current_working_directory().resolve()]
     try:
@@ -189,8 +210,7 @@ def is_write_allowed(path: str, config: dict) -> bool:
     except Exception:
         pass
 
-    safety = (config or {}).get("safety", {}) or {}
-    for extra in safety.get("allowed_write_paths", []) or []:
+    for extra in allowed_extra:
         try:
             roots.append(_resolve(extra))
         except Exception:
