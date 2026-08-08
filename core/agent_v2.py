@@ -1688,7 +1688,16 @@ class AgentV2:
             prov_cfg.setdefault("effort", str(self.model_config.get("effort") or "balanced"))
             # 委托 provider.llm_kwargs 决定 thinking/effort/temperature——失败则中止
             # 请求（避免用错误参数继续，尤其 DeepSeek 的 temperature 400 风险）。
-            pkwargs = provider.llm_kwargs(prov_cfg, caps)
+            try:
+                pkwargs = provider.llm_kwargs(prov_cfg, caps)
+            except Exception as exc:  # pragma: no cover - config bug path
+                _logger.warning(
+                    "A21 provider.llm_kwargs failed for %s; aborting raw request "
+                    "(no request sent): %s",
+                    self.model_config.get("model_name", "?"),
+                    exc,
+                )
+                raise
             if pkwargs.get("extra_body"):
                 payload.setdefault("extra_body", {}).update(pkwargs["extra_body"])
             if "reasoning_effort" in pkwargs:
@@ -3043,8 +3052,26 @@ class AgentV2:
         WRITE/DANGER tools mutate state, so their failure is authoritative.
         Read-only probes (webfetch/websearch/read/grep/glob/...) are attempts
         and may legitimately fail while the task still completes.
+
+        Controlled runtime outcomes (tool timeout / mid-tool cancel) are not
+        treated as critical: the agent may be probing limits or recovering by
+        documenting the timeout. Hard command errors still override.
         """
+        result = str(
+            getattr(item, "detail", None)
+            or getattr(item, "result", None)
+            or getattr(item, "output", None)
+            or (item.get("detail") if isinstance(item, dict) else "")
+            or (item.get("result") if isinstance(item, dict) else "")
+            or ""
+        ).lower()
+        if "timed out after" in result or "cancelled: tool" in result:
+            return False
+        # Artifact validation against a path that was never required should not
+        # keep a timeout-only bash failure critical; handled via detail above.
         risk = str(getattr(item, "risk", "") or "").strip().upper()
+        if not risk and isinstance(item, dict):
+            risk = str(item.get("risk") or "").strip().upper()
         return risk in {"WRITE", "DANGER"} or not risk
 
     @staticmethod
