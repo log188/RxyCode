@@ -151,3 +151,15 @@ python -m evals.cli run --backend agent --models <新模型id> --save-baseline
   ③ matches 写太宽抢走同端点其他模型（doubao vs minimax/glm）；
   ④ api_key_env 环境变量缺失 → 静默无 key；
   ⑤ 免费配额 429 与计费口径（官方 CNY vs 转发商）
+
+---
+
+## DeepSeek v4 会话续接（A22，§7.1）
+
+deepseek-v4-flash / deepseek-v4-pro 是 thinking 默认开启的推理模型（thinking: {"type":"enabled"} 默认、effort 默认 high）。带 tools 的轮次**必须**把上一轮 assistant 消息的 reasoning_content 原样回传（_to_openai_messages 保留该字段），否则 API **400**（§7.1 问 5，S3/S4 官方明确）。
+
+- 过渡期别名：deepseek-chat（non-thinking）/ deepseek-reasoner（thinking）在 2026-07-24 后指向 v4-flash 对应档（§7.1 S13）；providers.md 支持表仍列出以便旧配置平滑迁移。
+- thinking 模式下 temperature / top_p / presence_penalty / frequency_penalty 全部无效（不报错但被忽略，§7.1 问 5）；accepts_temperature=False。
+- effort 档位：low/high/max（fast→low、balanced→high、deep→max；v4-pro 实际映射 low→high、xhigh→max，§7.1 S3 映射表）。
+- 缓存：自动 disk 缓存，顶层 usage.prompt_cache_hit_tokens；命中 0.1x 计费；无显式 cache_control 断点（§7.1 问 4）。
+- 精确 token 数始终以 API usage 为准（chars:2.0 为项目侧估算，非官方 tokenizer）。
