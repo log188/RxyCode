@@ -13,6 +13,7 @@ from .policy import (
     get_tool_risk,
     register_tool_risk,
     is_write_allowed,
+    find_bash_disallowed_write_paths,
     is_dry_run,
     summarize_args,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "get_tool_risk",
     "register_tool_risk",
     "is_write_allowed",
+    "find_bash_disallowed_write_paths",
     "is_dry_run",
     "summarize_args",
     "ApprovalRequest",

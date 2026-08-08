@@ -30,6 +30,7 @@ from RxyCode.RxyCode1_1_0.core.safety.approval import (
 from RxyCode.RxyCode1_1_0.core.safety.audit import get_audit_logger
 from RxyCode.RxyCode1_1_0.core.safety.policy import (
     RiskLevel,
+    find_bash_disallowed_write_paths,
     get_tool_risk,
     is_dry_run,
     is_write_allowed,
@@ -926,6 +927,21 @@ class ToolOrchestrator:
                 p = args.get(key)
                 if isinstance(p, str) and p and not is_write_allowed(p, config):
                     msg = f"[blocked: write path not allowed: {p}]"
+                    return self._finish(
+                        name, args, msg, executed=False, approval="rejected",
+                        risk=risk, audit=audit,
+                    )
+            # Bash has no path arg; still block absolute mutating targets that
+            # escape the workspace write whitelist (workspace sandbox gap).
+            if self._canonical_name(name) == "bash":
+                cmd = str(args.get("command") or "")
+                blocked_paths = find_bash_disallowed_write_paths(cmd, config)
+                if blocked_paths:
+                    preview = ", ".join(blocked_paths[:3])
+                    msg = (
+                        "[blocked: bash write path not allowed: "
+                        f"{preview}]"
+                    )
                     return self._finish(
                         name, args, msg, executed=False, approval="rejected",
                         risk=risk, audit=audit,

@@ -76,6 +76,9 @@ class TestClassifyBashCommand:
         "reg delete HKLM\\Software",
         "format C:",
         "format d: /q",
+        "Remove-Item -Recurse -Force C:\\Windows\\Temp\\probe",
+        "Remove-Item -Force -Recurse C:\\Temp\\x",
+        "ri -Recurse -Force C:\\Temp\\x",
     ])
     def test_dangerous_commands(self, cmd):
         assert classify_bash_command(cmd) == RiskLevel.DANGER, cmd
@@ -93,6 +96,7 @@ class TestClassifyBashCommand:
         "rm -rf ./build",   # relative, not root
         "git push origin main",
         "chmod +x script.sh",
+        "Remove-Item .\\build -Recurse",  # relative project cleanup
     ])
     def test_normal_commands_are_write(self, cmd):
         assert classify_bash_command(cmd) == RiskLevel.WRITE, cmd
@@ -100,6 +104,41 @@ class TestClassifyBashCommand:
     def test_pattern_table_is_extensible_list(self):
         assert isinstance(DANGEROUS_COMMAND_PATTERNS, list)
         assert len(DANGEROUS_COMMAND_PATTERNS) >= 10
+
+    def test_bash_disallowed_absolute_write_paths(self, tmp_path, monkeypatch):
+        from RxyCode.RxyCode1_1_0.core.safety.policy import (
+            find_bash_disallowed_write_paths,
+        )
+        from RxyCode.RxyCode1_1_0.core import session_runtime
+
+        monkeypatch.setattr(
+            session_runtime, "current_working_directory", lambda: tmp_path
+        )
+        cfg = {
+            "execution": {
+                "sandbox_mode": "workspace",
+                "workspace_root": str(tmp_path),
+            },
+            "safety": {"allowed_write_paths": []},
+        }
+        escape = (
+            "Set-Content -Path 'C:\\Users\\Administrator\\escape_probe.txt' "
+            "-Value 'x'"
+        )
+        blocked = find_bash_disallowed_write_paths(escape, cfg)
+        assert blocked, "absolute escape write should be blocked"
+        ok = find_bash_disallowed_write_paths(
+            f"Set-Content -Path '{tmp_path / 'ok.txt'}' -Value 'x'", cfg
+        )
+        assert ok == []
+        assert find_bash_disallowed_write_paths("Get-ChildItem C:\\Windows", cfg) == []
+        # Relative report that *mentions* absolute paths in its body must not
+        # be false-blocked.
+        report_cmd = (
+            "Set-Content -Path '.\\safety_result.md' -Value "
+            "'blocked: C:\\Windows\\Temp\\rxycode-safety-probe /tmp/rxycode-safety-probe'"
+        )
+        assert find_bash_disallowed_write_paths(report_cmd, cfg) == []
 
 
 class TestArgumentAwareToolRisk:

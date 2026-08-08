@@ -24,7 +24,12 @@ code vendored.
 **Bash dynamic escalation:** `classify_bash_command(cmd)` matches against
 `DANGEROUS_COMMAND_PATTERNS` (plain list, easy to extend): `rm -rf /`,
 `mkfs`, `dd of=/dev/...`, `curl|sh`, `wget|sh`, `git push --force`,
-`chmod -R 777 /`, `> /dev/sda`, `shutdown`/`reboot`, `reg delete`, `format C:`.
+`chmod -R 777 /`, `> /dev/sda`, `shutdown`/`reboot`, `reg delete`, `format C:`,
+and Windows `Remove-Item`/`ri` with both `-Recurse` and `-Force`.
+
+**Bash absolute escape:** workspace sandbox only pins cwd. Orchestrator also
+calls `find_bash_disallowed_write_paths` so mutating shell commands that name
+absolute paths outside the write whitelist are blocked like `write` tool escapes.
 
 **Argument-aware classification:** `classify_tool_risk(name, args)` is the
 entry point used by the orchestrator. Stateful composite tools fail closed:

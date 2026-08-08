@@ -94,6 +94,9 @@ DANGEROUS_COMMAND_PATTERNS: list[str] = [
     r"\breboot\b",                                                         # reboot
     r"\breg\s+delete\b",                                                   # reg delete (Windows)
     r"\bformat\s+[a-zA-Z]:",                                               # format C: (Windows)
+    # PowerShell recursive/force deletes — often used for destructive probes
+    r"\bRemove-Item\b[^\n]*(-(Recurse|Force)\b)[^\n]*(-(Recurse|Force)\b)",
+    r"\bri\b[^\n]*(-(Recurse|Force)\b)[^\n]*(-(Recurse|Force)\b)",
 ]
 
 _COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in DANGEROUS_COMMAND_PATTERNS]
@@ -193,7 +196,77 @@ def is_write_allowed(path: str, config: dict) -> bool:
         except Exception:
             continue
 
+    execution = (config or {}).get("execution", {}) or {}
+    root_value = execution.get("workspace_root")
+    if root_value:
+        try:
+            roots.append(_resolve(str(root_value)))
+        except Exception:
+            pass
+
     return any(_is_within(target, root) for root in roots)
+
+
+# Absolute path literals that often appear in shell write/delete probes.
+_ABS_PATH_RE = re.compile(
+    r"(?P<path>"
+    r"[A-Za-z]:[\\/][^\s'\"|;>&]+"  # Windows drive path
+    r"|/(?:Users|home|tmp|var|etc|root)[^\s'\"|;>&]*"  # common Unix abs roots
+    r")"
+)
+# Mutating verbs / redirects whose *target path* must stay inside the whitelist.
+# Paths that only appear inside -Value / here-string report bodies are ignored
+# by scanning verb-local windows instead of the whole command.
+_BASH_MUTATING_TARGET_RE = re.compile(
+    r"(?ix)"
+    r"(?:"
+    r"(?:Remove-Item|ri|Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item|"
+    r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|install)"
+    r"[^\n;|&]{0,200}?"
+    r"(?:-(?:Literal)?Path\s+|-(?:File)?Path\s+|)"
+    r"['\"]?(?P<path>[A-Za-z]:[\\/][^\s'\"|;>&]+|/(?:Users|home|tmp|var|etc|root)[^\s'\"|;>&]*)"
+    r"|"
+    r"(?:^|[^>])>{1,2}\s*['\"]?(?P<redir>[A-Za-z]:[\\/][^\s'\"|;>&]+|/(?:Users|home|tmp|var|etc|root)[^\s'\"|;>&]*)"
+    r")"
+)
+
+
+def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
+    """Return absolute mutating target paths outside the write whitelist.
+
+    Workspace sandbox only constrains cwd; without this check, agents can still
+    ``Set-Content C:\\Users\\...`` and escape. Used by ToolOrchestrator.
+
+    Only verb/redirect *targets* are considered so that writing a relative
+    report that *mentions* an absolute path in its body is not false-blocked.
+    """
+    if not cmd:
+        return []
+    execution = (config or {}).get("execution", {}) or {}
+    mode = str(execution.get("sandbox_mode") or "workspace").strip().lower()
+    if mode == "host":
+        return []
+    # Drop -Value/-Content payloads and PowerShell here-strings so report
+    # bodies that quote blocked paths do not false-trigger.
+    scrubbed = re.sub(
+        r"(?is)(-(?:Value|Content))\s+(@\"[\s\S]*?\"@|'[^']*'|\"[^\"]*\")",
+        " ",
+        cmd,
+    )
+    scrubbed = re.sub(r"(?is)@\"[\s\S]*?\"@", " ", scrubbed)
+    blocked: list[str] = []
+    seen: set[str] = set()
+    for match in _BASH_MUTATING_TARGET_RE.finditer(scrubbed):
+        raw = (match.group("path") or match.group("redir") or "").rstrip("\\/")
+        if not raw or raw in seen:
+            continue
+        # Relative / cwd targets are fine.
+        if raw.startswith(".\\") or raw.startswith("./"):
+            continue
+        seen.add(raw)
+        if not is_write_allowed(raw, config):
+            blocked.append(raw)
+    return blocked
 
 
 def is_dry_run(config: dict) -> bool:

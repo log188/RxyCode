@@ -99,6 +99,44 @@ async def test_write_failure_still_overrides_even_with_read_probe_failure():
 
 
 @pytest.mark.asyncio
+async def test_tool_timeout_does_not_override_recovered_answer(tmp_path):
+    """A bash hard-timeout is a controlled runtime outcome; if the agent
+    recovers and documents it, evidence must not discard the answer."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    agent = object.__new__(AgentV2)
+    note = tmp_path / "timeout_note.md"
+    note.write_text("timed out as expected", encoding="utf-8")
+
+    async def recovered_run(_user_input: str, _mode: str) -> str:
+        ToolOrchestrator()._finish(
+            "bash",
+            {"command": "python -c \"import time; time.sleep(600)\""},
+            "[error: tool 'bash' timed out after 45s]",
+            executed=True,
+            approval="approved",
+            risk=RiskLevel.WRITE,
+        )
+        ToolOrchestrator()._finish(
+            "write",
+            {"filePath": str(note), "content": "timed out as expected"},
+            f"[wrote 20 bytes to {note}]",
+            executed=True,
+            approval="approved",
+            risk=RiskLevel.WRITE,
+        )
+        return "超时发生：bash 在 45s 被终止，已写入 timeout_note.md。"
+
+    agent._run_impl = recovered_run
+    result = await agent.run("观察长 sleep 超时")
+
+    assert "超时发生" in result
+    assert "evidence failed" not in result
+
+
+@pytest.mark.asyncio
 async def test_declared_read_only_effect_skips_side_effect_gate():
     """只读任务声明 effect=search 时，即使 prompt 含副作用措辞，
     证据门也不应把完成答案替换为占位符（evals websearch-summary 修复）。"""
