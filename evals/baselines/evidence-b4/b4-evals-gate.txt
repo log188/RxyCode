@@ -1,0 +1,11 @@
+﻿
+C:\Windows\TEMP\opencode\b4_evals_wt4.log:4483:Name          : GATEFINAL_SIGNOFF_2026-07-28.md
+C:\Windows\TEMP\opencode\b4_evals_wt4.log:6571:Name          : GATEFINAL_SIGNOFF_2026-07-28.md
+C:\Windows\TEMP\opencode\b4_evals_wt4.log:7996:235:     """Deprecated compatibility shim: delegate to the provider laye
+r (A8).
+C:\Windows\TEMP\opencode\b4_evals_wt4.log:8077:316:     Cache-hit extraction is delegated to the provider layer
+C:\Windows\TEMP\opencode\b4_evals_wt4.log:9444:|-- GATEFINAL_SIGNOFF_2026-07-28.md (1.4KB)
+C:\Windows\TEMP\opencode\b4_evals_wt4.log:9811:Eval suite complete: 17/19 passed (89.5%)
+C:\Windows\TEMP\opencode\b4_evals_wt4.log:9855:GATE: PASS (pass rate 89.5% >= baseline 89.5%)
+
+

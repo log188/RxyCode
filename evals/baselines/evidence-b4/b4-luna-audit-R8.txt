@@ -1,0 +1,123 @@
+# 复审结论：FAIL
+
+仍有阻断项，不能判定 PASS。
+
+## 阻断项
+
+### 1. 非首位 system 的相对顺序在实际压缩路径中仍会改变
+
+`_fold_middle_section()` 将所有非首位 `system` 单元强制放入 `tail_units`，最终统一返回：
+
+```python
+head_system + [summary_msg] + tail_msgs
+```
+
+例如：
+
+```text
+SYS, MID_SYSTEM, U0, A0
+```
+
+在 `tail_turns=0` 时会变成：
+
+```text
+SYS, SUMMARY, MID_SYSTEM
+```
+
+原本 `MID_SYSTEM` 位于被折叠内容之前，但摘要被插入到了它之前，system 的相对语义顺序已改变。
+
+现有 `test_non_first_system_relative_order_kept` 使用短消息且未触发实际折叠，不能覆盖该问题。
+
+**影响：CB1 / system 顺序约束失败。**
+
+---
+
+### 2. 重复压缩在“有尾部消息、无可折叠内容”时仍会丢失既有摘要
+
+流程：
+
+```text
+SYS, SUMMARY(existing), U1
+```
+
+调用：
+
+```python
+compact_messages(..., tail_turns=1)
+```
+
+`body` 会先删除已有摘要；随后 `fold_msgs` 为空，直接执行：
+
+```python
+return head_system + body
+```
+
+因此输出变为：
+
+```text
+SYS, U1
+```
+
+既有摘要状态被丢弃。
+
+R7 修复只覆盖了 `body` 过滤后完全为空的情况，没有覆盖“body 非空但 fold_msgs 为空”的情况。
+
+**影响：摘要状态持久性仍失败，属于 R7-1 未完全修复。**
+
+---
+
+### 3. “最多一个摘要”约束存在边界漏洞
+
+如果输入链首条本身就是带有：
+
+```python
+is_compaction_summary=True
+```
+
+的 system message，它会先被放入 `head_system`，不会被后续摘要过滤逻辑移除。若后续还有可折叠内容，函数可能输出两个摘要消息。
+
+**影响：B4-1 / CB 摘要唯一性约束失败。**
+
+---
+
+### 4. 非首位 system 顺序测试覆盖不足
+
+新增测试：
+
+```python
+tail_turns=1
+```
+
+且消息很短，实际上没有发生折叠，仅验证了原列表顺序未被改变。它没有验证“发生摘要插入后，非首位 system 的位置仍正确”。
+
+建议增加至少以下测试：
+
+```text
+SYS, MID_SYSTEM, U0, A0
+```
+
+在确实发生折叠后，断言 `MID_SYSTEM` 仍位于其原有语义位置。
+
+---
+
+## 判据核对
+
+1. **断点前缀不可变：基本满足**，但非首位 system 的语义顺序仍有问题。  
+2. **摘要模板：满足**。  
+3. **尾部保留及 system 不裁剪：部分满足**，system 虽未删除，但可能被摘要重新排序。  
+4. **遥测：满足**。  
+5. **assistant/tool 配对：基本满足**，完整性失败时有回退。  
+6. **唯一摘要及重复压缩状态：不满足**，见上述第 2、3 项。
+
+## CB1-CB8
+
+- **CB1：FAIL** — 顺序及摘要状态仍可能破坏。
+- **CB2：基本满足** — 摘要结构存在。
+- **CB3：FAIL** — 非首位 system 的相对语义顺序不可靠。
+- **CB4：FAIL** — 重复压缩路径仍可能丢摘要。
+- **CB5：基本满足** — 配对校验与回退存在。
+- **CB6：基本满足** — 未原位修改消息对象。
+- **CB7：基本满足** — 有 tokens_before/after 遥测。
+- **CB8：FAIL** — 摘要唯一性存在首条 summary 边界漏洞。
+
+需要修复以上阻断项并补充真实折叠场景测试后再复审。

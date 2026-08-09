@@ -1,0 +1,34 @@
+结论：**FAIL**
+
+阻断项：
+
+1. **R5-2 仍未完全修复：仅摘要消息时仍会保留重复摘要**
+
+```python
+body = [...]  # 过滤摘要后为空
+if not body:
+    return list(messages)
+```
+
+当输入仅包含首位 system 和多个已标记摘要时，直接返回原列表，摘要数量仍可能大于 1。这里应返回去重后的 `head_system + body`，而不是原始 `messages`。
+
+2. **生产输出使用 `SimpleNamespace` 构造摘要消息**
+
+```python
+summary_msg = SimpleNamespace(...)
+```
+
+Agent 传递给 LangChain/model 的消息应为项目实际使用的 `SystemMessage`（或兼容的 BaseMessage）。`SimpleNamespace` 仅能通过当前测试对象访问，可能在序列化、provider 转换或发送阶段失败。需增加真实 LangChain 消息链路测试并改用正式消息类型。
+
+判据核对：
+
+- 判据 1：**部分通过**；正常路径前缀不变，但重复摘要空 body 路径失败。
+- 判据 2：通过。
+- 判据 3：**部分通过**；尾部预算有逻辑，但实际模型消息类型问题未解决。
+- 判据 4：通过，遥测存在。
+- 判据 5：正常配对输入通过；孤儿输入仅回退原消息，不能真正修复 API 400 风险。
+- 判据 6：**未充分通过**；缺少真实模型/消息序列化集成验证。
+
+CB1-CB8：CB1/CB4 的 append-only 逻辑基本满足；配对、预算和唯一入口仍存在上述边界风险，不能判定八条硬约束全部满足。
+
+因此本轮不能 PASS。

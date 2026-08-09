@@ -1,0 +1,24 @@
+## 复审结论：PASS
+
+### 判据 1-6
+
+1. **前缀不可变**：首位 system 保持原对象与内容；压缩不原位修改消息。✅  
+2. **摘要模板**：包含 Objective / Work State / Next Move，并保留任务状态。✅  
+3. **尾部与 system 保留**：尾部轮次及 25% 预算收紧逻辑存在；首位及非首位 system 不裁剪。✅  
+4. **遥测**：提供 `tokens_before`、`tokens_after`、`compacted` 等字段。✅  
+5. **assistant/tool 配对**：按 unit 折叠，不拆配对；校验失败回退原消息。✅  
+6. **唯一压缩入口与触发链路**：`AgentV2` 已移除旧 `ContextCompressor` 原位截断，统一调用 `compact_messages`，并计入 reserved tokens。✅  
+
+### CB1-CB8
+
+均已满足：无压缩时不改写历史；压缩时仅折叠断点后内容；摘要唯一；system 顺序保持；摘要状态可重复压缩保留；工具配对守恒；触发阈值和预算处理已接入；失败自动回退。✅
+
+### 前八轮阻断项
+
+- 非首位 system 顺序：已修复，并有真实折叠回归测试。✅
+- 无 fold 内容时保留既有摘要：已修复。✅
+- 首条摘要重复：已修复，`summary_count == 1`。✅
+
+验收测试、回归测试、GATE、token 预算及 Ruff 结果均符合要求。
+
+**最终结论：PASS，无新增阻断项。**

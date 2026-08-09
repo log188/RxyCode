@@ -81,7 +81,6 @@ from RxyCode.RxyCode1_1_0.log.log_helpers import (
 from RxyCode.RxyCode1_1_0.log.logger import get_bound_run_id, run_id_context
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.mcp.client import load_mcp_servers
-from RxyCode.RxyCode1_1_0.memory.compressor import ContextCompressor
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
 from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as _circuit_breaker
@@ -2773,44 +2772,66 @@ class AgentV2:
     async def _maybe_compress_context(self, messages) -> None:
         """Keep the in-loop message list inside a soft token budget.
 
-        When the conversation grows past ~70% of the model context, the
-        oldest tool-result contents are middle-truncated (their ToolMessage
-        objects are preserved so the ``tool_call_id`` contract stays valid),
-        and the persistent session memory is compressed for the next turn.
-        This proactively triggers :class:`ContextCompressor` inside the tool
-        loop instead of waiting until the very end of the run.
+        B4: 压缩不再原位改写旧消息（G2 修复）——统一走 core/compaction.py
+        的唯一入口：断点前不可变、折叠断点后的 assistant/tool 中间段为
+        摘要消息（Objective/Work State/Next Move）追加到断点之后，保留
+        尾部轮次，绝不改写已发送消息（CB1/CB4）。
+
+        触发阈值读 ModelCapabilities.compaction_threshold（Phase A 已接线）；
+        输出预留（reserved 20k）计入可用空间（原则 4，P0-4）。
         """
-        budget = int(self._context_window() * 0.7)
+        caps = getattr(self, "_capabilities", None)
+        threshold = (
+            getattr(caps, "compaction_threshold", None)
+            if caps is not None
+            else None
+        )
+        context_window = self._context_window()
+        if not threshold:
+            threshold = int(context_window * 0.9)
+        budget = threshold
         total = self._estimate_tokens(messages)
-        if total <= budget:
+        # 输出预留：usable = context − reserved（原则 4，P0-4）。
+        from .compaction import DEFAULT_RESERVED_TOKENS
+
+        reserved = max(0, int(DEFAULT_RESERVED_TOKENS))
+        usable = budget - reserved
+        if total <= usable:
             return
 
-        # Trim oldest tool results first (most often long logs/stdout).
-        compressor = ContextCompressor()
-        for m in messages:
-            if total <= budget:
-                break
-            if type(m).__name__ == "ToolMessage":
-                content = getattr(m, "content", "") or ""
-                if _estimate_tokens(content, self._tokenizer_spec()) <= 200:
-                    continue
-                new_content = compressor._middle_truncate(content)
-                try:
-                    m.content = new_content  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-                total = self._estimate_tokens(messages)
+        # B4: 唯一压缩入口——compact_messages 构造摘要追加到断点之后，
+        # 不改写任何断点前消息；配对校验失败自动回退。
+        from .compaction import compact_messages
+
+        try:
+            compacted, telemetry = compact_messages(
+                messages,
+                tail_turns=2,
+                return_telemetry=True,
+            )
+        except Exception as exc:  # pragma: no cover - 压缩失败不阻断请求
+            _logger.warning("B4 compaction failed: %s", exc)
+            return
+        if telemetry.get("compacted"):
+            messages[:] = compacted
+            _logger.info(
+                "B4 compaction: tokens_before=%d tokens_after=%d tail_turns=%d",
+                telemetry["tokens_before"],
+                telemetry["tokens_after"],
+                telemetry["tail_turns"],
+            )
+            tui = get_tui()
+            if tui and hasattr(tui, "write_progress"):
+                tui.write_progress("Context compressed (prefix preserved)")
 
         # Persist a compressed session for the next turn once we are really full.
         auto_compact = bool(
             (getattr(self, "_cfg", {}) or {}).get("autoCompact", True)
         )
-        if auto_compact and total > budget * 1.1 and getattr(self, "_memory", None):
+        total_after = self._estimate_tokens(messages)
+        if auto_compact and total_after > usable and getattr(self, "_memory", None):
             try:
                 await self._memory.compress_if_needed(self._session_id)
-                tui = get_tui()
-                if tui and hasattr(tui, "write_progress"):
-                    tui.write_progress("Context compressed to save space")
             except Exception:
                 pass
 

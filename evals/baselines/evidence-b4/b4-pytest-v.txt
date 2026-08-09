@@ -1,0 +1,36 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-8.4.2, pluggy-1.5.0 -- D:\Anaconda3\python.exe
+cachedir: .pytest_cache
+rootdir: D:\agent-demo\RxyCode\RxyCode1_1_0\.worktrees\phase-b-cache2
+configfile: pytest.ini
+plugins: anyio-4.10.0, langsmith-0.9.0, asyncio-1.4.0, base-url-2.1.0, cov-7.1.0, playwright-0.8.0, timeout-2.4.0, xdist-3.8.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 180.0s
+timeout method: thread
+timeout func_only: False
+collecting ... collected 22 items
+
+tests/test_cache/test_compaction_prefix.py::TestCompactionDoesNotMutatePrefix::test_compaction_never_mutates_cached_prefix PASSED [  4%]
+tests/test_cache/test_compaction_prefix.py::TestCompactionDoesNotMutatePrefix::test_original_messages_not_mutated PASSED [  9%]
+tests/test_cache/test_compaction_prefix.py::TestSummaryTemplate::test_summary_template_three_sections PASSED [ 13%]
+tests/test_cache/test_compaction_prefix.py::TestSummaryTemplate::test_summary_carries_task_state PASSED [ 18%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_system_never_pruned PASSED [ 22%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_non_first_system_never_pruned PASSED [ 27%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_legitimate_system_with_objective_not_deleted PASSED [ 31%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_system_not_promoted_when_first_message_not_system PASSED [ 36%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_no_fold_still_single_summary PASSED [ 40%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_only_summary_messages_single_summary PASSED [ 45%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_repeat_compaction_preserves_summary_state PASSED [ 50%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_summary_uses_real_system_message PASSED [ 54%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_non_first_system_relative_order_kept PASSED [ 59%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_non_first_system_order_after_real_fold PASSED [ 63%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_summary_state_kept_when_no_fold_content PASSED [ 68%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_first_message_summary_not_duplicated PASSED [ 72%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_tail_retained PASSED [ 77%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_tail_budget_25_percent_enforced PASSED [ 81%]
+tests/test_cache/test_compaction_prefix.py::TestTailRetention::test_only_one_summary_after_budget_loop PASSED [ 86%]
+tests/test_cache/test_compaction_prefix.py::TestToolPairIntegrity::test_tool_pair_never_split PASSED [ 90%]
+tests/test_cache/test_compaction_prefix.py::TestToolPairIntegrity::test_compaction_without_tool_calls PASSED [ 95%]
+tests/test_cache/test_compaction_prefix.py::TestCompactionTelemetry::test_compaction_records_tokens_before_after PASSED [100%]
+
+============================= 22 passed in 0.52s ==============================
