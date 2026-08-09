@@ -1,0 +1,34 @@
+## 复审结论：FAIL
+
+### 判据核对
+
+| 判据 | 结论 | 说明 |
+|---|---|---|
+| 1 | ✅ | 基线文件存在，字段齐全，另有 schema、provider、base_url |
+| 2 | ✅ | 两轮真实会话记录为 `28907 / 26368 / 91.22%`，虽高于预期 `<90%`，但记录如实 |
+| 3 | ✅ | `16 passed` |
+| 4 | ✅ | evals `GATE PASS`，94.7% ≥ 89.5% |
+| 5 | ⚠️ | 已给出 B2 文件白名单；但当前证据主要是文字声明，缺少 `git ls-files`/文件存在性等可复核输出 |
+| 6 | ❌ 阻断 | 未提供真实 Grok 或 Sonnet 的资料/审查意见。实际使用的是 `gpt-5.6-luna` 替代预审；“Grok 503 不可用”不能替代判据要求 |
+
+### 代码、测试与基线质量
+
+- `latest_request` 与累计统计分离，公式和 reset 测试基本自洽。
+- 基线计算正确：`26368 / 28907 * 100 ≈ 91.22%`。
+- 所谓“真实 DeepSeek chunk 端到端测试”实际是 `SimpleNamespace` 构造的模拟对象，不是保存的真实 provider 原始响应；可作为解析链路测试，但不应称为真实 provider fixture。
+- 当前 diff 未见明显违反前缀稳定性或行为零回归约束；不过 CB1–CB8 的正式定义未在材料中逐条列出，因此只能依据现有 diff 做有限核查。
+
+### 必须修改
+
+1. 获取并附上真实 Grok 或 Sonnet 的预审/资料输出：
+   - 模型标识、时间、请求或审查上下文；
+   - 原始意见；
+   - Composer 转换后的代码/测试结论；
+   - 对应落地文件和测试证据。
+2. 补充 B2 白名单的机械证据，例如：
+   ```powershell
+   git ls-files -- core/prompts/registry.py core/prompts/templates.py core/agent_v2.py core/providers/openai.py tests/test_cache/test_stable_prefix.py
+   ```
+3. 若保留“真实 DeepSeek fixture”表述，应提供脱敏原始 chunk fixture；否则改名为“DeepSeek usage-shaped integration fixture”。
+
+在判据 6 补齐前，本卡不能通过。

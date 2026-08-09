@@ -1,0 +1,30 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-8.4.2, pluggy-1.5.0 -- D:\Anaconda3\python.exe
+cachedir: .pytest_cache
+rootdir: D:\agent-demo\RxyCode\RxyCode1_1_0
+configfile: pytest.ini
+plugins: anyio-4.10.0, langsmith-0.9.0, asyncio-1.4.0, base-url-2.1.0, cov-7.1.0, playwright-0.8.0, timeout-2.4.0, xdist-3.8.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 180.0s
+timeout method: thread
+timeout func_only: False
+collecting ... collected 16 items
+
+tests/test_cache/test_hit_rate_metrics.py::TestHitRateMetricsFields::test_metric_fields_exist PASSED [  6%]
+tests/test_cache/test_hit_rate_metrics.py::TestHitRateMetricsFields::test_cache_hit_rate_formula PASSED [ 12%]
+tests/test_cache/test_hit_rate_metrics.py::TestHitRateMetricsFields::test_cache_hit_rate_zero_division_protected PASSED [ 18%]
+tests/test_cache/test_hit_rate_metrics.py::TestHitRateMetricsFields::test_cache_hit_rate_accumulates_correctly PASSED [ 25%]
+tests/test_cache/test_hit_rate_metrics.py::TestHitRateTotalsVsLatest::test_latest_request_tracked PASSED [ 31%]
+tests/test_cache/test_hit_rate_metrics.py::TestHitRateTotalsVsLatest::test_latest_overwritten_by_next_request PASSED [ 37%]
+tests/test_cache/test_hit_rate_metrics.py::TestHitRateTotalsVsLatest::test_latest_untouched_before_first_request PASSED [ 43%]
+tests/test_cache/test_hit_rate_metrics.py::TestHitRateTotalsVsLatest::test_totals_remain_cumulative_while_latest_is_single PASSED [ 50%]
+tests/test_cache/test_hit_rate_metrics.py::TestHitRateTotalsVsLatest::test_reset_clears_latest PASSED [ 56%]
+tests/test_cache/test_hit_rate_metrics.py::TestHitRateTotalsVsLatest::test_real_deepseek_chunk_end_to_end PASSED [ 62%]
+tests/test_cache/test_hit_rate_metrics.py::TestCacheHitRateBaselineFile::test_baseline_file_exists PASSED [ 68%]
+tests/test_cache/test_hit_rate_metrics.py::TestCacheHitRateBaselineFile::test_baseline_required_fields_present PASSED [ 75%]
+tests/test_cache/test_hit_rate_metrics.py::TestCacheHitRateBaselineFile::test_baseline_version_field PASSED [ 81%]
+tests/test_cache/test_hit_rate_metrics.py::TestCacheHitRateBaselineFile::test_baseline_schema_and_calculation_fields PASSED [ 87%]
+tests/test_cache/test_hit_rate_metrics.py::TestCacheHitRateBaselineFile::test_baseline_hit_rate_numeric PASSED [ 93%]
+tests/test_cache/test_hit_rate_metrics.py::TestCacheHitRateBaselineFile::test_baseline_hit_rate_consistent_with_tokens PASSED [100%]
+
+============================= 16 passed in 6.09s ==============================
