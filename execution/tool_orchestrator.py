@@ -11,9 +11,12 @@ write-path whitelist, dry-run, approval and audit.
 from __future__ import annotations
 
 import asyncio
+import atexit
+import concurrent.futures
 import inspect
 import json
 import logging
+import os
 import re
 import uuid
 from contextvars import ContextVar, Token
@@ -112,14 +115,89 @@ class ToolOrchestrator:
         "browser": "open_file",
     }
 
-    def __init__(self):
+    def __init__(self, *, max_workers: int | None = None):
         self._registry: dict[str, Any] = {}
         self._risk_overrides: dict[str, Any] = {}
         self._audit_logger: Any | None = None
+        # C2: bounded executor for sync tools so a burst of sync invocations
+        # queues instead of spawning unbounded threads.  Bound = explicit
+        # positive int > RXYCODE_TOOL_THREADS env (positive int) >
+        # cpu_count()+4.  An invalid/zero/negative explicit value and an
+        # invalid/zero/negative env value are both treated as "not provided"
+        # so the next link in the chain still applies.
+        if max_workers is not None:
+            try:
+                parsed = int(max_workers)
+            except (TypeError, ValueError):
+                parsed = 0
+            if parsed <= 0:
+                max_workers = None
+            else:
+                max_workers = parsed
+        if max_workers is None:
+            raw = os.environ.get("RXYCODE_TOOL_THREADS", "")
+            if raw:
+                try:
+                    env_workers = int(raw)
+                except ValueError:
+                    env_workers = 0
+                if env_workers > 0:
+                    max_workers = env_workers
+        if max_workers is None:
+            max_workers = max(1, (os.cpu_count() or 1) + 4)
+        self._sync_tool_executor: concurrent.futures.ThreadPoolExecutor = (
+            concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix="rxycode-sync-tool",
+            )
+        )
+        self._sync_executor_owned = True
+        #: Executors retired by a non-blocking shutdown whose running workers
+        #: may still be finishing; a later wait=True call reaps them.
+        self._retired_sync_executors: list[concurrent.futures.ThreadPoolExecutor] = []
+        self._atexit_handle = atexit.register(self.shutdown_sync_executor)
 
     def set_audit_logger(self, logger: Any) -> None:
         """Inject an AuditLogger (defaults to the shared one on first use)."""
         self._audit_logger = logger
+
+    def shutdown_sync_executor(self, wait: bool = False) -> None:
+        """Shut down the bounded sync-tool executor (atexit + app shutdown).
+
+        ``wait=False`` (default) is non-blocking: queued futures are cancelled
+        and running workers finish in the background.  ``wait=True`` blocks
+        until every running worker has finished and the pool threads are
+        reaped — use it in the app shutdown path when no work should outlive
+        the process (C2 "no thread leak after shutdown" criterion).
+
+        A ``wait=True`` call issued after an earlier ``wait=False`` call still
+        reaps that executor: non-blocking shutdowns retain the executor until
+        threads are confirmed gone, so the synchronous guarantee is always
+        available.  Idempotent: after shutdown the executor reference is
+        cleared and the atexit hook is unregistered so repeated construction
+        does not retain orchestrator instances until process exit.
+        """
+        executor = getattr(self, "_sync_tool_executor", None)
+        if executor is None:
+            if wait:
+                # An earlier wait=False shutdown may still have running
+                # workers; finish the reap now.  ThreadPoolExecutor.shutdown
+                # is idempotent — the second call only waits for threads.
+                for old in self._retired_sync_executors:
+                    old.shutdown(wait=True, cancel_futures=False)
+                self._retired_sync_executors = []
+            return
+        if not getattr(self, "_sync_executor_owned", True):
+            return
+        executor.shutdown(wait=wait, cancel_futures=True)
+        self._sync_tool_executor = None
+        self._sync_executor_owned = False
+        if not wait:
+            self._retired_sync_executors.append(executor)
+        handle = getattr(self, "_atexit_handle", None)
+        if handle is not None:
+            atexit.unregister(handle)
+            self._atexit_handle = None
 
     @staticmethod
     def clear_live_dedup() -> None:
@@ -1028,31 +1106,70 @@ class ToolOrchestrator:
         except Exception as e:
             return f"[error executing {getattr(tool, 'name', tool)}: {e}]"
 
-    @classmethod
-    async def _invoke_async(cls, tool: Any, args: Any) -> str:
-        coroutine = getattr(tool, "coroutine", None)
-        if not inspect.iscoroutinefunction(coroutine):
-            return await asyncio.to_thread(cls._invoke, tool, args)
-        try:
-            payload = args if isinstance(args, dict) else str(args)
-            result = await tool.ainvoke(payload)
-            return str(result)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            return f"[error executing {getattr(tool, 'name', tool)}: {e}]"
+    async def _invoke_async(self, tool: Any, args: Any) -> str:
+        # Prefer the tool's own coroutine when present: the attribute is the
+        # reliable signal (it may be an async callable object or a decorated
+        # wrapper, not just a plain async def), which avoids misrouting async
+        # tools to the sync pool.  A callable that does NOT produce an
+        # awaitable (e.g. a MagicMock in tests) falls back to the sync path.
+        if getattr(tool, "coroutine", None) is not None:
+            try:
+                payload = args if isinstance(args, dict) else str(args)
+                result = tool.ainvoke(payload)
+                if not inspect.isawaitable(result):
+                    return await self._invoke_in_executor(tool, args)
+                return str(await result)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                return f"[error executing {getattr(tool, 'name', tool)}: {e}]"
+        return await self._invoke_in_executor(tool, args)
 
-    @staticmethod
-    async def _invoke_async_strict(tool: Any, args: Any) -> str:
+    async def _invoke_in_executor(self, tool: Any, args: Any) -> str:
+        """Run a sync tool on the orchestrator's bounded executor (queues when
+        saturated instead of spawning unbounded threads).
+
+        Once the executor is shut down the orchestrator refuses new sync-tool
+        work with a clear error (never silently falls back to the unbounded
+        default thread pool).
+
+        §4.3 boundary: a legacy sync tool follows the stop-waiting contract —
+        an outer ``wait_for`` timeout cancels the waiter, but the sync call
+        keeps occupying its worker until it returns.  Only the process-class
+        async variants (through shell_executor) are terminable; credential_store
+        short commands share this stop-waiting behavior.
+        """
+        executor = getattr(self, "_sync_tool_executor", None)
+        if executor is None:
+            return "[error: tool executor is shut down]"
+        try:
+            future = executor.submit(self._invoke, tool, args)
+        except RuntimeError:
+            # Executor was shut down concurrently with the submit.
+            return "[error: tool executor is shut down]"
+        return await asyncio.wrap_future(future)
+
+    async def _invoke_async_strict(self, tool: Any, args: Any) -> str:
         """Invoke without converting exceptions so retry classification works."""
         payload = args if isinstance(args, dict) else str(args)
-        coroutine = getattr(tool, "coroutine", None)
-        if inspect.iscoroutinefunction(coroutine):
-            return str(await tool.ainvoke(payload))
+        # Prefer the tool's own coroutine when present (see _invoke_async):
+        # the attribute itself is the reliable signal, not its exact type; a
+        # callable that does not produce an awaitable falls back to sync.
+        if getattr(tool, "coroutine", None) is not None:
+            result = tool.ainvoke(payload)
+            if inspect.isawaitable(result):
+                return str(await result)
 
         def invoke_sync() -> str:
             if isinstance(args, dict):
                 return str(tool.invoke(args))
             return str(tool.invoke(str(args)))
 
-        return await asyncio.to_thread(invoke_sync)
+        executor = getattr(self, "_sync_tool_executor", None)
+        if executor is None:
+            raise RuntimeError("tool executor is shut down")
+        try:
+            future = executor.submit(invoke_sync)
+        except RuntimeError:
+            raise RuntimeError("tool executor is shut down") from None
+        return await asyncio.wrap_future(future)

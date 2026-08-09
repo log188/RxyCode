@@ -1,5 +1,6 @@
 """MCP Manager - Add, remove, and manage MCP servers from CLI."""
 
+import asyncio
 import os
 import re
 import tempfile
@@ -184,6 +185,34 @@ def install_mcp_from_npm(package_name: str, server_name: str = None) -> tuple[bo
         return False, f"Failed to install MCP: {e}"
 
 
+async def install_mcp_from_npm_async(
+    package_name: str, server_name: str = None
+) -> tuple[bool, str]:
+    """Install an MCP server from npm package (C2 async path)."""
+    if not server_name:
+        server_name = package_name.replace("@", "").replace("/", "-")
+    try:
+        from ..utils.shell import shell_executor
+
+        result = await shell_executor.execute_argv_async(
+            ["npx", "--version"], timeout=10
+        )
+        if result.get("error_type") == "timeout":
+            return False, "npx check timed out (process tree terminated)"
+        if not result["success"]:
+            return False, "npx not found. Please install Node.js first."
+        # The config write (YAML parse + fsync + replace) is short but sync;
+        # keep it off the event loop (stop-waiting boundary, §4.3).
+        return await asyncio.to_thread(
+            add_mcp_server,
+            name=server_name,
+            command="npx",
+            args=["-y", package_name],
+        )
+    except Exception as e:
+        return False, f"Failed to install MCP: {e}"
+
+
 def install_mcp_from_pip(package_name: str, server_name: str = None) -> tuple[bool, str]:
     """Install an MCP server from pip package."""
     if not server_name:
@@ -204,6 +233,37 @@ def install_mcp_from_pip(package_name: str, server_name: str = None) -> tuple[bo
         # Try to find the entry point
         module_name = package_name.replace("-", "_")
         return add_mcp_server(
+            name=server_name,
+            command=sys.executable,
+            args=["-m", module_name],
+        )
+    except Exception as e:
+        return False, f"Failed to install MCP: {e}"
+
+
+async def install_mcp_from_pip_async(
+    package_name: str, server_name: str = None
+) -> tuple[bool, str]:
+    """Install an MCP server from pip package (C2 async path)."""
+    if not server_name:
+        server_name = package_name
+    try:
+        import sys
+
+        from ..utils.shell import shell_executor
+
+        result = await shell_executor.execute_argv_async(
+            [sys.executable, "-m", "pip", "install", package_name],
+            timeout=120,
+        )
+        if result.get("error_type") == "timeout":
+            return False, "pip install timed out (process tree terminated)"
+        if not result["success"]:
+            return False, f"pip install failed: {result['stderr']}"
+        module_name = package_name.replace("-", "_")
+        # Keep the short sync config write off the event loop (§4.3).
+        return await asyncio.to_thread(
+            add_mcp_server,
             name=server_name,
             command=sys.executable,
             args=["-m", module_name],

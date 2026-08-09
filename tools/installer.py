@@ -85,7 +85,25 @@ class ToolInstaller:
             return False, "Installation timed out"
         except Exception as e:
             return False, str(e)
-    
+
+    async def install_package_async(self, package_name: str) -> tuple[bool, str]:
+        """Install a Python package using pip (C2 async path).
+
+        The pip subprocess runs through the controlled shell executor so a
+        timeout terminates the process tree instead of leaving it running.
+        """
+        from ..utils.shell import shell_executor
+
+        result = await shell_executor.execute_argv_async(
+            [sys.executable, "-m", "pip", "install", package_name],
+            timeout=120,
+        )
+        if result.get("error_type") == "timeout":
+            return False, "Installation timed out"
+        if result["success"]:
+            return True, result["stdout"]
+        return False, result["stderr"]
+
     def search_and_install(self, tool_name: str) -> tuple[bool, str]:
         """Search for and install a tool."""
         # First check if already installed
@@ -104,6 +122,22 @@ class ToolInstaller:
             return True, f"Successfully installed '{package_name}'"
         else:
             return False, f"Failed to install '{package_name}': {output}"
+
+    async def search_and_install_async(self, tool_name: str) -> tuple[bool, str]:
+        """Search for and install a tool (C2 async path)."""
+        import asyncio
+
+        installed = await asyncio.to_thread(self.is_package_installed, tool_name)
+        if installed:
+            return True, f"Package '{tool_name}' is already installed"
+        package_name = self.find_tool_package(tool_name)
+        if not package_name:
+            return False, f"Could not find package for tool '{tool_name}'"
+        success, output = await self.install_package_async(package_name)
+        if success:
+            self._installed_cache.add(tool_name)
+            return True, f"Successfully installed '{package_name}'"
+        return False, f"Failed to install '{package_name}': {output}"
     
     def get_install_suggestion(self, tool_name: str) -> str:
         """Get a suggestion for installing a tool."""
