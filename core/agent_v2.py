@@ -352,6 +352,15 @@ def _record_usage(
         cache_read = provider.extract_cache_read(usage_dict, caps)
         if prompt_toks > 0 or completion_toks > 0:
             token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
+            # B3 (CB3): DeepSeek 自动前缀验证——不注入 cache_control，用
+            # prompt_cache_hit_tokens 验证前缀是否生效，失败记录警告而非静默。
+            if getattr(provider, "name", "") == "deepseek":
+                try:
+                    from .cache_policy import verify_deepseek_prefix
+
+                    verify_deepseek_prefix(prompt_toks, cache_read)
+                except Exception:  # pragma: no cover - 验证失败不阻断请求
+                    pass
             return prompt_toks, completion_toks
 
     # 3. Fallback: tiktoken estimation
@@ -481,19 +490,21 @@ class UsageTrackingLLM:
                 self._cache_enabled = False
         return self._cache_enabled
 
-    def _apply_cache_control(self, messages):
-        """Bug C fix: mark the leading system prompt as a cache breakpoint.
+    def _apply_cache_control(self, messages, tools=None):
+        """B3: apply provider-dispatched cache breakpoints (opencode budget).
 
-        DeepSeek (and OpenAI-compatible prefix caching) only caches a prompt
-        prefix when a message carries `cache_control`.  Without this, the
-        (large, stable) system prompt is re-prefilled on every call, which
-        caps the cache hit rate at incidental prefix overlap (~60%) and adds
-        avoidable latency.  Applying it on the first SystemMessage gives a
-        ~100% system-prompt cache hit across turns.
+        从 B2 之前的"单一 system 断点"升级为按 provider 能力分派的断点策略
+        （PHASE-B §5 B3）：
 
-        This wrapper is the single chokepoint for ALL LLM calls (fast path,
-        every graph node, sub-agents, and bind_tools/with_structured_output
-        re-wrappings), so one injection here covers the whole pipeline.
+        - Anthropic 系（caps.cache_breakpoints 非空）：显式 cache_control
+          ephemeral 打点，分配序 tools→system→messages（≤4 断点预算）。
+        - OpenAI 系：不注入 cache_control（B2 走 prompt_cache_key=session_id，
+          CB3）。
+        - DeepSeek 系：不注入 cache_control（自动前缀 + 命中字段验证，
+          CB3）。
+
+        保留能力门（supports_prompt_cache）与 cache.prompt_prefix_cache 开关；
+        未开启配置或模型不支持缓存时行为与现状一致（CB8）。
         """
         if not self._ensure_cache_flag():
             return messages
@@ -505,23 +516,53 @@ class UsageTrackingLLM:
             return messages
         if not messages:
             return messages
-        first = messages[0]
-        # LangChain message objects expose `.type`; only the system message
-        # is a stable prefix worth caching.
-        msg_type = getattr(first, "type", None)
-        if msg_type != "system":
+        # 用 vars() 判断属性是否真实存在，避免 __getattr__ 委托到 _llm 造成误判
+        # （wrapper._llm 为 MagicMock 时 self._provider 会委托出非 None 假值）。
+        has_provider = "_provider" in vars(self)
+        has_caps = "_capabilities" in vars(self)
+        caps = getattr(self, "_capabilities", None) if has_caps else None
+        breakpoints = getattr(caps, "cache_breakpoints", ()) if caps is not None else ()
+        # CB8 兼容：无 caps（旧调用路径/测试 wrapper/未知模型）时保持改造前
+        # 语义——对首条 system 注入 cache_control（旧行为不回归）。
+        if not has_caps or not has_provider:
+            first = messages[0]
+            if getattr(first, "type", None) != "system":
+                return messages
+            ak = getattr(first, "additional_kwargs", None) or {}
+            if "cache_control" in ak:
+                return messages
+            cached = SystemMessage(
+                content=first.content,
+                additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
+            )
+            return [cached] + list(messages[1:])
+        # B3: 只有 Anthropic 系（provider 或 caps 声明 anthropic）才允许注入
+        # cache_control（CB3 白名单，luna 审计）：OpenAI/DeepSeek/未知即使
+        # 配置错误 cache_breakpoints 也绝不注入——不依赖 capabilities 配置正确。
+        provider_name = ""
+        if has_provider:
+            provider_name = str(getattr(self._provider, "name", "") or "")
+        caps_provider = str(getattr(caps, "provider", "") or "")
+        if (
+            provider_name != "anthropic"
+            and caps_provider != "anthropic"
+        ):
             return messages
-        ak = getattr(first, "additional_kwargs", None) or {}
-        if "cache_control" in ak:
+        # 统一走断点预算入口（allocate_breakpoints 分配序 + ≤4 上限 + TTL 解析）。
+        if not breakpoints:
             return messages
-        cached = SystemMessage(
-            content=first.content,
-            additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
+        from .cache_policy import apply_breakpoint_budget
+
+        result, _allocated, _ttl = apply_breakpoint_budget(
+            messages,
+            tools=tools,
+            caps=caps,
+            cfg=getattr(self, "_cfg", None),
         )
-        return [cached] + list(messages[1:])
+        return result
 
     async def ainvoke(self, messages, **kwargs):
-        messages = self._apply_cache_control(messages)
+        messages = self._apply_cache_control(messages, tools=kwargs.get("tools"))
         grant = await self._acquire_rate_limit(messages)
         usage: tuple[int, int] | None = None
         try:
@@ -552,7 +593,7 @@ class UsageTrackingLLM:
             )
 
     async def astream(self, messages, **kwargs):
-        messages = self._apply_cache_control(messages)
+        messages = self._apply_cache_control(messages, tools=kwargs.get("tools"))
         grant = await self._acquire_rate_limit(messages)
         last_chunk = None
         partial_output_tokens = 0
@@ -1345,6 +1386,13 @@ class AgentV2:
         except Exception:
             # 解析失败不阻断 LLM 构造（保持可启动）；运行时 _raw_stream 会再试。
             self._resolved_limits = None
+        # B3 (CB2): TTL 档位写入 model_config（供 Anthropic provider 注入请求）。
+        try:
+            from .cache_policy import resolve_ttl_seconds
+
+            model_config["cache_ttl"] = resolve_ttl_seconds(cfg or {})
+        except Exception:  # pragma: no cover
+            pass
 
         raw_llm = ChatOpenAI(**provider.llm_kwargs(model_config, caps))
 
@@ -1651,7 +1699,7 @@ class AgentV2:
         # bypassed _apply_cache_control, so streaming calls never got the
         # cache breakpoint, resulting in ~0% provider cache hit rate)
         if hasattr(self._llm, '_apply_cache_control'):
-            messages = self._llm._apply_cache_control(messages)
+            messages = self._llm._apply_cache_control(messages, tools=tools)
         input_tokens = sum(
             _estimate_tokens(getattr(message, "content", "") or "")
             for message in messages
@@ -1727,6 +1775,24 @@ class AgentV2:
                     "capabilities.supports_function_calling is False"
                 )
             payload["tools"] = [self._tool_to_openai(t) for t in tools]
+            # B3 (CB2/CB3): Anthropic 系 tools 断点——tools 定义上注入
+            # cache_control ephemeral（分配序 tools 优先；OpenAI/DeepSeek 不注入）。
+            # 双条件与 _apply_cache_control 一致（luna 审计）：实际 provider
+            # 与 caps 都必须声明 anthropic，防止 caps 错误配置绕过 CB3。
+            provider = getattr(self, "_provider", None)
+            actual_provider = str(getattr(provider, "name", "") or "")
+            caps_provider = str(getattr(caps, "provider", "") if caps is not None else "")
+            anthropic_family = (
+                actual_provider == "anthropic" or caps_provider == "anthropic"
+            )
+            if (
+                anthropic_family
+                and caps is not None
+                and "tools" in getattr(caps, "cache_breakpoints", ())
+            ):
+                for tool_def in payload["tools"]:
+                    if isinstance(tool_def, dict):
+                        tool_def["cache_control"] = {"type": "ephemeral"}
 
         async def _open_provider_stream():
             resp = client.create(**payload)
