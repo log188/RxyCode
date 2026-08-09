@@ -4,7 +4,7 @@
 
 **规划-执行型 AI 编程助手，带验证层与安全工具编排**
 
-[![Version](https://img.shields.io/badge/version-1.2.8-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8)
+[![Version](https://img.shields.io/badge/version-1.2.9-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -50,32 +50,32 @@ RxyCode 是一个基于 LangGraph 的通用 AI Agent，采用分层"规划-执�
 
 **Windows PowerShell：**
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.8/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.9/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux：**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.8/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.9/install.sh | sh
 rxycode
 ```
 
-安装脚本会自动引导安装 `uv`（如果需要），创建隔离的工具环境，并安装 **`v1.2.8`** 版本。
+安装脚本会自动引导安装 `uv`（如果需要），创建隔离的工具环境，并安装 **`v1.2.9`** 版本。
 无需手动 clone 仓库。
 
-**下载说明：** 仅最新版（**`v1.2.8`**）提供可安装的 wheel/sdist。更早的
+**下载说明：** 仅最新版（**`v1.2.9`**）提供可安装的 wheel/sdist。更早的
 GitHub Release 仍保留说明文字，但**不开放**安装包下载。
 
 ### 方式二：一次性运行
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.8" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.9" rxycode
 ```
 
 ### 方式三：永久安装
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.8"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.9"
 rxycode
 ```
 
@@ -251,6 +251,7 @@ models:
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
+| [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | 隔离式子代理（Phase C）：真正的 Child Agent——独立会话/上下文/工具/权限/预算；`@agent` 提及、Task 工具、`subtask=true`；OpenTUI 子代理树 + `/children` `/child` `/parent`；上游复用审计；10840 测试全绿、CI 全过、eval 门 94.7% |
 | [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | 初版：ReAct + 防幻觉 + MCP 集成 |
 | [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph 重写：规划-执行、24+ 工具、分层记忆 |
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI、SSE 流式、Docker、CI/CD、一键安装 |

@@ -4,7 +4,7 @@
 
 **Plan-and-Execute AI Coding Agent with Verification & Safe Tool Orchestration**
 
-[![Version](https://img.shields.io/badge/version-1.2.8-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8)
+[![Version](https://img.shields.io/badge/version-1.2.9-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -61,34 +61,34 @@ a final answer — all streamed live to an OpenTUI terminal UI (Ink fallback ava
 
 **Windows PowerShell:**
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.8/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.9/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.8/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.9/install.sh | sh
 rxycode
 ```
 
 The installer bootstraps `uv` (if needed), creates an isolated tool
-environment, and installs the pinned **`v1.2.8`** release. No manual clone
+environment, and installs the pinned **`v1.2.9`** release. No manual clone
 required.
 
-**Downloads:** only the latest release (**`v1.2.8`**) publishes installable
+**Downloads:** only the latest release (**`v1.2.9`**) publishes installable
 wheel/sdist assets. Older GitHub Releases keep release notes but **do not**
 offer binary downloads.
 
 ### Option 2: Run once with uv
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.8" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.9" rxycode
 ```
 
 ### Option 3: Permanent install
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.8"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.9"
 rxycode
 ```
 
@@ -265,6 +265,7 @@ Use `/addmodel` in the TUI for a guided setup wizard.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | Isolated subagents (Phase C): real Child Agents with independent sessions/context/tools/permissions/budgets; `@agent` mention, Task tool, `subtask=true`; OpenTUI child tree + `/children` `/child` `/parent`; upstream-reuse audit; 10840 tests green, CI all pass, evals GATE 94.7% |
 | [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | Initial release: ReAct + anti-hallucination + MCP |
 | [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph rewrite: plan-and-execute, 24+ tools, tiered memory |
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI, SSE streaming, Docker, CI/CD, one-command installers |
