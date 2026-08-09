@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -80,18 +81,88 @@ class AgentWorker:
         self._thinking_expanded = False
         self._active_tui: Any | None = None
         self._pending_writes: set[asyncio.Task[Any]] = set()
+        self._write_failures: list[BaseException] = []
+        self._run_task: asyncio.Task[Any] | None = None
+        #: Request ids that already got a terminal response, so an early-cancel
+        #: path never double-replies to the parent.
+        self._answered_request_ids: set[int] = set()
+
+    def _mark_answered(self, request_id: int) -> None:
+        self._answered_request_ids.add(request_id)
+        # Bound the dedup set: it only needs to cover in-flight prompts plus a
+        # short trailing window, so it cannot grow without bound on a long-lived
+        # worker.
+        if len(self._answered_request_ids) > 64:
+            # Discard the oldest half (insertion order is preserved).
+            for old in list(self._answered_request_ids)[:32]:
+                self._answered_request_ids.discard(old)
+
+    async def _write_interrupted_response(self, request_id: int) -> None:
+        """Send the 'interrupted' failed result for a cancelled prompt request.
+
+        A notification flush failure must not prevent the terminal response:
+        it is logged, then the response is still written best-effort (shielded)
+        so the parent's pending request resolves instead of hanging.
+        """
+        try:
+            await self._flush_pending_writes()
+        except BaseException as exc:
+            _logger.error("flush failed before interrupted response: %r", exc)
+        await asyncio.shield(
+            write_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "status": "failed",
+                        "text": "",
+                        "thinking": "",
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "detail": "interrupted",
+                    },
+                }
+            )
+        )
+        self._mark_answered(request_id)
+
+    def _on_write_done(self, task: asyncio.Task[Any]) -> None:
+        """Record a notification-write failure persistently.
+
+        Persisting the exception in ``_write_failures`` survives the set-removal
+        in the done callback, so a write that finished before ``_flush`` ran is
+        still observable.
+        """
+        self._pending_writes.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._write_failures.append(exc)
 
     def _schedule_write(self, message: dict[str, Any]) -> None:
         """Queue stdout write from sync emit callbacks (T3: no sync I/O on loop)."""
         task = asyncio.get_running_loop().create_task(write_message(message))
         self._pending_writes.add(task)
-        task.add_done_callback(self._pending_writes.discard)
+        task.add_done_callback(self._on_write_done)
 
     async def _flush_pending_writes(self) -> None:
-        """Wait for all scheduled notifications to hit stdout before a result."""
-        if not self._pending_writes:
-            return
-        await asyncio.gather(*list(self._pending_writes), return_exceptions=True)
+        """Wait for all scheduled notifications to hit stdout before a result.
+
+        Write failures are surfaced instead of silently swallowed: a lost
+        notification breaks event ordering/observability, and a failing stdout
+        means the parent is unreachable, so the caller should stop rather than
+        keep running RPCs that can never be answered.
+        """
+        if self._pending_writes:
+            await asyncio.gather(
+                *list(self._pending_writes), return_exceptions=True
+            )
+        failures = self._write_failures
+        self._write_failures = []
+        for exc in failures:
+            _logger.error("notification write failed: %r", exc)
+            raise RuntimeError("worker stdout write failed") from exc
 
     async def _send_parent_request(
         self, method: str, params: dict[str, Any]
@@ -101,10 +172,25 @@ class AgentWorker:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[request_id] = future
-        await write_message(
-            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-        )
-        return await future
+        try:
+            await write_message(
+                {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+            )
+            return await future
+        finally:
+            # Never leave a parent-response Future dangling: resolve it on any
+            # path (response received, exception, timeout, cancellation).
+            self._pending.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+
+    def _fail_all_parent_pending(self, exc: BaseException) -> None:
+        """Fail every outstanding parent-request Future on shutdown/EOF."""
+        pending = list(self._pending.items())
+        self._pending.clear()
+        for _request_id, future in pending:
+            if not future.done():
+                future.set_exception(exc)
 
     def _resolve_parent_response(self, message: dict[str, Any]) -> bool:
         request_id = message.get("id")
@@ -114,10 +200,12 @@ class AgentWorker:
         if future is None or future.done():
             return False
         if "error" in message:
-            error = message.get("error") or {}
-            future.set_exception(
-                RuntimeError(str(error.get("message", "parent request failed")))
-            )
+            error = message.get("error")
+            if isinstance(error, dict):
+                detail = str(error.get("message", "parent request failed"))
+            else:
+                detail = str(error or "parent request failed")
+            future.set_exception(RuntimeError(detail))
             return True
         result = message.get("result")
         if not isinstance(result, dict):
@@ -177,14 +265,26 @@ class AgentWorker:
             result = await session.prompt(
                 self._agent, text, mode=str(params.get("mode", "build")), run_id=run_id
             )
+        except asyncio.CancelledError:
+            # Interrupt RPC cancelled this prompt task (C1): report the
+            # cancellation to the host so the pending request resolves instead
+            # of hanging until timeout.  Flush queued notifications first so
+            # the failed result never overtakes already-emitted stream events.
+            # The response write is shielded so an interrupt in the write
+            # window cannot leave the parent hanging.
+            await self._write_interrupted_response(request_id)
+            raise
         except Exception as exc:
-            await write_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {"code": -32000, "message": str(exc)},
-                }
+            await asyncio.shield(
+                write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {"code": -32000, "message": str(exc)},
+                    }
+                )
             )
+            self._mark_answered(request_id)
             return
         finally:
             reset_prompt_context(tokens)
@@ -192,25 +292,49 @@ class AgentWorker:
 
         # Ensure notifications (e.g. reasoning_snapshot) reach stdout before
         # the result, so the client never observes the result arrive first.
+        # The terminal response write is shielded so an interrupt arriving in
+        # the write window cannot cancel it mid-flight; we mark answered only
+        # after it has been handed off to the transport.
         await self._flush_pending_writes()
-        await write_message(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "run_id": run_id,
-                    "status": result.status,
-                    "text": result.answer,
-                    "thinking": result.thinking,
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
-                },
-            }
+        await asyncio.shield(
+            write_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "run_id": run_id,
+                        "status": result.status,
+                        "text": result.answer,
+                        "thinking": result.thinking,
+                        "input_tokens": result.input_tokens,
+                        "output_tokens": result.output_tokens,
+                    },
+                }
+            )
         )
+        self._mark_answered(request_id)
 
     async def _handle_interrupt(self, request_id: int) -> None:
+        """Cancel the running prompt task (C1: run_task.cancel()).
+
+        The interrupt RPC handler runs in its own dispatch task, so cancelling
+        ``self._run_task`` (the task awaiting ``session.prompt``) is safe — it
+        does not cancel the interrupt handler itself.
+        """
         cancelled = False
-        if self._agent is not None:
+        run_task = self._run_task
+        if run_task is not None and not run_task.done():
+            # We cancelled a running prompt task: report the cancel intent.
+            # Even if the prompt's own cancellation cleanup (flush/write) fails
+            # and replaces the CancelledError with a write exception, the task
+            # was genuinely interrupted — so report cancelled, not "not
+            # cancelled".  (A task that already finished before the cancel
+            # never enters this branch.)
+            run_task.cancel()
+            with contextlib.suppress(BaseException):
+                await run_task
+            cancelled = True
+        elif self._agent is not None:
             session = Session(
                 session_id=self._session_id,
                 workspace_root=self._workspace_root,
@@ -248,6 +372,10 @@ class AgentWorker:
         if message.get("method") is None:
             return
         request_id = message.get("id")
+        if not isinstance(request_id, int):
+            # A request without a valid integer id cannot be answered; treat it
+            # as a notification and drop it so callers do not hang waiting.
+            return
         params = message.get("params") or {}
         if not isinstance(params, dict):
             params = {}
@@ -279,25 +407,126 @@ class AgentWorker:
             await self._dispatch(message)
         except SystemExit:
             raise
-        except Exception:
+        except asyncio.CancelledError:
+            # If the prompt task was cancelled *before* its own handler could
+            # send the interrupted response (e.g. interrupt arrived before the
+            # task first ran), answer here so the parent's pending request does
+            # not hang until timeout.  Idempotent via _answered_request_ids
+            # (marked only after the response write succeeds, inside
+            # _write_interrupted_response).
+            request_id = message.get("id")
+            if (
+                message.get("method") == "prompt"
+                and isinstance(request_id, int)
+                and request_id not in self._answered_request_ids
+            ):
+                # The task is in a cancelled state, so a bare await here would
+                # re-raise CancelledError immediately; shield the write.
+                await asyncio.shield(
+                    self._write_interrupted_response(request_id)
+                )
+            raise
+        except Exception as exc:
             _logger.exception("worker dispatch failed for %s", message)
+            # Reply with a JSON-RPC error so the parent's pending request does
+            # not hang until timeout.
+            request_id = message.get("id")
+            if isinstance(request_id, int) and not (
+                "result" in message or "error" in message
+            ):
+                await write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {"code": -32000, "message": str(exc)},
+                    }
+                )
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
-        while True:
-            line = await loop.run_in_executor(None, sys.stdin.readline)
-            if not line:
-                break
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(message, dict):
-                continue
-            if "id" in message and ("result" in message or "error" in message):
-                if self._resolve_parent_response(message):
+        pending: set[asyncio.Task[Any]] = set()
+        try:
+            while True:
+                line = await loop.run_in_executor(None, sys.stdin.readline)
+                if not line:
+                    break
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
                     continue
-            asyncio.create_task(self._dispatch_safe(message))
+                if not isinstance(message, dict):
+                    continue
+                if "id" in message and ("result" in message or "error" in message):
+                    if self._resolve_parent_response(message):
+                        continue
+                if message.get("method") == "shutdown":
+                    await write_message(
+                        {"jsonrpc": "2.0", "id": message.get("id"), "result": {"ok": True}}
+                    )
+                    break
+                if message.get("method") == "prompt":
+                    self._run_task = loop.create_task(self._dispatch_safe(message))
+                    task = self._run_task
+
+                    def _clear_run(
+                        _t: asyncio.Task[Any], _rid: int = int(message.get("id"))
+                    ) -> None:
+                        if self._run_task is _t:
+                            self._run_task = None
+                        if (
+                            _t.cancelled()
+                            and _rid not in self._answered_request_ids
+                        ):
+                            # The prompt task was cancelled before it could
+                            # answer (e.g. interrupt before first step): send
+                            # the interrupted result from a fresh task so the
+                            # parent's pending request does not hang.  Track it
+                            # in _pending_writes so shutdown waits for it.  The
+                            # answered marker is set inside the write.
+                            reply = loop.create_task(
+                                self._write_interrupted_response(_rid)
+                            )
+                            self._pending_writes.add(reply)
+                            reply.add_done_callback(self._on_write_done)
+
+                    task.add_done_callback(_clear_run)
+                else:
+                    task = loop.create_task(self._dispatch_safe(message))
+                pending.add(task)
+                task.add_done_callback(pending.discard)
+        except Exception:
+            raise
+        finally:
+            for task in list(pending):
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            # Wind down scheduled notification writes so they do not race the
+            # process exit or the shutdown response, surfacing any failures.
+            # Cancel them with a bounded wait so a blocked stdout to_thread can
+            # never drag the shutdown out indefinitely.
+            for task in list(self._pending_writes):
+                task.cancel()
+            if self._pending_writes:
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *list(self._pending_writes), return_exceptions=True
+                        ),
+                        timeout=2.0,
+                    )
+            unfinished = len(self._pending_writes)
+            if unfinished:
+                _logger.warning(
+                    "worker shutdown: %d notification write task(s) did not "
+                    "finish within the bounded wait",
+                    unfinished,
+                )
+            for exc in self._write_failures:
+                _logger.error("notification write failed during shutdown: %r", exc)
+            # Worker is going down: fail any outstanding parent-request
+            # Futures (e.g. an approval awaiting a parent response) instead of
+            # leaving them pending forever.
+            self._fail_all_parent_pending(RuntimeError("worker shutdown"))
 
 
 def main() -> None:
