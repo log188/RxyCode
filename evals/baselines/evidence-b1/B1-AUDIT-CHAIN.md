@@ -11,6 +11,8 @@
 | `b1-luna-audit-R2.txt` | zen/gpt-5.6-luna 第 2 轮审计（FAIL：判据 6 需真实预审） | A755C9BB209D68D0 |
 | `b1-luna-audit-R3.txt` | zen/gpt-5.6-luna 第 3 轮审计（FAIL：需真实独立模型产出+机械证据） | 3A1546A3E149A039 |
 | `b1-luna-audit-R4.txt` | zen/gpt-5.6-luna 第 4 轮审计（FAIL：需原始日志归档+diff 机械断言） | 2EA776B4912063F6 |
+| `b1-luna-audit-R5-PASS.txt` | zen/gpt-5.6-luna 第 5 轮（最终）审计（**PASS**，判据 1-6 + CB1-CB8 全过，确认可打钩） | 250C9E20F25248AF |
+| `b1-audit-prompt5.txt` | 第 5 轮审计输入（commit 2e0bd8a + diff 机械断言 + 证据链） | 见 commit 时实测 |
 | `b1-audit-prompt4.txt` | 第 4 轮审计输入（diff+测试+基线+收口结论+预审输出） | B069DD0F439593B5 |
 | `b1-pytest-v.txt` | `pytest -v` 原始输出（16 passed） | 9C5EA37B3837F041 |
 | `b1-ruff.txt` | `ruff check core utils api_server.py tests/test_cache` 原始输出（All checks passed） | E0AF5E08A7EF46DA |
@@ -37,5 +39,5 @@
 ## 最终结论
 
 - zen/kimi-k2.7-code 预审：**PASS（可发布）**，10/10 审查点通过
-- zen/gpt-5.6-luna 审计第 4 轮（R4）：FAIL，阻断项 = 本文件所补证据 + 机械 diff 断言
-- 补齐后按流程最终复审（R5）
+- zen/gpt-5.6-luna 审计第 5 轮（R5，最终）：**PASS**——判据 1-6 全过，CB1-CB8 全满足，原始证据已追溯归档，机械 diff 断言通过
+- **B1 卡可在开发文档验收处打钩**（commit 2e0bd8a）

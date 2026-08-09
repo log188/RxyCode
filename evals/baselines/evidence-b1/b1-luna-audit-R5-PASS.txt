@@ -1,0 +1,24 @@
+## B1 最终复审结论：PASS
+
+### 判据 1–6
+
+| 判据 | 结论 | 核验 |
+|---|---|---|
+| 1 | PASS | `TokenStats` 提供累计 totals 与 `latest_request` 双口径，公式正确 |
+| 2 | PASS | `add_real_usage()` 正确累计 totals，并覆盖 latest；`reset()` 清零 |
+| 3 | PASS | 0 除保护、初始值、连续请求覆盖及 DeepSeek usage-shaped 链路均有测试 |
+| 4 | PASS | 基线文件存在，schema/version/calculation 完整，数值自洽 |
+| 5 | PASS | B2 机械范围证据已提供；变更文件均在白名单范围内 |
+| 6 | PASS | 独立 Kimi 预审完整产出、原始 pytest/ruff/evals 日志及审计链已归档 |
+
+### CB1–CB8
+
+八条硬约束均满足：功能口径、双轨统计、边界处理、回归测试、静态检查、基线可审计性、Evals Gate、证据与范围控制均通过。
+
+- pytest：16 passed
+- ruff：All checks passed
+- Evals Gate：18/19（94.7%）≥ 89.5%
+- B2 机械 diff：通过
+- 独立预审及原始审计产出：已追溯归档
+
+**最终结论：PASS。可在开发文档验收处打钩。**
