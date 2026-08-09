@@ -11,6 +11,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.9] - 2026-08-09
+
+### Highlights
+
+Isolated subagent release (Phase C). RxyCode now runs real Child Agents —
+OpenCode-style subagents with independent sessions, contexts, tools,
+permissions, budgets and lifecycles — instead of re-invoking the primary
+agent. Primary interacts with children only through structured
+TaskRequest / TaskResult protocol. OpenTUI renders the child tree, exposes
+`/children` `/child` `/parent` navigation and `@agent` mention dispatch.
+An upstream-reuse audit (OpenCode commit locked, MIT) documents every
+adapted semantic. Full-suite green: 10840 tests, CI (Linux/Windows/OpenTUI/
+protocol-client) all pass, evals GATE PASS 94.7% vs baseline.
+
+### Added
+
+- **Isolated Child Session runtime (C1-C14)** — `core/subagents/`:
+  independent session, context envelope (references + redaction), scoped
+  tool registry, permission policy, memory/cache namespaces, budget guard,
+  cancellation scope, workspace write leases.
+- **Subagent protocol** — `protocol/subagents.py` + machine-verifiable
+  `subagents_schema.json`: AgentDefinition, TaskRequest, TaskResult,
+  ChildSessionEvent with version field and terminal-state idempotency.
+- **Built-in agents** — `config/agents/`: `explore` (read-only code
+  exploration), `general`, `reviewer` (read-only review), `scout` (external
+  research); JSON / Markdown / YAML definitions normalized into one registry.
+- **Three trigger entries** — model Task Tool (`task`), user `@agent`
+  mention, and `subtask=true` commands; all through one ChildSessionManager.
+- **OpenTUI subagent UI** — child tree with status/agent/session display,
+  `/children` `/child <id>` `/parent` commands, `@agent` mention wired to
+  `agent/invoke` (stdio JSON-RPC / HTTP).
+- **Upstream reuse audit** — `docs/decisions/upstream-reuse.md` locks
+  OpenCode commit `fe82a1b` (MIT) with per-card reuse records.
+- **protocol-client subagent types** — generated TypeScript types for
+  TaskRequest/TaskResult/ChildSessionEvent; CI typecheck green.
+
+### Fixed
+
+- **Legacy `agent` tool migration (C13)** — when subagents are enabled the
+  legacy unisolated AgentV2 entry raises a deprecation error pointing to the
+  `task` tool; feature flag off keeps the legacy path byte-for-byte.
+- **P7 lazy-import budget 60→70** — Phase B subagent tree adds function-scoped
+  imports (runtime/manager/permissions), budget re-ratcheted.
+- **Merge-regression repairs** — restored master DDGS websearch engine,
+  B1 dual-track cache stats, and evidence-gate fixes that the out-of-date
+  PR branch had silently dropped.
+- **Linux CI path semantics** — external-directory tests now use
+  platform-independent absolute paths (`tmp_path` instead of hardcoded
+  `C:/workspace`).
+- **Secret-scan compliance** — test fixtures use `fake`-marked placeholder
+  credentials so `scripts/scan_secrets.py` passes.
+
+### Changed
+
+- **B14 exit checklist** — accurately reflects OpenTUI consumption
+  (child events, tree, `@agent`) and marks CLI/standalone-Desktop wiring as
+  future-phase follow-ups.
+- **Eval evidence** — 18/19 = 94.7% (GATE PASS vs 88.2% baseline) recorded;
+  baseline file refresh deferred to the follow-up Phase B merge.
+- **`@agent` parse helper** — `parseMention()` pure function with 6 unit
+  tests (bun test 138 pass, tsc clean).
+
+---
+
 ## [1.2.8] - 2026-08-08
 
 ### Highlights
@@ -514,6 +578,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.9]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9
 [1.2.8]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8
 [1.2.7]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7
 [1.2.6]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.6

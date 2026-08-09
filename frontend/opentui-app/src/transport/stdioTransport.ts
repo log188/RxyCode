@@ -15,7 +15,7 @@ import {
 } from "./httpAdmin.ts";
 import { notifyToStreamEvent } from "./notifyToStreamEvent.ts";
 import { shouldClearStreamingOnNotify } from "./streamLifecycle.ts";
-import type { ChatApiCallbacks, ChatTransport } from "./types.ts";
+import type { ChatApiCallbacks, ChatTransport, SubagentResult } from "./types.ts";
 
 const DEFAULT_INIT_TIMEOUT_MS = 10_000;
 const DEFAULT_SESSION_TIMEOUT_MS = 10_000;
@@ -264,7 +264,7 @@ class StdioAppserverSession {
       "initialize",
       {
         client_name: "opentui",
-        client_version: "1.2.8",
+        client_version: "1.2.9",
         protocol_version: "1.0.0",
       },
       initTimeoutMs(),
@@ -353,6 +353,16 @@ class StdioAppserverSession {
       // best-effort
     }
     this.activePromptAbort?.abort();
+  }
+
+  async invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult> {
+    const client = await this.ensureReady();
+    const result = await client.request<SubagentResult>("agent/invoke", {
+      agent_id: agentId,
+      prompt,
+      parent_session_id: this.sessionId ?? "",
+    });
+    return result;
   }
 
   async sendChatMessage(
@@ -605,6 +615,10 @@ export const stdioTransport: ChatTransport = {
 
   async cancelActiveRequest(): Promise<void> {
     await sharedSession.interrupt();
+  },
+
+  async invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult> {
+    return sharedSession.invokeSubagent(agentId, prompt);
   },
 
   async respondApproval(approvalId: string, decision: ApprovalDecision): Promise<boolean> {
