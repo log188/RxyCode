@@ -1,0 +1,28 @@
+结论：**FAIL**
+
+阻断项：
+
+1. **判据 1 / CB2 未被真实验证**
+   - `test_prefix_bytes_identical_while_user_changes` 的完整 body 只断言 `bytes_a != bytes_b` 和 `common > 0`，后者几乎是空断言。
+   - 实际“前缀”比较只覆盖 `out_a[:-1]`，没有比较包含 tools 的完整序列化前缀。
+   - tools 被放在 `messages` 之后，测试没有证明 tools schema 在真实请求序列化中保持字节一致。
+   - 该测试仍不是 `_raw_stream`/真实请求构造路径的端到端验证。
+
+2. **判据 3 / CB3 的“三 provider payload”证据不完整**
+   - 只有 OpenAI 和 DeepSeek 做了真实 `_raw_stream` payload 捕获。
+   - Anthropic 仅通过 `dataclasses.replace` + 测试内自定义 `_payload_extra` 推导，未捕获真实 Anthropic payload。
+   - 因此不能证明实际请求路径不会向 Anthropic 注入该字段。
+
+3. **research contract 测试仍主要是源码检查**
+   - `test_research_contract_after_system_not_overwriting` 手工构造并 append 消息，没有执行真实 research 请求路径。
+   - 实现确实不再覆盖 `messages[0]`，但“真实路径中位于正确断点之后”的行为证据不足。
+
+其余方面：
+
+- `ModelCapabilities.prompt_cache_key_required` 及 OpenAI 默认配置：看起来符合 CB3/CB8。
+- DeepSeek/未知模型不注入：现有证据支持。
+- registry、full/subset 工具排序：实现及测试均覆盖。
+- system prompt 不含明显动态字段：现有测试支持。
+- ruff、回归套件、eval 结果不能弥补上述验收证据缺口。
+
+因此，在判据 1、3 及 research 行为级验证补齐前，不能签发 PASS。

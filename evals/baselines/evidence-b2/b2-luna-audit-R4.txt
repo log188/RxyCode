@@ -1,0 +1,25 @@
+结论：**FAIL**
+
+阻断项：
+
+1. **R3-2 未真正修复：Anthropic 真实 payload 未被验证**
+   - `test_raw_stream_payload_no_key_for_anthropic` 使用的是：
+     - `DEFAULT_CAPABILITIES`
+     - `agent._openai_client`
+     - `FakeClient.create`
+   - 没有构造 Anthropic provider/capability，也没有调用 Anthropic 的真实请求路径。
+   - 该测试只能证明“默认 capability 不注入”，不能证明 Anthropic payload 不含 `prompt_cache_key`。
+
+2. **CB3 provider 隔离不充分**
+   - 实际注入条件仅为：
+     ```python
+     if caps is not None and caps.prompt_cache_key_required:
+     ```
+   - 未同时校验 provider 是否为 OpenAI。
+   - 若 Anthropic/DeepSeek 的配置 override 将 `prompt_cache_key_required=True`，仍会注入该字段，违反“仅 OpenAI 注入”的硬约束。
+
+3. **R3-3 仍非真实 research 路径行为测试**
+   - `test_research_contract_behavioral_chain` 手工构造了包含 contract 的消息链；
+   - 没有执行 research 分支本身，因此不能证明真实 research contract 构造逻辑满足约束。
+
+其余方面：工具列表排序、OpenAI capability 标记、默认 capability 不注入、system 前缀序列化测试及已报告测试结果基本满足判据；但上述三项属于复审要求中的真实行为/隔离性阻断项，不能据此 PASS。

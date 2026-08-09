@@ -1706,6 +1706,18 @@ class AgentV2:
                 payload["temperature"] = pkwargs["temperature"]
             else:
                 payload.pop("temperature", None)
+        # B2 (CB3): OpenAI 系按能力注入请求级 prompt_cache_key=session_id，
+        # 会话期恒定（跨 turn 前缀复用）；DeepSeek/Anthropic 不注入。
+        # 双条件：provider 必须是 openai 且能力声明要求——防止配置 override
+        # 把 prompt_cache_key_required 误置 True 时向其他 provider 注入（CB3）。
+        if (
+            caps is not None
+            and getattr(caps, "provider", "") == "openai"
+            and getattr(caps, "prompt_cache_key_required", False)
+        ):
+            payload.setdefault("extra_body", {})["prompt_cache_key"] = (
+                str(self._session_id or "latest")
+            )
         if tools:
             caps = getattr(self, "_capabilities", None)
             if caps is not None and not caps.supports_function_calling:
@@ -2240,7 +2252,10 @@ class AgentV2:
                 "distinguish uncertainty, and cite only these exact source URLs:\n"
                 f"{source_list}"
             )
-            messages[0] = SystemMessage(content=f"{system}\n\n{research_contract}")
+            # B2 (CB1/CB7): research_contract 是每请求动态内容，绝不允许改写
+            # messages[0]（system 前缀）——否则缓存前缀每请求逐字节变化、命中归零。
+            # 作为独立 SystemMessage 追加到断点之后（system 保持头部不动）。
+            messages.append(SystemMessage(content=research_contract))
             messages.append(AIMessage(
                 content="",
                 tool_calls=[call for call, _url, _content in verified_fetches],
@@ -2563,8 +2578,15 @@ class AgentV2:
                     )[:8]
                 )
                 self._subset_tool_names = cache
-            return [t for t in tools if getattr(t, "name", "") in cache]
-        return tools
+            # B2: subset 分支同样按名排序——输入列表乱序不得导致输出顺序抖动
+            # （工具 schema 顺序是前缀字节的一部分，静默失效源清单第 6 条）。
+            return sorted(
+                (t for t in tools if getattr(t, "name", "") in cache),
+                key=lambda t: getattr(t, "name", "") or "",
+            )
+        # B2: full 策略也按名称排序固定——工具 schema 顺序是前缀字节的一部分，
+        # 任何一轮的顺序抖动都会击穿缓存（静默失效源清单第 6 条）。
+        return sorted(tools, key=lambda t: getattr(t, "name", "") or "")
 
     async def _execute_tool(
         self,

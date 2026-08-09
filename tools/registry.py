@@ -50,10 +50,13 @@ class ToolRegistry:
             if tid not in seen:
                 seen.add(tid)
                 result.append(tool)
-        return result
+        # B2: 工具列表按名称排序固定，保证前缀字节稳定（缓存纪律）。
+        return sorted(result, key=lambda t: getattr(t, "name", "") or "")
 
     def get_names(self) -> list[str]:
-        return list(self._tools.keys())
+        # B2: 排序固定（含别名，保持原有语义：get_names 返回全部注册键），
+        # 确定性顺序保证前缀字节稳定。
+        return sorted(self._tools.keys())
 
     def get_risk(self, name: str) -> str:
         """Return the risk level of a tool (default 'write')."""
@@ -67,7 +70,7 @@ class ToolRegistry:
     def get_descriptions(self) -> str:
         parts = []
         seen = set()
-        for name, t in self._tools.items():
+        for name, t in sorted(self._tools.items(), key=lambda kv: kv[0]):
             if name in self._aliases:
                 continue
             tid = id(t)
