@@ -106,7 +106,7 @@ follow-up Phase B merge on master. Equivalent coverage confirmed by:
 - [x] ruff clean, protocol schema validated, unit/protocol/E2E green
 - [x] Single-agent baseline does not regress (feature flag off = legacy path)
 - [x] failure/cancel/timeout/denied/recovery all auditable (events + approval log)
-- [~] 服务端路由已就绪（`agent/invoke`、`task/start`、`subagents/*` 共享），**客户端消费待补**（OpenTUI 事件映射不含 `child_session/*`、protocol-client 无 TaskRequest/TaskResult 类型、CLI 缺子代理导航命令）
+- [~] 服务端路由已就绪（`agent/invoke`、`task/start`、`subagents/*` 共享），**OpenTUI 已接线**（child_session/* 事件映射、child 树渲染、/children /child /parent 命令、@agent mention → agent/invoke），**CLI 与独立 Desktop 待接入**（统一 TaskRequest/TaskResult/Event 协议已就绪，消费端后续 Phase 补齐）
 - [x] Phase C need not replicate runtime/permissions/events (ChildRuntime facade, ChildSessionManager, EventStore)
 - [x] Phase D can display parent/child tree and approval/tool events (ChildSessionEvent + audit + appserver routes)
 - [x] Phase E can swap model at child creation without changing protocol semantics (AgentDefinition.model, provider handle in runtime)
