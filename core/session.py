@@ -30,6 +30,8 @@ class PromptResult:
     thinking: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_hit_tokens: int = 0
+    cache_hit_rate: float = 0.0
 
 
 def thinking_cursor(agent: Any) -> tuple[tuple[str, ...], str]:
@@ -69,6 +71,8 @@ def notification_to_sse_event(notification: BaseModel) -> dict[str, Any] | None:
             "thinking": notification.thinking or "",
             "input_tokens": notification.input_tokens or 0,
             "output_tokens": notification.output_tokens or 0,
+            "cache_hit_tokens": notification.cache_hit_tokens or 0,
+            "cache_hit_rate": notification.cache_hit_rate or 0.0,
         }
         if notification.session_schema_version is not None:
             event["session_schema_version"] = notification.session_schema_version
@@ -118,6 +122,7 @@ class Session:
         """Run one user turn through AgentV2 and emit terminal protocol events."""
         previous_input = token_stats.input_tokens
         previous_output = token_stats.output_tokens
+        previous_cache_hit_tokens = token_stats.cache_hit_tokens
         cursor = thinking_cursor(agent)
 
         try:
@@ -137,6 +142,12 @@ class Session:
         status, detail = classify_agent_result(answer)
         delta_input = token_stats.input_tokens - previous_input
         delta_output = token_stats.output_tokens - previous_output
+        delta_cache_hit_tokens = token_stats.cache_hit_tokens - previous_cache_hit_tokens
+        cache_hit_rate = (
+            max(delta_cache_hit_tokens, 0) / max(delta_input, 1) * 100
+            if delta_input > 0
+            else 0.0
+        )
         thinking = thinking_since(agent, cursor)
 
         if delta_input or delta_output:
@@ -145,6 +156,8 @@ class Session:
                     session_id=self.session_id,
                     input_tokens=max(delta_input, 0),
                     output_tokens=max(delta_output, 0),
+                    cache_hit_tokens=max(delta_cache_hit_tokens, 0),
+                    cache_hit_rate=cache_hit_rate,
                 )
             )
 
@@ -157,6 +170,8 @@ class Session:
                     thinking=thinking or None,
                     input_tokens=delta_input,
                     output_tokens=delta_output,
+                    cache_hit_tokens=delta_cache_hit_tokens,
+                    cache_hit_rate=cache_hit_rate,
                     session_schema_version=self.session_schema_version,
                 )
             )
@@ -167,6 +182,8 @@ class Session:
                 thinking=thinking,
                 input_tokens=delta_input,
                 output_tokens=delta_output,
+                cache_hit_tokens=delta_cache_hit_tokens,
+                cache_hit_rate=cache_hit_rate,
             )
 
         self.emit(
@@ -184,6 +201,8 @@ class Session:
             thinking=thinking,
             input_tokens=delta_input,
             output_tokens=delta_output,
+            cache_hit_tokens=delta_cache_hit_tokens,
+            cache_hit_rate=cache_hit_rate,
         )
 
     def interrupt(self, agent: Any) -> bool:

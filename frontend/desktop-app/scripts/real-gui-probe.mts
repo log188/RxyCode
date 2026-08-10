@@ -1,0 +1,151 @@
+#!/usr/bin/env node
+/**
+ * One paid-model Desktop acceptance probe.
+ *
+ * Unlike screenshot.mts and desktop-stress.mts this never enables the fake
+ * appserver.  It drives the real Electron renderer over CDP, records a visual
+ * loading/final state, and always kills the Electron process tree on exit.
+ */
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const appDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const repoDir = resolve(appDir, '..', '..')
+const outputDir = resolve(process.argv[2] ?? join(repoDir, 'artifacts', 'real-gui-probe'))
+const debugPort = 9371
+const vite = join(appDir, 'node_modules', 'electron-vite', 'bin', 'electron-vite.js')
+const profile = mkdtempSync(join(tmpdir(), 'rxycode-real-gui-'))
+const prompt = process.env.RXYCODE_REAL_GUI_PROMPT ??
+  '/fast In the current workspace, inspect appserver startup only. Use glob, then grep, then read; do not use web search and do not modify files. Return exactly three short bullets: path, evidence, risk.'
+
+const delay = (ms: number): Promise<void> => new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
+
+async function waitFor<T>(probe: () => Promise<T | null>, timeoutMs: number, label: string): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const value = await probe()
+    if (value !== null) return value
+    await delay(150)
+  }
+  throw new Error(`timeout waiting for ${label}`)
+}
+
+async function main(): Promise<void> {
+  if (!existsSync(vite)) throw new Error(`electron-vite missing: ${vite}`)
+  mkdirSync(outputDir, { recursive: true })
+  const dev = spawn(process.execPath, [vite, 'dev', '--', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`], {
+    cwd: appDir,
+    env: {
+      ...process.env,
+      RXYCODE_REPO_DIR: repoDir,
+      RXYCODE_DESKTOP_WIDTH: '1100',
+      RXYCODE_DESKTOP_HEIGHT: '760'
+    },
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  let ws: WebSocket | null = null
+  try {
+    const target = await waitFor(async () => {
+      try {
+        const pages = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json() as Array<{ type: string; webSocketDebuggerUrl?: string }>
+        return pages.find((page) => page.type === 'page')?.webSocketDebuggerUrl ?? null
+      } catch { return null }
+    }, 90_000, 'Electron CDP')
+    ws = new WebSocket(target)
+    await new Promise<void>((resolveOpen, rejectOpen) => {
+      ws!.onopen = () => resolveOpen()
+      ws!.onerror = () => rejectOpen(new Error('CDP connection failed'))
+    })
+    let sequence = 0
+    const pending = new Map<number, (message: any) => void>()
+    ws.onmessage = (event) => {
+      const message = JSON.parse(String(event.data))
+      if (message.id && pending.has(message.id)) {
+        pending.get(message.id)!(message)
+        pending.delete(message.id)
+      }
+    }
+    const send = (method: string, params: unknown = {}): Promise<any> => new Promise((resolveSend, rejectSend) => {
+      const id = ++sequence
+      pending.set(id, (message) => message.error ? rejectSend(new Error(JSON.stringify(message.error))) : resolveSend(message.result))
+      ws!.send(JSON.stringify({ id, method, params }))
+    })
+    const evaluate = async (expression: string): Promise<any> => {
+      const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
+      if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails))
+      return result.result?.value
+    }
+    const has = (selector: string): Promise<boolean> => evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`)
+    const screenshot = async (name: string): Promise<void> => {
+      const image = await send('Page.captureScreenshot', { format: 'png' })
+      writeFileSync(join(outputDir, name), Buffer.from(image.data, 'base64'))
+    }
+
+    await evaluate(`(() => {
+      window.__rxyProbeLogs = [];
+      window.api.appserver.onLog((line) => window.__rxyProbeLogs.push('stderr: ' + line));
+      window.api.appserver.onLine((line) => window.__rxyProbeLogs.push('stdout: ' + line));
+    })()`)
+    await waitFor(async () => (await has('.new-session:not(:disabled)')) ? true : null, 90_000, 'renderer readiness')
+    await evaluate(`document.querySelector('.new-session').click()`)
+    await waitFor(async () => (await has('.composer textarea:not(:disabled)')) ? true : null, 20_000, 'new session')
+    await evaluate(`(() => {
+      const textarea = document.querySelector('.composer textarea');
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(textarea, ${JSON.stringify(prompt)});
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('.send').click();
+    })()`)
+    await waitFor(async () => (await has('.running-indicator')) ? true : null, 20_000, 'run start')
+    try {
+      await waitFor(async () => (await has('.tool-card')) ? true : null, 45_000, 'first real tool card')
+    } catch (error) {
+      const status = await evaluate('window.api.appserver.getStatus()')
+      const diagnostics = await evaluate(`JSON.stringify({
+        body: document.body.innerText,
+        logs: window.__rxyProbeLogs ?? []
+      })`)
+      writeFileSync(
+        join(outputDir, 'real-gui-failure.json'),
+        JSON.stringify({ status, ...JSON.parse(diagnostics) }, null, 2)
+      )
+      throw error
+    }
+    await screenshot('01-loading-real.png')
+    await waitFor(async () => !(await has('.running-indicator')) ? true : null, 90_000, 'real completion')
+    await delay(300)
+    await screenshot('02-final-real.png')
+    const snapshot = await evaluate(`(() => ({
+      prompt: document.querySelector('.message.user .message-text')?.textContent ?? '',
+      final: Array.from(document.querySelectorAll('.message.assistant .message-text')).at(-1)?.textContent ?? '',
+      tools: Array.from(document.querySelectorAll('.tool-card')).map((card) => ({
+        name: card.querySelector('.tool-name')?.textContent ?? '', className: card.className
+      })),
+      error: document.querySelector('.error-banner, .message.error')?.textContent ?? '',
+      viewport: { width: innerWidth, height: innerHeight },
+      shellScroll: { y: scrollY, height: document.documentElement.scrollHeight }
+    }))()`)
+    if (!snapshot.final || snapshot.error) throw new Error(`invalid real GUI terminal state: ${JSON.stringify(snapshot)}`)
+    if (snapshot.tools.length < 3) throw new Error(`expected multiple real tool cards: ${JSON.stringify(snapshot.tools)}`)
+    if (snapshot.shellScroll.y !== 0 || snapshot.shellScroll.height > snapshot.viewport.height) {
+      throw new Error(`desktop shell scrolled unexpectedly: ${JSON.stringify(snapshot.shellScroll)}`)
+    }
+    writeFileSync(join(outputDir, 'real-gui-result.json'), JSON.stringify({ prompt, snapshot }, null, 2))
+    console.log(`REAL_GUI_PROBE_OK ${outputDir}`)
+  } finally {
+    ws?.close()
+    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(dev.pid), '/T', '/F'], { stdio: 'ignore' })
+    else { try { process.kill(dev.pid, 'SIGKILL') } catch {} }
+    await delay(300)
+    try { rmSync(profile, { recursive: true, force: true, maxRetries: 3 }) } catch {}
+  }
+}
+
+void main().catch((error) => {
+  console.error(`REAL_GUI_PROBE_FAILED ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+  process.exitCode = 1
+})

@@ -54,6 +54,21 @@ def test_bare_algorithm_search_does_not_force_web_research():
     assert get_research_policy("Convert one to two fields").requires_web is False
 
 
+def test_current_workspace_audit_with_local_tools_does_not_force_web_research():
+    """A local audit must not be misrouted merely because it says "current".
+
+    This is the exact intent behind the Desktop regression where the agent
+    fanned out to external search engines and the appserver watchdog expired
+    before it could execute the requested local glob/grep/read calls.
+    """
+    query = (
+        "Audit the current workspace. Call glob, grep, and read only; "
+        "do not use web search."
+    )
+
+    assert get_research_policy(query).requires_web is False
+
+
 def test_research_urls_are_deduplicated_normalized_and_private_hosts_rejected():
     urls = extract_research_urls(
         "https://Example.com/source). https://example.com/source "

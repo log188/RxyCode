@@ -142,6 +142,8 @@ export type Method26 = "event/token_usage";
 export type SessionId13 = string;
 export type InputTokens = number;
 export type OutputTokens = number;
+export type CacheHitTokens = number;
+export type CacheHitRate = number;
 export type Method27 = "event/final";
 export type SessionId14 = string;
 export type RunId = string;
@@ -149,6 +151,8 @@ export type Text5 = string;
 export type Thinking = string | null;
 export type InputTokens1 = number | null;
 export type OutputTokens1 = number | null;
+export type CacheHitTokens1 = number | null;
+export type CacheHitRate1 = number | null;
 export type SessionSchemaVersion = number | null;
 export type Method28 = "event/error";
 export type SessionId15 = string;
@@ -490,6 +494,8 @@ export interface TokenUsage {
   session_id: SessionId13;
   input_tokens: InputTokens;
   output_tokens: OutputTokens;
+  cache_hit_tokens?: CacheHitTokens;
+  cache_hit_rate?: CacheHitRate;
   [k: string]: unknown;
 }
 /**
@@ -503,6 +509,8 @@ export interface FinalAnswer {
   thinking?: Thinking;
   input_tokens?: InputTokens1;
   output_tokens?: OutputTokens1;
+  cache_hit_tokens?: CacheHitTokens1;
+  cache_hit_rate?: CacheHitRate1;
   session_schema_version?: SessionSchemaVersion;
   [k: string]: unknown;
 }

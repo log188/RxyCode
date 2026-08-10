@@ -204,6 +204,8 @@ class AgentWorker:
                     "thinking": result.thinking,
                     "input_tokens": result.input_tokens,
                     "output_tokens": result.output_tokens,
+                    "cache_hit_tokens": result.cache_hit_tokens,
+                    "cache_hit_rate": result.cache_hit_rate,
                 },
             }
         )

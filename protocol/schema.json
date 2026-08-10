@@ -823,6 +823,16 @@
         "output_tokens": {
           "title": "Output Tokens",
           "type": "integer"
+        },
+        "cache_hit_tokens": {
+          "default": 0,
+          "title": "Cache Hit Tokens",
+          "type": "integer"
+        },
+        "cache_hit_rate": {
+          "default": 0.0,
+          "title": "Cache Hit Rate",
+          "type": "number"
         }
       },
       "required": [
@@ -889,6 +899,30 @@
           ],
           "default": null,
           "title": "Output Tokens"
+        },
+        "cache_hit_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Hit Tokens"
+        },
+        "cache_hit_rate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Hit Rate"
         },
         "session_schema_version": {
           "anyOf": [

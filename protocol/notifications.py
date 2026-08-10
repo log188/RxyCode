@@ -98,6 +98,8 @@ class TokenUsage(BaseModel):
     session_id: str
     input_tokens: int
     output_tokens: int
+    cache_hit_tokens: int = 0
+    cache_hit_rate: float = 0.0
 
 
 class FinalAnswer(BaseModel):
@@ -110,6 +112,8 @@ class FinalAnswer(BaseModel):
     thinking: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_hit_rate: float | None = None
     session_schema_version: int | None = None
 
 
