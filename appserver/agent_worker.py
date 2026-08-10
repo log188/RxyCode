@@ -19,14 +19,17 @@ from .jsonrpc import write_message
 from .runtime import bind_prompt_context, install_tui_context_hook, get_bound_tui, reset_prompt_context
 from .tui import ProtocolTui
 
-try:
-    from ..core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
-    from ..core.safety.approval import set_approval_broker
-    from ..core.session import Session
-except ImportError:
-    from core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
-    from core.safety.approval import set_approval_broker
-    from core.session import Session
+# ``python -m appserver`` is a top-level entrypoint, but ``appserver.__init__``
+# binds the canonical package to this checkout before this module imports.
+# Use that one identity: falling back to top-level ``core`` creates a second
+# module-global approval broker that AgentV2 cannot observe.
+from RxyCode.RxyCode1_1_0.core.safety.approval import (
+    ApprovalBroker,
+    ApprovalDecision,
+    ApprovalRequest,
+    set_approval_broker,
+)
+from RxyCode.RxyCode1_1_0.core.session import Session
 
 _logger = logging.getLogger(__name__)
 

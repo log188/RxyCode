@@ -20,6 +20,8 @@ const vite = join(appDir, 'node_modules', 'electron-vite', 'bin', 'electron-vite
 const profile = mkdtempSync(join(tmpdir(), 'rxycode-real-gui-'))
 const prompt = process.env.RXYCODE_REAL_GUI_PROMPT ??
   '/fast In the current workspace, inspect appserver startup only. Use glob, then grep, then read; do not use web search and do not modify files. Return exactly three short bullets: path, evidence, risk.'
+const approvePendingRequest = process.env.RXYCODE_REAL_GUI_APPROVE === 'true'
+const minimumToolCards = Number(process.env.RXYCODE_REAL_GUI_MIN_TOOLS ?? '3')
 
 const delay = (ms: number): Promise<void> => new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
 
@@ -122,6 +124,22 @@ async function main(): Promise<void> {
     await waitFor(async () => (await has('.send:not(:disabled)')) ? true : null, 5_000, 'enabled send button')
     await evaluate(`document.querySelector('.send').click()`)
     await waitFor(async () => (await has('.running-indicator')) ? true : null, 20_000, 'run start')
+    if (approvePendingRequest) {
+      try {
+        await waitFor(async () => (await has('.approval-dialog .approve')) ? true : null, 60_000, 'real approval request')
+      } catch (error) {
+        await screenshot('01-approval-timeout.png')
+        const diagnostics = await evaluate(`({
+          body: document.body.innerText,
+          logs: window.__rxyProbeLogs ?? []
+        })`)
+        writeFileSync(join(outputDir, 'approval-timeout.json'), JSON.stringify(diagnostics, null, 2))
+        throw error
+      }
+      await screenshot('01-approval-real.png')
+      await evaluate(`document.querySelector('.approval-dialog .approve').click()`)
+      await waitFor(async () => !(await has('.approval-dialog')) ? true : null, 30_000, 'real approval resolution')
+    }
     try {
       await waitFor(async () => (await has('.tool-card')) ? true : null, 45_000, 'first real tool card')
     } catch (error) {
@@ -159,7 +177,9 @@ async function main(): Promise<void> {
     }
     writeFileSync(join(outputDir, 'real-gui-result.json'), JSON.stringify(result, null, 2))
     if (!snapshot.final || snapshot.error) throw new Error(`invalid real GUI terminal state: ${JSON.stringify(snapshot)}`)
-    if (snapshot.tools.length < 3) throw new Error(`expected multiple real tool cards: ${JSON.stringify(snapshot.tools)}`)
+    if (snapshot.tools.length < minimumToolCards) {
+      throw new Error(`expected at least ${minimumToolCards} real tool cards: ${JSON.stringify(snapshot.tools)}`)
+    }
     if (snapshot.tools.some((tool) => tool.className.includes('running'))) {
       throw new Error(`real GUI left a tool card in running state: ${JSON.stringify(snapshot.tools)}`)
     }

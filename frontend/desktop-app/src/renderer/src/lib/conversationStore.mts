@@ -267,7 +267,10 @@ export function applyPromptResult(
   sessionId: string,
   result: PromptResult
 ): ConversationState {
-  return completeAssistant(state, sessionId, result.text, result.runId, result.status)
+  return removeApprovalRequestsForSession(
+    completeAssistant(state, sessionId, result.text, result.runId, result.status),
+    sessionId
+  )
 }
 
 export function applyError(

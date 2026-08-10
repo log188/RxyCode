@@ -508,3 +508,15 @@ test('applyRunComplete removes submitting approvals for the session', () => {
   assert.equal(state.approvals.length, 0)
   assert.equal(state.runningBySession['s1'], false)
 })
+
+test('applyPromptResult removes submitting approvals when the real worker omits event/done', () => {
+  let state = addApprovalRequest(baseState(), approvalRequest())
+  state = updateApprovalRequestStatus(state, 'apr-1', 'submitting')
+  state = applyPromptResult(state, 's1', {
+    runId: 'run-prompt-terminal',
+    status: 'failed',
+    text: 'write rejected after approval'
+  })
+  assert.equal(state.approvals.length, 0)
+  assert.equal(state.runningBySession['s1'], false)
+})
