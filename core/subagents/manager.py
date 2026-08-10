@@ -524,6 +524,7 @@ class ChildSessionManager:
                 evidence=result.evidence,
                 usage=result.usage,
                 error=result.error,
+                telemetry=result.telemetry,
             )
 
         except asyncio.CancelledError:

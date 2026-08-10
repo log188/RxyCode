@@ -370,6 +370,9 @@ class TaskResult:
     evidence: tuple[EvidenceRef, ...] = ()
     usage: UsageRecord = field(default_factory=UsageRecord)
     error: ErrorRecord | None = None
+    # Child-local execution evidence. Kept extensible so provider/tool/MCP/skill
+    # telemetry can evolve without putting raw history into ``summary``.
+    telemetry: Mapping[str, object] = field(default_factory=dict)
 
     @property
     def is_terminal(self) -> bool:
