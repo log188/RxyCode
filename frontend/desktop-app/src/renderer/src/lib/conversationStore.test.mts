@@ -200,6 +200,25 @@ test('applyFinalAnswer clears a previous session error', () => {
   assert.equal(state.errorBySession['s1'], null)
 })
 
+test('applyFinalAnswer finalizes tool cards that never received a tool_end event', () => {
+  let state = applyToolBegin(baseState(), 's1', toolBegin('call-1', 'glob'))
+  state = applyToolBegin(state, 's1', toolBegin('call-2', 'grep'))
+  state = applyFinalAnswer(state, 's1', {
+    method: 'event/final',
+    session_id: 's1',
+    run_id: 'run-final-tools',
+    text: 'done'
+  })
+
+  assert.deepEqual(
+    state.toolsBySession['s1']?.map((tool) => ({ status: tool.status, summary: tool.summary })),
+    [
+      { status: 'ok', summary: 'completed with final answer' },
+      { status: 'ok', summary: 'completed with final answer' }
+    ]
+  )
+})
+
 test('applyPromptResult records the final answer when no final event arrived', () => {
   let state = beginAssistantMessage(baseState(), 's1')
   state = applyPromptResult(state, 's1', {
@@ -211,6 +230,24 @@ test('applyPromptResult records the final answer when no final event arrived', (
   assert.equal(last?.text, 'fallback answer')
   assert.equal(last?.status, 'complete')
   assert.equal(state.runningBySession['s1'], false)
+})
+
+test('applyPromptResult finalizes running tools as errors when the prompt failed without event/done', () => {
+  let state = applyToolBegin(baseState(), 's1', toolBegin('call-1'))
+  state = beginAssistantMessage(state, 's1')
+  state = applyPromptResult(state, 's1', {
+    runId: 'run-failed',
+    status: 'failed',
+    text: 'backend evidence failure'
+  })
+  const last = state.messagesBySession['s1']?.at(-1)
+  const tool = state.toolsBySession['s1']?.[0]
+  assert.equal(last?.text, 'backend evidence failure')
+  assert.equal(last?.status, 'error')
+  assert.equal(tool?.status, 'error')
+  assert.equal(tool?.summary, 'run failed')
+  assert.equal(state.runningBySession['s1'], false)
+  assert.equal(state.errorBySession['s1'], 'run failed')
 })
 
 test('applyPromptResult clears a previous session error', () => {

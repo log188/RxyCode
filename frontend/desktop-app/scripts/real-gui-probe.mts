@@ -132,6 +132,9 @@ async function main(): Promise<void> {
     }))()`)
     if (!snapshot.final || snapshot.error) throw new Error(`invalid real GUI terminal state: ${JSON.stringify(snapshot)}`)
     if (snapshot.tools.length < 3) throw new Error(`expected multiple real tool cards: ${JSON.stringify(snapshot.tools)}`)
+    if (snapshot.tools.some((tool) => tool.className.includes('running'))) {
+      throw new Error(`real GUI left a tool card in running state: ${JSON.stringify(snapshot.tools)}`)
+    }
     if (snapshot.shellScroll.y !== 0 || snapshot.shellScroll.height > snapshot.viewport.height) {
       throw new Error(`desktop shell scrolled unexpectedly: ${JSON.stringify(snapshot.shellScroll)}`)
     }

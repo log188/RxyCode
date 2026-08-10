@@ -223,25 +223,34 @@ function completeAssistant(
   state: ConversationState,
   sessionId: string,
   text: string,
-  runId: string
+  runId: string,
+  resultStatus = 'succeeded'
 ): ConversationState {
+  const succeeded = resultStatus === 'succeeded'
   const messages = messagesFor(state, sessionId)
   const last = messages.at(-1)
   const complete: ChatMessage = {
     id: last?.id ?? nextMessageId(state, sessionId, 'assistant'),
     role: 'assistant',
     text,
-    status: 'complete',
+    status: succeeded ? 'complete' : 'error',
     runId
   }
   const next =
     last !== undefined && last.role === 'assistant'
       ? [...messages.slice(0, -1), complete]
       : [...messages, complete]
+  const tools = toolsFor(state, sessionId).map((tool) => {
+    if (tool.status !== 'running') return tool
+    return succeeded
+      ? { ...tool, status: 'ok' as const, summary: 'completed with final answer' }
+      : { ...tool, status: 'error' as const, summary: `run ${resultStatus}` }
+  })
   return {
     ...withMessages(state, sessionId, next),
+    toolsBySession: { ...state.toolsBySession, [sessionId]: tools },
     runningBySession: { ...state.runningBySession, [sessionId]: false },
-    errorBySession: { ...state.errorBySession, [sessionId]: null }
+    errorBySession: { ...state.errorBySession, [sessionId]: succeeded ? null : `run ${resultStatus}` }
   }
 }
 
@@ -258,7 +267,7 @@ export function applyPromptResult(
   sessionId: string,
   result: PromptResult
 ): ConversationState {
-  return completeAssistant(state, sessionId, result.text, result.runId)
+  return completeAssistant(state, sessionId, result.text, result.runId, result.status)
 }
 
 export function applyError(
