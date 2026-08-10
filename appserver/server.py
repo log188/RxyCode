@@ -217,7 +217,12 @@ class AppServer:
             {
                 "protocol_version": PROTOCOL_VERSION,
                 "server_name": "rxycode-appserver",
-                "capabilities": {"sessions": True, "approval": True},
+                "capabilities": {
+                    "sessions": True,
+                    "approval": True,
+                    "models": True,
+                    "credentials": True,
+                },
             },
         )
 
@@ -552,6 +557,48 @@ class AppServer:
             from .subagent_routes import capability
 
             await self._respond(request_id, capability())
+
+        # ── Phase 4 D5: model / credential JSON-RPC methods ──────────
+        elif method == "models/list":
+            from .model_routes import list_models
+
+            await self._respond(request_id, list_models())
+        elif method == "models/presets":
+            from .model_routes import list_presets
+
+            await self._respond(request_id, list_presets())
+        elif method == "models/discover":
+            from .model_routes import discover
+
+            await self._respond(request_id, await discover(params))
+        elif method == "models/onboard":
+            from .model_routes import onboard
+
+            await self._respond(request_id, await onboard(params))
+        elif method == "models/onboard_batch":
+            from .model_routes import onboard_batch
+
+            await self._respond(request_id, await onboard_batch(params))
+        elif method == "models/remove":
+            from .model_routes import remove
+
+            await self._respond(request_id, remove(params))
+        elif method == "models/set_active":
+            from .model_routes import set_active
+
+            await self._respond(request_id, set_active(params))
+        elif method == "models/test_connection":
+            from .model_routes import test_connection
+
+            await self._respond(request_id, await test_connection(params))
+        elif method == "credentials/upsert":
+            from .model_routes import upsert_credential
+
+            await self._respond(request_id, upsert_credential(params))
+        elif method == "credentials/delete":
+            from .model_routes import delete_credential
+
+            await self._respond(request_id, delete_credential(params))
 
         else:
             await self._respond_error(request_id, -32601, f"method not found: {method}")

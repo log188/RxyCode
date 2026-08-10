@@ -8,7 +8,17 @@ export type ClientRequest =
   | InterruptRequest
   | SetThinkingExpandedRequest
   | WarmSessionRequest
-  | ShutdownRequest;
+  | ShutdownRequest
+  | ModelsListRequest
+  | ModelsPresetsRequest
+  | ModelsDiscoverRequest
+  | ModelsOnboardRequest
+  | ModelsOnboardBatchRequest
+  | ModelsRemoveRequest
+  | ModelsSetActiveRequest
+  | ModelsTestConnectionRequest
+  | CredentialsUpsertRequest
+  | CredentialsDeleteRequest;
 export type Method = "initialize";
 export type ClientName = string;
 export type ClientVersion = string;
@@ -47,6 +57,35 @@ export type SessionId3 = string;
 export type TimeoutSeconds1 = number | null;
 export type Method6 = "shutdown";
 export type Reason = string | null;
+export type Method7 = "models/list";
+export type Method8 = "models/presets";
+export type Method9 = "models/discover";
+export type ApiKey = string;
+export type BaseUrl = string;
+export type Method10 = "models/onboard";
+export type ProviderModelId = string;
+export type ApiKey1 = string;
+export type BaseUrl1 = string;
+export type Nickname = string | null;
+export type Method11 = "models/onboard_batch";
+export type ApiKey2 = string;
+export type BaseUrl2 = string;
+export type ModelIds = string[];
+export type ProviderId = string | null;
+export type ProviderName = string | null;
+export type ActiveModelId = string | null;
+export type SkipProbe = boolean;
+export type Method12 = "models/remove";
+export type Id = string;
+export type Method13 = "models/set_active";
+export type Id1 = string;
+export type Method14 = "models/test_connection";
+export type Id2 = string;
+export type Method15 = "credentials/upsert";
+export type Id3 = string;
+export type ApiKey3 = string;
+export type Method16 = "credentials/delete";
+export type Id4 = string;
 export type ProtocolNotification =
   | MessageDelta
   | ProgressUpdate
@@ -63,47 +102,47 @@ export type ProtocolNotification =
   | RunComplete
   | JobStatusUpdate
   | ServerHeartbeat;
-export type Method7 = "event/message_delta";
+export type Method17 = "event/message_delta";
 export type SessionId4 = string;
 export type Text1 = string;
-export type Method8 = "event/progress";
+export type Method18 = "event/progress";
 export type SessionId5 = string;
 export type Text2 = string;
-export type Method9 = "event/reasoning_snapshot";
+export type Method19 = "event/reasoning_snapshot";
 export type SessionId6 = string;
 export type Text3 = string;
 export type Snapshot = boolean;
-export type Method10 = "event/plan";
+export type Method20 = "event/plan";
 export type SessionId7 = string;
 export type Steps = string[];
-export type Method11 = "event/step";
+export type Method21 = "event/step";
 export type SessionId8 = string;
 export type Index = number;
 export type Total = number;
 export type Text4 = string;
-export type Method12 = "event/task_started";
+export type Method22 = "event/task_started";
 export type SessionId9 = string;
 export type TaskId = string;
 export type Title = string;
-export type Method13 = "event/tool_begin";
+export type Method23 = "event/tool_begin";
 export type SessionId10 = string;
 export type CallId = string;
 export type ToolName = string;
-export type Method14 = "event/tool_end";
+export type Method24 = "event/tool_end";
 export type SessionId11 = string;
 export type CallId1 = string;
 export type Ok = boolean;
 export type Summary = string;
 export type Status = string | null;
-export type Method15 = "event/task_complete";
+export type Method25 = "event/task_complete";
 export type SessionId12 = string;
 export type TaskId1 = string;
 export type Ok1 = boolean;
-export type Method16 = "event/token_usage";
+export type Method26 = "event/token_usage";
 export type SessionId13 = string;
 export type InputTokens = number;
 export type OutputTokens = number;
-export type Method17 = "event/final";
+export type Method27 = "event/final";
 export type SessionId14 = string;
 export type RunId = string;
 export type Text5 = string;
@@ -111,32 +150,32 @@ export type Thinking = string | null;
 export type InputTokens1 = number | null;
 export type OutputTokens1 = number | null;
 export type SessionSchemaVersion = number | null;
-export type Method18 = "event/error";
+export type Method28 = "event/error";
 export type SessionId15 = string;
 export type Message = string;
 export type RunId1 = string | null;
 export type Status1 = ("succeeded" | "failed" | "cancelled" | "timed_out") | null;
-export type Method19 = "event/done";
+export type Method29 = "event/done";
 export type SessionId16 = string;
 export type RunId2 = string;
 export type Status2 = "succeeded" | "failed" | "cancelled" | "timed_out";
-export type Method20 = "event/job_status";
+export type Method30 = "event/job_status";
 export type SessionId17 = string;
 export type JobId = string;
 export type State = "submitted" | "running" | "failed";
-export type Method21 = "event/server_heartbeat";
+export type Method31 = "event/server_heartbeat";
 export type UptimeSeconds = number;
 export type ActiveJobs = number;
 export type Degraded = boolean;
 export type ServerRequestMessage = ApprovalRequest | ApprovalResponse | QuestionRequest | QuestionResponse;
-export type Method22 = "approval/request";
+export type Method32 = "approval/request";
 export type SessionId18 = string;
 export type RequestId = string;
 export type RiskLevel = "READ" | "WRITE" | "DANGER";
 export type Action = string;
 export type RequestId1 = string;
 export type Decision = "approved" | "rejected" | "allow_once" | "always_allow_level";
-export type Method23 = "question/request";
+export type Method33 = "question/request";
 export type SessionId19 = string;
 export type QuestionId = string;
 export type Question = string;
@@ -240,10 +279,120 @@ export interface ShutdownRequest {
   [k: string]: unknown;
 }
 /**
+ * List configured models with provider grouping and Phase 3 limit summary.
+ *
+ * Maps ``models/list``. Response carries ``models``, ``active``, ``recent``.
+ */
+export interface ModelsListRequest {
+  method?: Method7;
+  [k: string]: unknown;
+}
+/**
+ * List provider connection presets (base URL only, no model ids).
+ *
+ * Maps ``models/presets``; the client discovers ids via ``models/discover``.
+ */
+export interface ModelsPresetsRequest {
+  method?: Method8;
+  [k: string]: unknown;
+}
+/**
+ * Probe a provider catalogue with a credential; never persists.
+ *
+ * Maps ``models/discover``. ``api_key`` is never stored or echoed.
+ */
+export interface ModelsDiscoverRequest {
+  method?: Method9;
+  api_key: ApiKey;
+  base_url: BaseUrl;
+  [k: string]: unknown;
+}
+/**
+ * Probe credentials in memory and persist a working model mapping.
+ *
+ * Maps ``models/onboard``. ``api_key`` is stored by the backend
+ * credential_store (Windows DPAPI) and never returned.
+ */
+export interface ModelsOnboardRequest {
+  method?: Method10;
+  provider_model_id: ProviderModelId;
+  api_key: ApiKey1;
+  base_url: BaseUrl1;
+  nickname?: Nickname;
+  [k: string]: unknown;
+}
+/**
+ * Probe + persist multiple models with one credential.
+ *
+ * Maps ``models/onboard_batch``.
+ */
+export interface ModelsOnboardBatchRequest {
+  method?: Method11;
+  api_key: ApiKey2;
+  base_url: BaseUrl2;
+  model_ids: ModelIds;
+  provider_id?: ProviderId;
+  provider_name?: ProviderName;
+  active_model_id?: ActiveModelId;
+  skip_probe?: SkipProbe;
+  [k: string]: unknown;
+}
+/**
+ * Remove a model by config key.
+ *
+ * Maps ``models/remove``.
+ */
+export interface ModelsRemoveRequest {
+  method?: Method12;
+  id: Id;
+  [k: string]: unknown;
+}
+/**
+ * Switch the active model.
+ *
+ * Maps ``models/set_active``.
+ */
+export interface ModelsSetActiveRequest {
+  method?: Method13;
+  id: Id1;
+  [k: string]: unknown;
+}
+/**
+ * Live credential test for an existing model.
+ *
+ * Maps ``models/test_connection``.
+ */
+export interface ModelsTestConnectionRequest {
+  method?: Method14;
+  id: Id2;
+  [k: string]: unknown;
+}
+/**
+ * Store/refresh a model API key (backend DPAPI, never echoed).
+ *
+ * Maps ``credentials/upsert``.
+ */
+export interface CredentialsUpsertRequest {
+  method?: Method15;
+  id: Id3;
+  api_key: ApiKey3;
+  [k: string]: unknown;
+}
+/**
+ * Clear a model's stored API key reference.
+ *
+ * Maps ``credentials/delete``.
+ */
+export interface CredentialsDeleteRequest {
+  method?: Method16;
+  id: Id4;
+  [k: string]: unknown;
+}
+/**
  * SSE ``type: token`` via ``StreamTUI._buffer("token")`` / flush (api_server.py).
  */
 export interface MessageDelta {
-  method?: Method7;
+  method?: Method17;
   session_id: SessionId4;
   text: Text1;
   [k: string]: unknown;
@@ -252,7 +401,7 @@ export interface MessageDelta {
  * SSE ``type: progress`` from ``StreamTUI.write_progress`` (api_server.py).
  */
 export interface ProgressUpdate {
-  method?: Method8;
+  method?: Method18;
   session_id: SessionId5;
   text: Text2;
   [k: string]: unknown;
@@ -261,7 +410,7 @@ export interface ProgressUpdate {
  * SSE ``type: reasoning`` with ``snapshot: true`` from ``StreamTUI._emit_thinking_snapshot`` (api_server.py).
  */
 export interface ReasoningSnapshot {
-  method?: Method9;
+  method?: Method19;
   session_id: SessionId6;
   text: Text3;
   snapshot?: Snapshot;
@@ -271,7 +420,7 @@ export interface ReasoningSnapshot {
  * SSE ``type: plan`` from ``StreamTUI.write_plan`` (api_server.py).
  */
 export interface PlanUpdate {
-  method?: Method10;
+  method?: Method20;
   session_id: SessionId7;
   steps: Steps;
   [k: string]: unknown;
@@ -280,7 +429,7 @@ export interface PlanUpdate {
  * SSE ``type: step`` from ``StreamTUI.write_step`` (api_server.py).
  */
 export interface StepProgress {
-  method?: Method11;
+  method?: Method21;
   session_id: SessionId8;
   index: Index;
   total: Total;
@@ -291,7 +440,7 @@ export interface StepProgress {
  * Structured task boundary for LangGraph runs (future emit from chat worker).
  */
 export interface TaskStarted {
-  method?: Method12;
+  method?: Method22;
   session_id: SessionId9;
   task_id: TaskId;
   title: Title;
@@ -301,7 +450,7 @@ export interface TaskStarted {
  * SSE ``type: tool_call`` from ``StreamTUI.write_tool_call`` (api_server.py).
  */
 export interface ToolBegin {
-  method?: Method13;
+  method?: Method23;
   session_id: SessionId10;
   call_id: CallId;
   tool_name: ToolName;
@@ -315,7 +464,7 @@ export interface Arguments {
  * SSE ``type: tool_result`` from ``StreamTUI.write_tool_result`` (api_server.py).
  */
 export interface ToolEnd {
-  method?: Method14;
+  method?: Method24;
   session_id: SessionId11;
   call_id: CallId1;
   ok: Ok;
@@ -327,7 +476,7 @@ export interface ToolEnd {
  * Structured task completion paired with ``TaskStarted``.
  */
 export interface TaskComplete {
-  method?: Method15;
+  method?: Method25;
   session_id: SessionId12;
   task_id: TaskId1;
   ok: Ok1;
@@ -337,7 +486,7 @@ export interface TaskComplete {
  * Token deltas from chat ``final`` SSE payload fields (api_server.py queue).
  */
 export interface TokenUsage {
-  method?: Method16;
+  method?: Method26;
   session_id: SessionId13;
   input_tokens: InputTokens;
   output_tokens: OutputTokens;
@@ -347,7 +496,7 @@ export interface TokenUsage {
  * SSE ``type: final`` payload in ``/chat/stream`` worker (api_server.py).
  */
 export interface FinalAnswer {
-  method?: Method17;
+  method?: Method27;
   session_id: SessionId14;
   run_id: RunId;
   text: Text5;
@@ -361,7 +510,7 @@ export interface FinalAnswer {
  * SSE ``type: error`` from ``StreamTUI.write_error`` and chat worker (api_server.py).
  */
 export interface ErrorNotification {
-  method?: Method18;
+  method?: Method28;
   session_id: SessionId15;
   message: Message;
   run_id?: RunId1;
@@ -372,7 +521,7 @@ export interface ErrorNotification {
  * SSE ``type: done`` from chat stream teardown (api_server.py).
  */
 export interface RunComplete {
-  method?: Method19;
+  method?: Method29;
   session_id: SessionId16;
   run_id: RunId2;
   status: Status2;
@@ -382,7 +531,7 @@ export interface RunComplete {
  * Background job state for watchdog / appserver (submitted|running|failed).
  */
 export interface JobStatusUpdate {
-  method?: Method20;
+  method?: Method30;
   session_id: SessionId17;
   job_id: JobId;
   state: State;
@@ -392,7 +541,7 @@ export interface JobStatusUpdate {
  * Periodic appserver liveness signal (T4 watchdog).
  */
 export interface ServerHeartbeat {
-  method?: Method21;
+  method?: Method31;
   uptime_seconds: UptimeSeconds;
   active_jobs: ActiveJobs;
   degraded: Degraded;
@@ -402,7 +551,7 @@ export interface ServerHeartbeat {
  * Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.
  */
 export interface ApprovalRequest {
-  method?: Method22;
+  method?: Method32;
   session_id: SessionId18;
   request_id: RequestId;
   risk_level: RiskLevel;
@@ -425,7 +574,7 @@ export interface ApprovalResponse {
  * Maps ``QuestionRequest.to_event()`` in core/question.py.
  */
 export interface QuestionRequest {
-  method?: Method23;
+  method?: Method33;
   session_id: SessionId19;
   question_id: QuestionId;
   question: Question;
