@@ -33,7 +33,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
-    "@rxycode/protocol-client": "file:./protocol-client",
+    "@rxycode/protocol-client": "file:../protocol-client",
     "electron-updater": "^6.8.9"
   },
   "devDependencies": {

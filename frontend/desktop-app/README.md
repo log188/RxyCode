@@ -41,6 +41,34 @@ uses `python -m appserver` from `../RxyCode-master` or `RXYCODE_REPO_DIR`.
 Platform status (D6): Windows is verified on this machine; macOS/Linux
 configs are ready but the build must run on CI / the respective platform.
 
+## Known limitations (Phase 4 MVP)
+
+This is an honest status of what the Phase 4 desktop MVP does NOT do yet.
+The app is usable for chat/streaming/approval/workspace flows; the items
+below are explicitly out of scope or blocked by backend protocol gaps.
+
+1. **Model management / API Key management / Phase 3 limit summary are
+   `BLOCKED_PREREQUISITE` placeholders** in Settings. The appserver JSON-RPC
+   protocol has no model/credential management methods and the desktop app
+   honors DC1 (protocol-client only), so these panels cannot be wired without
+   backend protocol additions. Configure models and keys in the backend
+   (config.yaml / HTTP API) instead.
+2. **No subagent UI yet**: the desktop shell does not consume Phase B
+   subagent events (`child_session/*`), `@agent` mention, `/children`,
+   `/child`, `/parent` or `agent/invoke`. The OpenTUI frontend has those;
+   desktop will pick them up in a follow-up.
+3. **macOS / Linux packages are not yet verified on real machines**; CI
+   matrix jobs are configured but must run (Linux snap needs snapcraft,
+   macOS unsigned builds need `CSC_IDENTITY_AUTO_DISCOVERY=false`).
+4. **Orphan-guard scripts are skipped inside packaged asar builds**; the
+   dev/unpacked paths are covered. Production-package process cleanup still
+   needs a packaged-app verification (D6 follow-up).
+5. **API Key storage**: when credential management lands it must use the OS
+   keychain (DC4), not renderer localStorage.
+6. **Protocol client**: the desktop app depends on the shared
+   `frontend/protocol-client` package (single source of truth); schema
+   changes regenerate both OpenTUI and desktop types.
+
 Smoke mode runs with `RXYCODE_DESKTOP_SMOKE=1` and
 `RXYCODE_APPSERVER_STUB=1`, so it never touches the LLM or user config.
 

@@ -21,11 +21,12 @@ test('root package-lock.json name matches package.json', () => {
   assert.equal(lock.packagesName, pkg.name)
 })
 
-test('protocol-client package-lock.json name matches its package.json', () => {
+test('shared protocol-client package-lock.json name matches its package.json', () => {
+  const rootProtocolClient = join(appRoot, '..', 'protocol-client')
   const pkg = JSON.parse(
-    readFileSync(join(appRoot, 'protocol-client', 'package.json'), 'utf8')
+    readFileSync(join(rootProtocolClient, 'package.json'), 'utf8')
   ) as { name: string }
-  const lock = lockRootName(join(appRoot, 'protocol-client', 'package-lock.json'))
+  const lock = lockRootName(join(rootProtocolClient, 'package-lock.json'))
   assert.equal(lock.name, pkg.name)
   assert.equal(lock.packagesName, pkg.name)
 })
