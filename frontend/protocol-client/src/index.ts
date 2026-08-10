@@ -9,12 +9,19 @@ export {
 
 export type {
   ApprovalRequest,
+  ApprovalResponse,
   ClientRequest,
+  ErrorNotification,
   FinalAnswer,
   InitializeRequest,
+  InterruptRequest,
+  JobStatusUpdate,
   MessageDelta,
   PromptRequest,
   ProtocolNotification,
+  RunComplete,
+  ToolBegin,
+  ToolEnd,
 } from "./generated/types.ts";
 
 /* Phase B: subagent protocol types */
