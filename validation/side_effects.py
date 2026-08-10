@@ -125,6 +125,10 @@ def task_requires_side_effect_evidence(
             return True
 
     request = "\n".join((title, description, requirement)).strip()
+    # Routing directives alter execution strategy, not user intent.  Strip
+    # one leading directive so an anchored read-only request such as
+    # ``/fast Review ...`` retains its explanatory classification.
+    request = re.sub(r"^\s*/(?:fast|full|pipeline)\b\s*", "", request, count=1, flags=re.IGNORECASE)
     # 锚定解释意图（请求以解释/总结词开头）：即使提到修复/重构话题也是只读
     anchored_explanation = bool(_EXPLANATION_RE.search(request))
     # 中段显式请求短语（请总结/总结一下/搜索…总结）：覆盖 ACTION+ARTIFACT

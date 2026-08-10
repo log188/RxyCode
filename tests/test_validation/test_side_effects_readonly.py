@@ -41,6 +41,17 @@ def test_explicit_read_only_tool_sequence_is_not_a_side_effect_request():
     ) is False
 
 
+def test_fast_directive_does_not_hide_an_anchored_read_only_review():
+    assert task_requires_side_effect_evidence(
+        title=(
+            "/fast Review this read-only module. Use glob, grep and read only; "
+            "do not call bash, write, shell or web. Return evidence and risks."
+        ),
+        result="",
+        effect="auto",
+    ) is False
+
+
 def test_declared_search_effect_is_exempt():
     """显式声明 effect=search（_NON_SIDE_EFFECT_EFFECTS）直接豁免。"""
     assert task_requires_side_effect_evidence(
