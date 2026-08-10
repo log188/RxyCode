@@ -239,3 +239,41 @@ test('fake appserver approval round trip resolves an approved decision', async (
     await delay(300)
   }
 })
+
+test('fake appserver preserves an asynchronously resolved approval decision', async () => {
+  const { child, client } = startFakeAppserver()
+  const toolEnds: Array<{ ok?: boolean }> = []
+  client.onNotification = (method, params) => {
+    if (method === 'event/tool_end') toolEnds.push(params as { ok?: boolean })
+  }
+  client.onServerRequest = async (method, params) => {
+    assert.equal(method, 'approval/request')
+    const request = params as { request_id: string }
+    // This mirrors the desktop UI: the callback remains pending while the
+    // user reads the dialog, then resolves after an explicit decision.
+    await delay(80)
+    return { request_id: request.request_id, decision: 'approved' }
+  }
+  try {
+    await client.requestWithTimeout('initialize', {
+      client_name: 'rxycode-desktop-test',
+      client_version: '0.0.0-test',
+      protocol_version: '1.0.0',
+      capabilities: {}
+    })
+    const created = await client.requestWithTimeout<{ session_id: string }>('session/new', {
+      workspace_root: appRoot
+    })
+    const result = await client.requestWithTimeout<StubPromptResult>(
+      'session/prompt',
+      { session_id: created.session_id, text: 'approval demo' },
+      30_000
+    )
+    assert.equal(result.status, 'succeeded')
+    assert.ok(toolEnds.some((event) => event.ok === true), 'approved action must finish successfully')
+  } finally {
+    client.rejectAllPending(new Error('test teardown'))
+    child.kill()
+    await delay(300)
+  }
+})

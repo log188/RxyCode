@@ -24,6 +24,7 @@
     "screenshot:d3": "node scripts/screenshot.mts",
     "screenshot:d4": "node scripts/approval-screenshot.mts",
     "screenshot:d5": "node scripts/settings-screenshot.mts",
+    "stress:desktop": "node scripts/desktop-stress.mts",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && npm run runtime:prepare && electron-builder --dir",
     "build:win": "npm run build && npm run runtime:prepare && electron-builder --win",

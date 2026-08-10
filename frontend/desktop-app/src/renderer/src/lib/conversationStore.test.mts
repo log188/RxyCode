@@ -43,6 +43,18 @@ test('addSession adds a session and activates the first one', () => {
   assert.equal(state.messagesBySession['s1']?.length, 0)
 })
 
+test('addSession activates a newly created session', () => {
+  const first = addSession(createInitialState(), {
+    sessionId: 's1',
+    workspaceRoot: WORKSPACE
+  })
+  const state = addSession(first, {
+    sessionId: 's2',
+    workspaceRoot: WORKSPACE
+  })
+  assert.equal(state.activeSessionId, 's2')
+})
+
 test('addSession uses a Chinese default title prefixed with 会话', () => {
   const state = addSession(createInitialState(), {
     sessionId: 'abc12345',

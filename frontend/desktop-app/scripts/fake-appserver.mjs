@@ -54,6 +54,50 @@ function sendServerRequest(method, params) {
 
 const sleep = (ms) => new Promise((resolveWait) => setTimeout(resolveWait, ms))
 
+const STRESS_TOOL_CATALOG = [
+  ['glob', 'matched 8 project files'],
+  ['grep', 'found 3 relevant call sites'],
+  ['read', 'read 2,184 bytes'],
+  ['skill', 'loaded coding-workflow instructions'],
+  ['mcp__workspace__search', 'MCP workspace search returned 4 records'],
+  ['websearch', 'collected 3 source summaries'],
+  ['bash', 'verification command exited 0'],
+  ['write', 'wrote validated workspace artifact'],
+  ['git', 'working tree inspected']
+]
+
+async function runStressPrompt(requestId, sessionId, text) {
+  const runId = `stress-${++sessionCounter}`
+  const match = text.match(/\[DTS-(\d{2})\]/)
+  const index = Number(match?.[1] ?? 0)
+  const tools = [0, 1, 2].map((offset) => STRESS_TOOL_CATALOG[(index + offset) % STRESS_TOOL_CATALOG.length])
+  notify('event/message_delta', {
+    session_id: sessionId,
+    text: `正在执行真实业务场景 DTS-${String(index).padStart(2, '0')}：分析、调用工具并验证结果。`
+  })
+  for (const [toolName, summary] of tools) {
+    const callId = `stress-${runId}-${toolName}`
+    notify('event/tool_begin', {
+      session_id: sessionId,
+      call_id: callId,
+      tool_name: toolName,
+      arguments: { scenario: index, source: 'desktop-stress' }
+    })
+    await sleep(160)
+    notify('event/tool_end', {
+      session_id: sessionId,
+      call_id: callId,
+      ok: true,
+      summary,
+      status: 'succeeded'
+    })
+  }
+  const answer = `DTS-${String(index).padStart(2, '0')} 已完成：已分析上下文、执行 ${tools.length} 项工具操作并验证结果。`
+  notify('event/final', { session_id: sessionId, run_id: runId, text: answer })
+  notify('event/done', { session_id: sessionId, run_id: runId, status: 'succeeded' })
+  respond(requestId, { run_id: runId, status: 'succeeded', text: answer })
+}
+
 async function runApprovalPrompt(requestId, sessionId, text) {
   const runId = `demo-${++sessionCounter}`
   const isReject = text.includes('reject')
@@ -194,7 +238,10 @@ async function runPrompt(requestId, sessionId, text) {
     return
   }
 
-  if (text.startsWith('slow')) {
+  if (text.includes('slow demo')) {
+    // Register before the first streamed event: the UI may let a user press
+    // Stop as soon as the running tool card appears.
+    pendingPrompts.set(requestId, { sessionId, runId })
     notify('event/message_delta', {
       method: 'event/message_delta',
       session_id: sessionId,
@@ -214,7 +261,11 @@ async function runPrompt(requestId, sessionId, text) {
       session_id: sessionId,
       text: '正在深入分析…'
     })
-    pendingPrompts.set(requestId, { sessionId, runId })
+    return
+  }
+
+  if (text.includes('[DTS-')) {
+    await runStressPrompt(requestId, sessionId, text)
     return
   }
 

@@ -130,7 +130,7 @@ export function addSession(state: ConversationState, input: NewSessionInput): Co
   return {
     ...state,
     sessions: [...state.sessions, session],
-    activeSessionId: state.activeSessionId ?? session.sessionId,
+    activeSessionId: session.sessionId,
     messagesBySession: { ...state.messagesBySession, [session.sessionId]: [] },
     runningBySession: { ...state.runningBySession, [session.sessionId]: false },
     errorBySession: { ...state.errorBySession, [session.sessionId]: null }

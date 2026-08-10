@@ -246,7 +246,7 @@ async function main(): Promise<void> {
     console.log('SCREENSHOT_STEP save-rule')
     await evaluate(`document.querySelector('.save-rule').click()`)
     await waitForSelectorGone('.approval-dialog', 20_000, 'approval resolved')
-    await waitForSelector('body:not(:has(.running-indicator))', 30_000, 'approval demo finished')
+    await waitForSelector('.tool-card.ok', 30_000, 'first approved action completed')
 
     // 04: persisted rule list
     console.log('SCREENSHOT_STEP 04-rules-list')
@@ -266,7 +266,12 @@ async function main(): Promise<void> {
     await waitForSelector('.approval-dialog .approval-submitting', 5_000, 'submitting state')
     await capture(join(outDir, '05-approval-submitting.png'))
     await waitForSelectorGone('.approval-dialog', 20_000, 'approval resolved')
-    await waitForSelector('body:not(:has(.running-indicator))', 30_000, 'run finished')
+    await waitFor(
+      async () =>
+        (await evaluate(`document.querySelectorAll('.tool-card.ok').length`)) === 2 ? true : null,
+      30_000,
+      'second approved action completed'
+    )
 
     // 06: connection lost while an approval is pending -> error state
     console.log('SCREENSHOT_STEP 06-approval-error')
@@ -275,6 +280,12 @@ async function main(): Promise<void> {
     await waitForSelector('.approval-dialog', 20_000, 'third approval modal shown')
     await evaluate(`document.querySelector('.appserver-stop').click()`)
     await waitForSelector('.approval-dialog.error', 15_000, 'approval error state')
+    const approvalErrorText = await evaluate(
+      `document.querySelector('.approval-error-message')?.textContent?.trim() ?? ''`
+    )
+    if (approvalErrorText !== 'appserver not running') {
+      throw new Error(`unexpected approval disconnect message: ${String(approvalErrorText)}`)
+    }
     await capture(join(outDir, '06-approval-error.png'))
     await evaluate(`document.querySelector('.approval-dismiss').click()`)
     await waitForSelectorGone('.approval-dialog', 10_000, 'error modal dismissed')

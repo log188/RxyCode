@@ -161,8 +161,19 @@ def _strip_redundant_output_prefix(relative: Path, output_dir: Path) -> Path:
 
 
 def resolve_write_path(value: str | os.PathLike[str]) -> Path:
-    """Keep existing targets in place and redirect every new file to output."""
+    """Resolve writes to the selected workspace, preserving CLI output fallback."""
     path = Path(value).expanduser()
+
+    # Write resolution deliberately differs from read resolution.  Reads may
+    # find a historical artifact in ``output/<date>/`` for backwards
+    # compatibility, but a new relative write named ``cache.py`` must never
+    # be hijacked by an unrelated historical ``output/.../cache.py``.
+    if (
+        not path.is_absolute()
+        and (not path.parts or path.parts[0].lower() != "output")
+    ):
+        return (current_working_directory() / path).resolve()
+
     session_path = resolve_session_path(path)
     if session_path.exists():
         return session_path

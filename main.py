@@ -570,7 +570,29 @@ def _resolve_model_label(model):
     return "default"
 
 
-@click.group(invoke_without_command=True)
+class _CaseInsensitiveCommandGroup(click.Group):
+    """Resolve registered subcommands without changing option values.
+
+    Click's global token normalization would also affect values such as model
+    identifiers and user-provided paths.  Restrict normalization to the
+    command lookup so ``rxycode GUI`` is equivalent to ``rxycode gui`` while
+    every option value continues to be passed through verbatim.
+    """
+
+    def get_command(self, ctx, cmd_name):
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            return command
+        normalized = cmd_name.casefold()
+        matches = [
+            candidate
+            for name, candidate in self.commands.items()
+            if name.casefold() == normalized
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+
+@click.group(cls=_CaseInsensitiveCommandGroup, invoke_without_command=True)
 @click.pass_context
 @click.option("--model", "-m", default=None, help="Model name to use")
 @click.option("--api", is_flag=True, default=False, help="Start API server only")

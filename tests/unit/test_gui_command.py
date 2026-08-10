@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import click
 import pytest
+from click.testing import CliRunner
 
 from RxyCode.RxyCode1_1_0 import main
 
@@ -70,4 +71,25 @@ def test_gui_falls_back_to_dev_without_packaged_build(monkeypatch, tmp_path):
     # Invoke the underlying command callback (the click-wrapped object is a
     # Command instance; its .callback is the plain function).
     main.gui.callback(desktop_dir=str(tmp_path / "missing"))
+    assert spawned and spawned[0][-2:] == ["run", "dev"]
+
+
+@pytest.mark.parametrize("command", ["GUI", "Gui", "gUi"])
+def test_gui_subcommand_is_case_insensitive(monkeypatch, command):
+    """Desktop launch aliases must not alter option values or command behavior."""
+    import subprocess
+
+    spawned: list[list[str]] = []
+
+    def _fake_popen(cmd, **kwargs):
+        spawned.append(cmd)
+        return type("P", (), {"wait": lambda self: 0, "terminate": lambda self: None})()
+
+    monkeypatch.setattr(main, "_resolve_desktop_executable", lambda d=None: None)
+    monkeypatch.setattr(main, "_npm_executable", lambda: "/fake/npm")
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+
+    result = CliRunner().invoke(main.cli, [command])
+
+    assert result.exit_code == 0, result.output
     assert spawned and spawned[0][-2:] == ["run", "dev"]

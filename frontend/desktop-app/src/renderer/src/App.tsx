@@ -30,9 +30,7 @@ function App(): React.JSX.Element {
   const pendingApproval = conversation.state.approvals[0] ?? null
   const effectiveWorkspace = effectiveWorkspaceRoot(workspaceSettings, info?.repoRoot ?? '')
   const models = useModels({
-    platform,
-    info,
-    status,
+    client: conversation.protocolClient,
     refreshKey: settingsOpen ? 1 : 0
   })
 

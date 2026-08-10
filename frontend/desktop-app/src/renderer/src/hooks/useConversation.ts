@@ -8,7 +8,12 @@
  * "running", and torn down when it leaves that state.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ApprovalRequest, ApprovalResponse, InterruptRequest } from '@rxycode/protocol-client'
+import type {
+  ApprovalRequest,
+  ApprovalResponse,
+  InterruptRequest,
+  ProtocolClient
+} from '@rxycode/protocol-client'
 import {
   addApprovalRequest,
   addSession,
@@ -44,6 +49,7 @@ import {
 export interface UseConversationResult {
   state: ConversationState
   connectionError: string | null
+  protocolClient: ProtocolClient | null
   approvalRules: ApprovalRule[]
   createSession: () => Promise<void>
   selectSession: (sessionId: string) => void
@@ -67,6 +73,7 @@ export function useConversation(
 ): UseConversationResult {
   const [state, setState] = useState<ConversationState>(createInitialState)
   const [connectionError, setConnectionError] = useState<string | null>(null)
+  const [protocolClient, setProtocolClient] = useState<ProtocolClient | null>(null)
   const [approvalRules, setApprovalRules] = useState<ApprovalRule[]>(() =>
     loadApprovalRules(window.localStorage)
   )
@@ -199,7 +206,11 @@ export function useConversation(
     if (status === 'running' && info !== null) {
       void connection
         .attach(info)
-        .then(() => setConnectionError(null))
+        .then(() => {
+          if (connectionRef.current !== connection) return
+          setProtocolClient(connection.client)
+          setConnectionError(null)
+        })
         .catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error)
           console.error('initialize failed', error)
@@ -207,9 +218,19 @@ export function useConversation(
         })
     } else {
       connection.detach('appserver not running')
+      setProtocolClient(null)
       queueMicrotask(() => setConnectionError(null))
     }
   }, [platform, info, status, handleNotification, handleServerRequest, handleServerRequestAborted])
+
+  // The status effect above supplies user-facing detach reasons. Only the
+  // actual component unmount needs an additional transport cleanup.
+  useEffect(() => {
+    return () => {
+      connectionRef.current?.detach('conversation unmounted')
+      connectionRef.current = null
+    }
+  }, [])
 
   const createSession = useCallback(async (): Promise<void> => {
     const client = connectionRef.current?.client
@@ -277,6 +298,7 @@ export function useConversation(
   return {
     state,
     connectionError,
+    protocolClient,
     approvalRules,
     createSession,
     selectSession,
