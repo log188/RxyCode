@@ -9,8 +9,11 @@ Shared utilities used across the codebase: backend event output, streaming state
 | streaming.py | TokenStats singleton, terminal output helpers, status bar formatting |
 | tui.py | Non-interactive backend output adapter and `get_tui()` / `set_tui()` event sink access |
 | i18n.py | Internationalization: zh/en language support |
-| shell.py | Shell detection and desktop path resolution |
+| shell.py | `ShellExecutor` - cross-platform command execution with enforceable sandbox policies (workspace/docker/host modes, process-tree cleanup, timeout/cancellation) |
 | queue.py | QueueManager: persistent task queue |
+| safe_http.py | Pinned public HTTP client: `validate_public_url` / `is_public_address` / `fetch_public_response` / `safe_url_label`, `UnsafeUrlError`, `ResponseTooLargeError` (used by webfetch/file_download) |
+| atomic_file.py | `atomic_write_text` - atomic same-directory temp write + fsync + rename (used by write/edit/memory/task/queue) |
+| user_facing_errors.py | `to_user_facing_error` + `MSG_*` zh/error mapping for terminal messages |
 
 ## Core Code: streaming.py
 

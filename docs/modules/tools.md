@@ -22,14 +22,16 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 | git_tool.py | GitTool - git operations (status, diff, commit, etc.) |
 | webfetch.py | WebFetchTool - fetch URL content with size limits |
 | websearch.py | WebSearchTool - web search (free, no API key; DDGS official metasearch + multi-engine fallback) |
-| file_download.py | FileDownloadTool - download files from URLs to ~/.rxycode/output/ |
-| download_tool.py | DownloadTool - download skills/MCP servers from GitHub |
+| file_download.py | FileDownloadTool - download files from URLs to ~/.RxyCode/output/ |
+| download_tool.py | `download_skill` / `download_mcp` module-level functions + `download_skill_tool` / `download_mcp_tool` (DANGER risk) |
 | open_file.py | OpenFileTool - open allowlisted preview files with the host default application |
 | vision.py | VisionTool - image analysis using multimodal LLM |
-| agent_tool.py | AgentTool - delegate tasks to sub-agents |
-| task_tool.py | TaskTool - task queue management |
+| agent_tool.py | AgentTool - **DEPRECATED**: legacy sub-agent tool; raises `LEGACY_SUBAGENT_DEPRECATED_MSG` when subagents are enabled. Use `task` (subagent dispatch) or `@agent` mention instead |
+| subagent_task_tool.py | `task` tool - the isolated subagent dispatch entry (via `ChildSessionManager`) when `subagents_enabled` |
+| task_manage.py | `task_manage` tool - task-list management (legacy `task` when subagents disabled) |
+| agent_invoke.py | `@agent` mention parsing + dispatch (`parse_mention` / `invoke_mention` / `list_mentionable_agents`) |
 | memory_tool.py | MemoryTool - interact with the memory system |
-| history_tool.py | HistoryTool - access command/chat history |
+| history_tool.py | HistoryTool - access memory/session history |
 | datetime_tool.py | DateTimeTool - current date/time queries |
 | diagnostics.py | DiagnosticsTool - system diagnostics and health checks |
 | format_tool.py | FormatTool - code formatting |
@@ -38,11 +40,12 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 | view.py | ViewTool - view file with syntax highlighting |
 | ls.py | LsTool - list directory contents |
 | patch.py | PatchTool - apply unified diff patches |
-| skill_manager.py | SkillManager - install/list/remove skills from GitHub |
+| skill_manager.py | `find_and_download_skill` / `install_skill_from_url` / `remove_skill` / `list_installed_skills` / `search_github_skills` (module-level functions) |
 | skill_tool.py | SkillTool - execute installed skills |
-| mcp_manager.py | MCPManager - manage MCP server connections |
+| mcp_manager.py | `add_mcp_server` / `remove_mcp_server` / `list_mcp_servers` / `install_mcp_from_npm` / `install_mcp_from_pip` (module-level functions) |
 | workflow_tool.py | WorkflowTool - multi-step workflow execution |
-| installer.py | InstallerTool - install packages (npm, pip, etc.) |
+| installer.py | ToolInstaller - install packages (npm, pip, etc.) |
+| vision_capture.py | Screen/window capture for the vision tool |
 
 `agent_tool.py` exposes a native async coroutine so cancellation reaches its
 child Agent without a worker thread. Inline Python in `workflow_tool.py` is
@@ -99,8 +102,11 @@ them as successful mutations. Outer task cancellation propagates to the
 controlled executor and waits for process-tree cleanup before unwinding.
 
 ## Tool Registration Flow
-1. AgentV2._register_tools() creates all tool instances
-2. Each tool is registered with ToolOrchestrator
+1. `core/builtin_tool_registration.register_builtin_tools(registry, orchestrator, ...)`
+   creates and registers all built-in tools (called by AgentV2._register_tools())
+2. When `subagents_enabled` is on, the `task` name is the isolated subagent
+   dispatch tool and the task-list tool registers as `task_manage`; exactly one
+   tool owns the `task` name
 3. Tools are bound to the LLM via bind_tools() for automatic tool calling
 4. UsageTrackingLLM.re-wraps bind_tools() to maintain token tracking
 
@@ -108,11 +114,11 @@ controlled executor and waits for process-tree cleanup before unwinding.
 Every tool carries a static risk level in `core/safety/policy.py`
 `TOOL_RISK_TABLE` (READ/WRITE/DANGER, default WRITE for unknown tools):
 - READ: read, view, grep, glob, ls, webfetch, websearch, datetime, history,
-  diagnostics, vision, question, and read-only composite operations
-- WRITE: write, edit, patch, open_file, bash, format, change_directory, download_*,
-  file_download
-- DANGER: installer, git, and workflow `run` (bash escalates to DANGER
-  per-command via `classify_bash_command`)
+  diagnostics, vision, question, skill, and read-only composite operations
+- WRITE: write, edit, patch, open_file, bash, format, change_directory,
+  memory, task, file_download
+- DANGER: installer, git, workflow `run`, **download_skill, download_mcp**
+  (bash escalates to DANGER per-command via `classify_bash_command`)
 
 All calls go through the safety gate in
 `execution/tool_orchestrator.py::execute_tool` — see
@@ -158,7 +164,7 @@ through the broker (SSE approval_request in API mode) instead of raw
 
 ### FileDownloadTool (file_download.py)
 - Downloads files from public HTTP/HTTPS URLs
-- Default save location: ~/.rxycode/output/ (configurable)
+- Default save location: ~/.RxyCode/output/ (configurable)
 - A relative `save_path` is resolved against the persisted working directory
   of the current session, without changing process-global cwd
 - Successful `Saved to:` output is converted at the orchestrator boundary into

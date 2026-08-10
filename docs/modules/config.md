@@ -9,6 +9,10 @@ Manages all RxyCode configuration: model settings, API keys, active model select
 | settings.py | Core config functions: load_config(), save_config(), get_data_dir(), get_output_dir() |
 | credential_store.py | Atomic owner-only credential storage; DPAPI protection on Windows |
 | model_manager.py | Model CRUD plus persisted and unsaved connection probes |
+| model_catalog.py + model_catalog.json | Static model catalog (nickname/provider/model mapping) with `catalog_max_age_days` staleness handling |
+| model_limits.py | Output-limit resolution (`unknown_model_max_tokens=32768`, `context_safety_margin_tokens`, `resolve_max_tokens`) |
+| model_capabilities.py | `ModelCapabilities`/`UsageFieldMap`/`ModelPricing` dataclasses consumed by every provider |
+| agents/ | Built-in subagent definition files (`explore.json`, `general.json`, `reviewer.md`, `scout.yaml`) loaded by `core/subagents/config_loader.py` |
 
 `add_model()` accepts optional `provider_id` and `provider_name` metadata for
 grouping in `/model`. `onboard_models_batch()` adds multiple models in one pass;
@@ -39,19 +43,32 @@ entry behind. `test_model_connection()` remains the persisted-model wrapper.
   `RXYCODE_ALLOWED_ORIGINS` (comma-separated).
 
 ## Default Config Structure
-- models: dict of model_name -> {api_key_env or api_key_secret, base_url, model_name}
+- models: dict of model_name -> {api_key_env or api_key_secret, base_url, model_name, ...capability overrides}
 - active_model: str
 - language: zh or en
-- memory: {short_term_window, long_term_threshold}
+- memory: {short_term_window, long_term_threshold, vector_experience_enabled, rag_enabled}
 - cache: {enabled, prompt_prefix_cache, ttl}
 - mcpServers: dict of server configs
 - scheduler: {enabled, check_interval}
-- execution: {parallel_enabled, max_parallel, tool_timeout_seconds, pipeline_soft_budget_seconds, task_stall_timeout_seconds, task_max_time_seconds, heartbeat_interval_seconds}. `tool_timeout_seconds` defaults to `1800`, `task_stall_timeout_seconds` defaults to `0`, and `task_max_time_seconds` defaults to `7200`. A legitimate silent task is therefore not killed at 600 seconds, while explicit tool and total-task ceilings still apply.
+- governance: {rate_limit: {rpm, tpm, burst, wait_timeout_seconds, reserved_output_tokens}, model_routes}
+- model_limits: {unknown_model_max_tokens, context_safety_margin_tokens}
+- safety: {enabled, permission_mode (full_auto/auto_edit/confirm_all), auto_approve, approval_timeout, allowed_write_paths, dry_run}
+- context: {token_limit, compression thresholds}
+- observability: {trajectory_retention_runs, trace_retention_runs, audit_max_bytes}
+- lifecycle: {hook_timeout_seconds}
+- pricing: per-model $/M token prices (for billing display)
+- recovery: error-recovery policy defaults
+- lsp: {enabled, servers}
+- autoCompact: {enabled, threshold}
+- rag: {index_delay_seconds, retrieval settings}
+- evals: eval harness defaults
+- execution: {parallel_enabled, max_parallel, max_graph_steps, max_tool_rounds, max_replan_rounds, tool_timeout_seconds, pipeline_soft_budget_seconds, task_stall_timeout_seconds, task_max_time_seconds, heartbeat_interval_seconds, checkpoint_enabled, checkpoint_retention, tool_journal_enabled, tool_journal_retention, tool_journal_max_result_chars, sandbox_mode, workspace_root, docker_image, docker_network, max_memory_mb, max_cpus, max_processes, tool_retry_max_attempts, tool_retry_backoff}. `tool_timeout_seconds` defaults to `1800`, `task_stall_timeout_seconds` defaults to `0`, `task_max_time_seconds` defaults to `7200`, `max_tool_rounds` defaults to `10`, `max_replan_rounds` defaults to `8`. A legitimate silent task is therefore not killed at 600 seconds, while explicit tool and total-task ceilings still apply.
 
 `execution.tool_timeout_seconds` is the unified per-tool wall-clock deadline
 used by fast-path, graph, and workflow calls. Setting it to `0` explicitly
 disables that layer; explicit task cancellation still propagates regardless of
-this setting.
+this setting. `sandbox_mode` is `workspace` by default (`host`/`workspace`/
+`docker`), enforced by `utils/shell.py` `ShellExecutor`.
 
 ## Model Entry Fields
 

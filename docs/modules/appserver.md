@@ -27,6 +27,7 @@ messages to **stdout**, and sends all logs to **stderr** only.
 | `bootstrap.py` | AgentV2 initialization (or stub in tests); `workspace_root` chdir |
 | `stub.py` | Deterministic agent when `RXYCODE_APPSERVER_STUB=1` |
 | `emitter.py` | pydantic notification -> JSON-RPC notification |
+| `subagent_routes.py` | Subagent JSON-RPC methods (`agent/invoke`, `task/start`, `subagents/list`, `subagents/capability`) |
 
 ## Request flow
 
@@ -60,6 +61,12 @@ Each session gets its own **agent worker subprocess**. Prompt/bootstrap timeouts
 | `session/new` | create workspace-bound session (`workspace_root` passed to worker) |
 | `session/prompt` | one user turn via worker `Session` (supports `timeout_seconds`) |
 | `session/interrupt` | worker `Session.interrupt` |
+| `session/set_thinking_expanded` | toggle expanded thinking rendering |
+| `session/warm` | pre-warm a session |
+| `agent/invoke` | user `@agent` mention dispatch (server.py:536-552) |
+| `task/start` | explicit subagent task dispatch |
+| `subagents/list` | list registered agent definitions |
+| `subagents/capability` | subagent feature flags + capability report |
 | `shutdown` | graceful exit (cancels heartbeat, kills workers) |
 
 When the watchdog marks the server **degraded**, new `session/prompt` calls return
@@ -91,5 +98,5 @@ python -m ruff check appserver
 
 ## Dependencies
 
-- **Uses**: `core/session.py`, `core/safety/approval.py`, `protocol/*`
+- **Uses**: `core/session.py`, `core/safety/approval.py`, `protocol/*` (incl. `protocol/subagents.py`), `core/subagents/` (via subagent routes)
 - **Consumers**: OpenTUI stdio transport (P5), Desktop shell (Phase 3)

@@ -26,20 +26,18 @@ Handles errors during task execution with retry logic and error summarization.
 **Error Classification (ErrorKind / classify_error):**
 - TRANSIENT: network blips, timeouts, connection errors, HTTP 429 / 5xx
   (httpx + openai SDK exceptions mapped; status semantics adapted from
-  config/model_manager.py:8-21)
+  config/model_manager.py:50-60)
 - PERMANENT: logic / parse / validation errors, HTTP 4xx (except 429)
 - Unknown errors default to PERMANENT (conservative: no blind retries)
 
 **Backoff (retry_with_backoff):**
 - Adapted from tenacity: TRANSIENT errors retried with
   wait_exponential_jitter(initial=2, max=30) + stop_after_attempt(3)
+  (`retry_with_backoff(..., wait_multiplier=2, max_attempts=3)`)
 - PERMANENT errors propagate immediately without consuming attempts
-
-**Retry Logic:**
-- Tool execution errors: retry with same parameters
-- LLM errors: retry with simplified prompt
-- Timeout errors: retry with increased timeout
-- Max 3 retries per task before giving up
+- Applies to READ-level tool invocations in ToolOrchestrator; task-level
+  recovery (`handle_error`) marks tasks PENDING/CANCELLED rather than rewriting
+  prompts
 
 ## Core Code: circuit_breaker.py (LLMCircuitBreaker)
 
@@ -52,6 +50,8 @@ Handles errors during task execution with retry logic and error summarization.
   path, graph nodes and sub-agents share one process-wide breaker
 - While open, UsageTrackingLLM returns a "服务暂时不可用" message instead of
   raising (honest hint, no cascade)
-- astream only guards stream *establishment* through the breaker so token
-  streaming is not buffered
+- astream and `_raw_stream` only guard stream *establishment* through the
+  breaker so token streaming is not buffered
 - Config switch: recovery.circuit_breaker_enabled (default true)
+- Helpers: `get_default_breaker()` / `reset_breakers()` /
+  `SERVICE_UNAVAILABLE_MESSAGE`

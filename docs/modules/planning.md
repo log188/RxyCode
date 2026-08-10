@@ -8,13 +8,15 @@ Decomposes complex user requests into structured task trees. Uses LLM-based hier
 |------|---------|
 | decomposer.py | HierarchicalDecomposer - breaks tasks into subtask trees |
 | goal_planner.py | GoalPlanner - high-level goal analysis and planning |
+| structured_output.py | `invoke_structured_output` / `parse_structured_output` - shared structured-output layer for plan/decompose/validate/replan/reflect/synthesize |
 
 ## Core Code: decomposer.py
 
 **Classes:**
 - SubTask(BaseModel): Individual subtask with description, tools_hint,
-  dependencies, and a `TaskEffect`
-- SubTaskList(BaseModel): List of subtasks returned by LLM
+  `requirement`, `depends_on_index` (dependency index), `is_atomic`, and a `TaskEffect`
+- SubTaskList(BaseModel): List of subtasks returned by LLM, with `max_length=5`
+  and cycle-dependency validation
 - HierarchicalDecomposer: Recursive task decomposition
 
 `TaskEffect` is persisted on every `TaskNode`: `read` restricts executor tool
@@ -38,11 +40,15 @@ bypass.
 - Simple tasks (single tool, clear description) become leaf nodes
 - Complex tasks (multiple steps, dependencies) are decomposed further
 - Max depth: 4 levels to prevent infinite recursion
+- Node budget: `DEFAULT_MAX_PLAN_NODES = 64`; dependency-closure selection via
+  `select_task_indices_within_budget`
 
 ## Core Code: goal_planner.py
 
 **Purpose:** High-level goal analysis before decomposition.
 
 **Key Methods:**
-- plan(user_input, memory_context) -> dict: Analyze user intent and suggest approach
-- Returns: {goal, approach, estimated_complexity, suggested_mode}
+- plan(user_input, memory_context) -> tuple[GoalResult, TaskTree]: Analyze user
+  intent and produce a structured goal plus the decomposed tree
+- `GoalResult` fields: `goal`, `constraints`, `output_format`, `effect`
+- Falls back to a deterministic plan on `StructuredOutputError`
