@@ -11,6 +11,7 @@ B9 · Implements the permission model:
 
 from __future__ import annotations
 
+import fnmatch
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -44,8 +45,6 @@ def _matches(pattern: str, value: str, *, path_mode: bool = False) -> bool:
     Otherwise plain fnmatch is used on the whole string (commands, URLs,
     agent ids) — fnmatch ``*`` already crosses ``/`` in those contexts.
     """
-    import fnmatch
-
     if pattern == "**" or pattern == "*":
         return True
     if pattern == value:
@@ -61,8 +60,6 @@ def _matches(pattern: str, value: str, *, path_mode: bool = False) -> bool:
 
 def _match_segments(pat_segs: tuple[str, ...], val_segs: tuple[str, ...]) -> bool:
     """Recursive segment matcher with ``**`` support."""
-    import fnmatch
-
     if not pat_segs:
         return not val_segs
 

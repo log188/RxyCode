@@ -26,12 +26,22 @@ from uuid import uuid4
 
 from protocol.subagents import (
     AgentDefinition,
+    ChildStatus,
+    ErrorRecord,
     PermissionSpec,
     TaskResult,
+    UsageRecord,
     WorkspaceMode,
     WorkspaceScope,
 )
 
+from .permissions import DecisionKind, PermissionPolicy
+try:
+    from RxyCode.RxyCode1_1_0.core.session_runtime import bind_session, reset_session_binding
+    from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+except ImportError:
+    from ..session_runtime import bind_session, reset_session_binding
+    from ..utils.streaming import token_stats
 from .sessions import ChildSession
 
 
@@ -327,7 +337,6 @@ class ChildRuntime:
 
     def check_tool(self, name: str, args: dict[str, Any] | None = None) -> bool:
         """Apply the child policy before a tool reaches AgentV2's gate."""
-        from .permissions import DecisionKind, PermissionPolicy
 
         value = ""
         args = args or {}
@@ -381,13 +390,6 @@ class ChildRuntime:
 
     async def execute(self, task_prompt: str) -> TaskResult:
         """Run the child through a fresh AgentV2 under child policy/context."""
-        try:
-            from RxyCode.RxyCode1_1_0.core.session_runtime import bind_session, reset_session_binding
-        except ImportError:
-            from ..session_runtime import bind_session, reset_session_binding
-        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
-        from protocol.subagents import ChildStatus, ErrorRecord, TaskResult, UsageRecord
-
         self._runtime.cancel_token.throw_if_cancelled()
         started = __import__("time").monotonic()
         token_start = (token_stats.input_tokens, token_stats.output_tokens)

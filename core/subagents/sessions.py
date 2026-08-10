@@ -8,6 +8,7 @@ with terminal states: COMPLETED, FAILED, CANCELLED, DENIED, TIMED_OUT.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
@@ -302,8 +303,6 @@ def _definition_fingerprint(definition: AgentDefinition | None) -> str:
     """Produce a short version string for an AgentDefinition."""
     if definition is None:
         return "unknown"
-    # Use a stable representation: id + hash of key fields
-    import hashlib
 
     key = f"{definition.id}:{definition.mode.value}:{definition.steps}:{definition.subagent_depth}"
     return hashlib.sha256(key.encode()).hexdigest()[:12]
