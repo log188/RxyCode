@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock
 
@@ -14,6 +16,8 @@ class _FakeResult:
     thinking = ""
     input_tokens = 1
     output_tokens = 1
+    cache_hit_tokens = 0
+    cache_hit_rate = 0.0
 
 
 def _make_worker(monkeypatch) -> tuple[AgentWorker, dict]:
@@ -82,6 +86,42 @@ async def test_toggle_during_active_prompt_applies_to_active_tui(monkeypatch):
 
     assert worker._thinking_expanded is True
     assert worker._active_tui.get_thinking_expanded() is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_prompt_returns_a_terminal_cancelled_result(monkeypatch):
+    worker, _captured = _make_worker(monkeypatch)
+
+    class CancelledSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def prompt(self, *_args, **_kwargs):
+            raise asyncio.CancelledError
+
+    messages: list[dict] = []
+    monkeypatch.setattr("appserver.agent_worker.Session", CancelledSession)
+    monkeypatch.setattr(
+        "appserver.agent_worker.write_message",
+        AsyncMock(side_effect=lambda msg: messages.append(msg)),
+    )
+
+    await worker._handle_prompt({"text": "cancel", "session_id": "s", "run_id": "r"}, 9)
+
+    assert messages[-1] == {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "result": {
+            "run_id": "r",
+            "status": "cancelled",
+            "text": "",
+            "thinking": None,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_hit_tokens": 0,
+            "cache_hit_rate": 0.0,
+        },
+    }
 
 
 def _dummy_tui():

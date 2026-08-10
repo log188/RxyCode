@@ -22,6 +22,7 @@ const prompt = process.env.RXYCODE_REAL_GUI_PROMPT ??
   '/fast In the current workspace, inspect appserver startup only. Use glob, then grep, then read; do not use web search and do not modify files. Return exactly three short bullets: path, evidence, risk.'
 const approvePendingRequest = process.env.RXYCODE_REAL_GUI_APPROVE === 'true'
 const minimumToolCards = Number(process.env.RXYCODE_REAL_GUI_MIN_TOOLS ?? '3')
+const cancelAfterFirstTool = process.env.RXYCODE_REAL_GUI_CANCEL === 'true'
 
 const delay = (ms: number): Promise<void> => new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
 
@@ -153,6 +154,32 @@ async function main(): Promise<void> {
         JSON.stringify({ status, ...JSON.parse(diagnostics) }, null, 2)
       )
       throw error
+    }
+    if (cancelAfterFirstTool) {
+      await evaluate(`document.querySelector('.composer .stop').click()`)
+      try {
+        await waitFor(async () => !(await has('.running-indicator')) ? true : null, 30_000, 'real cancellation')
+      } catch (error) {
+        await screenshot('02-cancel-timeout.png')
+        const diagnostics = await evaluate(`({
+          body: document.body.innerText,
+          logs: window.__rxyProbeLogs ?? []
+        })`)
+        writeFileSync(join(outputDir, 'cancel-timeout.json'), JSON.stringify(diagnostics, null, 2))
+        throw error
+      }
+      await screenshot('02-cancelled-real.png')
+      const cancelled = await evaluate(`(() => ({
+        running: Boolean(document.querySelector('.running-indicator')),
+        tools: Array.from(document.querySelectorAll('.tool-card')).map((card) => card.className),
+        final: Array.from(document.querySelectorAll('.message.assistant .message-text')).at(-1)?.textContent ?? ''
+      }))()`)
+      if (cancelled.running || !cancelled.tools.some((value) => value.includes('error'))) {
+        throw new Error(`invalid real GUI cancellation state: ${JSON.stringify(cancelled)}`)
+      }
+      writeFileSync(join(outputDir, 'real-gui-result.json'), JSON.stringify({ prompt, cancelled, elapsed_ms: Date.now() - startedAt }, null, 2))
+      console.log(`REAL_GUI_PROBE_OK ${outputDir}`)
+      return
     }
     await screenshot('01-loading-real.png')
     await waitFor(async () => !(await has('.running-indicator')) ? true : null, 90_000, 'real completion')

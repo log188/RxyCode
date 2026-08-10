@@ -180,6 +180,25 @@ class AgentWorker:
             result = await session.prompt(
                 self._agent, text, mode=str(params.get("mode", "build")), run_id=run_id
             )
+        except asyncio.CancelledError:
+            await self._flush_pending_writes()
+            await write_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "run_id": run_id,
+                        "status": "cancelled",
+                        "text": "",
+                        "thinking": None,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_hit_tokens": 0,
+                        "cache_hit_rate": 0.0,
+                    },
+                }
+            )
+            return
         except Exception as exc:
             await write_message(
                 {
