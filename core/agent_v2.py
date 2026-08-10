@@ -1388,6 +1388,8 @@ class AgentV2:
         except Exception:
             # 解析失败不阻断 LLM 构造（保持可启动）；运行时 _raw_stream 会再试。
             self._resolved_limits = None
+        # B6: 工具输出去重指纹表（工具名 → 指纹集合），会话内累计。
+        self._seen_tool_fingerprints: dict[str, set[str]] = {}
         # B3 (CB2): TTL 档位写入 model_config（供 Anthropic provider 注入请求）。
         try:
             from .cache_policy import resolve_ttl_seconds
@@ -1596,10 +1598,17 @@ class AgentV2:
         None（现状）/ "full" → True（全量注入，A9 前行为不变）
         "none" → False（不注入）
         "first2" → True（注入前 2 条，见 _few_shot_limit()）
+
+        B6: 推理模型（supports_reasoning=True）未显式配置 few_shot_policy
+        时默认不加 few-shot（few-shot 会稀释推理）；显式配置优先。
         """
         caps = getattr(self, "_capabilities", None)
-        policy = (caps or DEFAULT_CAPABILITIES).few_shot_policy
+        if caps is None:
+            caps = DEFAULT_CAPABILITIES
+        policy = caps.few_shot_policy
         if policy == "none":
+            return False
+        if policy is None and getattr(caps, "supports_reasoning", False):
             return False
         return True
 
@@ -1614,15 +1623,35 @@ class AgentV2:
             return 2
         return None
 
+    def _tool_output_max_chars(self) -> int | None:
+        """B6: 读取 cache.tool_output_max_chars（默认 2000）。
+
+        返回正整数字符上限；配置缺省 / 非法（0/负数/非数字）→ None（不截断，
+        与 A20 现状一致，CB8）。读取失败 → None（不因配置错误改变行为）。
+        """
+        try:
+            cfg = _settings.load_config() or {}
+            raw = (cfg.get("cache") or {}).get("tool_output_max_chars")
+        except Exception:
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return None
+        return raw if raw > 0 else None
+
     def _truncate_tool_text(self, text: str) -> str:
-        """A20: 按 tool_output_token_limit 对工具结果文本副本截断。
+        """A20+B6: 对工具结果文本副本截断（落地前调用，不改 ToolMessage）。
+
+        两个独立维度，各自可关：
+        - B6 字符维度：cache.tool_output_max_chars（默认 2000），超长文本
+          截断并保留结构（合法 JSON 截成合法 JSON）；配置缺失/≤0 时关闭。
+        - A20 token 维度：caps.tool_output_token_limit（默认 None=关闭）。
 
         返回截断后的**文本副本**；**不改动任何 ToolMessage 对象**
-        （tool_call_id 契约不受影响）。limit=None → 原样返回。
-        保证：估算 token 数 ≤ limit 时原样返回；> limit 时返回截断文本，
-        其估算 token 数（含截断标记）**不超过 limit**——按比例收缩 keep_chars
-        迭代直至满足，覆盖极小 limit（1/2/5/20）。
+        （tool_call_id 契约不受影响）。
         """
+        char_limit = self._tool_output_max_chars()
+        if char_limit is not None and text:
+            text = self._truncate_tool_text_chars(text, char_limit)
         caps = getattr(self, "_capabilities", None)
         limit = getattr(caps, "tool_output_token_limit", None) if caps else None
         if limit is None or not text:
@@ -1646,6 +1675,226 @@ class AgentV2:
             if _estimate_tokens(head, spec) <= limit:
                 return head
         return text[:1] if _estimate_tokens(text[:1], spec) <= limit else ""
+
+    def _truncate_tool_text_chars(self, text: str, char_limit: int) -> str:
+        """B6: 按字符上限截断文本副本；JSON 结构保持。
+
+        文本 ≤ limit → 原样返回。超长时：
+        - 合法 JSON → 结构化截断（_truncate_json_chars），结果仍是合法 JSON；
+        - 非 JSON → 头尾保留 + 截断标记。
+        """
+        if char_limit is None or char_limit <= 0 or not text or len(text) <= char_limit:
+            return text
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            return self._truncate_plain_chars(text, char_limit)
+        return self._truncate_json_chars(parsed, char_limit)
+
+    @staticmethod
+    def _truncate_plain_chars(text: str, char_limit: int) -> str:
+        """B6: 普通文本字符截断：头尾保留 + 截断标记，总长 ≤ limit（硬上限）。"""
+        if len(text) <= char_limit:
+            return text
+        marker = "\n...[truncated]...\n"
+        if char_limit < len(marker):
+            # 极小上限：连标记都放不下 → 纯头部截断，保证 ≤ limit。
+            return text[:char_limit]
+        budget = char_limit - len(marker)
+        head = budget // 2
+        tail = budget - head
+        return text[:head] + marker + text[-tail:]
+
+    @staticmethod
+    def _truncate_json_chars(parsed, char_limit: int) -> str:
+        """B6: JSON 结构保持截断。
+
+        保证输出同时满足：``json.loads()`` 成功 且 长度 ≤ char_limit。
+        策略（按序执行直到达标）：
+        1. 最长字符串值按比例缩短；
+        2. 最长字符串 key 值对删除（key 超长时）；
+        3. 容器尾部元素丢弃（list 尾段 / dict 尾段 key）；
+        4. 只剩单元素仍超限 → 值替换为 null；
+        5. 最终兜底 → 最小合法 JSON 字面量（"0"/"{}"/"[]"/"null"）。
+        """
+        if isinstance(parsed, str):
+            # 顶层字符串：先验证完整序列化，超限则截断后重新序列化
+            # （保持 JSON 合法）；极小 limit（1/2）退化最小字面量。
+            rendered = json.dumps(parsed, ensure_ascii=False)
+            if len(rendered) <= char_limit:
+                return rendered
+            budget = max(0, char_limit - 2)  # 引号开销
+            rendered = json.dumps(parsed[:budget], ensure_ascii=False)
+            if len(rendered) <= char_limit:
+                return rendered
+            return AgentV2._minimal_json(char_limit)
+        if isinstance(parsed, (int, float, bool)) or parsed is None:
+            rendered = json.dumps(parsed)
+            if len(rendered) <= char_limit:
+                return rendered
+            return AgentV2._minimal_json(char_limit)
+        for _ in range(500):
+            rendered = json.dumps(parsed, ensure_ascii=False)
+            if len(rendered) <= char_limit:
+                return rendered
+            longest = AgentV2._find_longest_string(parsed)
+            if longest is not None and len(longest[1]) > 4:
+                path, value = longest
+                keep = max(4, len(value) // 2)
+                AgentV2._set_at_path(parsed, path, value[:keep] + "...")
+                continue
+            if AgentV2._drop_long_keys(parsed):
+                continue
+            if AgentV2._trim_container(parsed):
+                continue
+            if AgentV2._minimize_values(parsed):
+                continue
+            return AgentV2._minimal_json(char_limit)
+        return AgentV2._minimal_json(char_limit)
+
+    @staticmethod
+    def _trim_container(parsed) -> bool:
+        """丢弃容器尾部一半元素（list 尾段 / dict 尾段 key）；返回是否发生了裁剪。"""
+        if isinstance(parsed, list) and len(parsed) > 1:
+            del parsed[len(parsed) // 2:]
+            return True
+        if isinstance(parsed, dict) and len(parsed) > 1:
+            keys = list(parsed)
+            for key in keys[len(keys) // 2:]:
+                del parsed[key]
+            return True
+        return False
+
+    @staticmethod
+    def _drop_long_keys(parsed) -> bool:
+        """删除超长 key（≥32 字符）的键值对；递归处理嵌套容器。
+
+        返回是否发生了删除。超长 key 无法按比例缩短（会破坏字典语义），
+        删除比退化标量更能保留结构（luna R4-2/R5-1）。
+        """
+        if isinstance(parsed, dict):
+            for key in list(parsed):
+                if len(key) >= 32:
+                    del parsed[key]
+                    return True
+                if AgentV2._drop_long_keys(parsed[key]):
+                    return True
+        elif isinstance(parsed, list):
+            for item in parsed:
+                if AgentV2._drop_long_keys(item):
+                    return True
+        return False
+
+    @staticmethod
+    def _minimize_values(parsed) -> bool:
+        """把容器里的所有值替换为 null；返回是否实际缩短了序列化长度。
+
+        值已全部为 null 时返回 False（无进展 → 调用方立即退化，
+        避免无意义循环，luna R4-1）。
+        """
+        if isinstance(parsed, dict):
+            if parsed and all(value is None for value in parsed.values()):
+                parsed.clear()
+                return True
+            changed = False
+            for key in parsed:
+                if parsed[key] is not None:
+                    parsed[key] = None
+                    changed = True
+            return changed
+        if isinstance(parsed, list):
+            if parsed and all(value is None for value in parsed):
+                parsed.clear()
+                return True
+            changed = False
+            for index in range(len(parsed)):
+                if parsed[index] is not None:
+                    parsed[index] = None
+                    changed = True
+            return changed
+        return False
+
+    @staticmethod
+    def _minimal_json(char_limit: int) -> str:
+        """返回满足长度上限的最短合法 JSON 字面量。"""
+        for literal in ("0", "{}", "[]", "null"):
+            if len(literal) <= char_limit:
+                return literal
+        return ""
+
+    @staticmethod
+    def _find_longest_string(parsed) -> tuple | None:
+        """返回 (路径, 值) —— JSON 树中最长的字符串值。"""
+
+        def walk(node, path: tuple) -> tuple | None:
+            if isinstance(node, dict):
+                best = None
+                for key, value in node.items():
+                    found = walk(value, path + (key,))
+                    if found is not None and (
+                        best is None or len(found[1]) > len(best[1])
+                    ):
+                        best = found
+                return best
+            if isinstance(node, list):
+                best = None
+                for index, value in enumerate(node):
+                    found = walk(value, path + (index,))
+                    if found is not None and (
+                        best is None or len(found[1]) > len(best[1])
+                    ):
+                        best = found
+                return best
+            if isinstance(node, str):
+                return (path, node)
+            return None
+
+        return walk(parsed, ())
+
+    @staticmethod
+    def _set_at_path(parsed, path: tuple, value: str) -> None:
+        """按 _find_longest_string 返回的路径原位替换字符串值。"""
+        node = parsed
+        for key in path[:-1]:
+            node = node[key]
+        node[path[-1]] = value
+
+    def _tool_output_fingerprint(self, content: str) -> str:
+        """B6: 工具输出的结构化指纹（用于重复检测）。
+
+        JSON → 解析后按 sort_keys 规范化再序列化（key 顺序不同但结构
+        相同 → 同一指纹）；非 JSON → 原文本。带时间戳等字节不同的内容
+        指纹必然不同，不会误伤去重（常见坑）。
+        """
+        try:
+            parsed = json.loads(content)
+        except (ValueError, TypeError):
+            return content
+        return json.dumps(parsed, sort_keys=True, ensure_ascii=False)
+
+    def _dedupe_tool_output(self, tool_name: str, content: str) -> str:
+        """B6: 同工具重复输出合并（落地前、截断前调用）。
+
+        **必须用原始工具输出（截断前）计算指纹**：若先用截断后的内容算
+        指纹，差异落在被截掉区域的两次输出会被误判为重复（luna R1-3）。
+
+        首次出现 → 记录指纹并原样返回；后续同指纹 → 返回占位符，
+        不重复进历史（aider add_rel_fname 语义）。不同指纹（含时间戳
+        差异）→ 每次原样保留。指纹集合按工具累计（A→B→A 中第二次 A
+        仍判定为重复，luna R5-2）。
+        """
+        seen = getattr(self, "_seen_tool_fingerprints", None)
+        if seen is None:
+            seen = self._seen_tool_fingerprints = {}
+        fingerprints = seen.setdefault(tool_name, set())
+        fingerprint = self._tool_output_fingerprint(content)
+        if fingerprint in fingerprints:
+            return (
+                f"[duplicate tool output omitted: {tool_name} 输出与上次相同，"
+                "为节省 token 已去重]"
+            )
+        fingerprints.add(fingerprint)
+        return content
 
     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
         """Phase 3 M4：请求层解析最终 max_tokens（含 context 钳制）。
@@ -2449,7 +2698,9 @@ class AgentV2:
             for fetch_call, url, content in verified_fetches:
                 fetch_text = f"Successfully fetched source URL: {url}\n\n{content}"
                 messages.append(ToolMessage(
-                    content=self._truncate_tool_text(fetch_text),
+                    content=self._truncate_tool_text(
+                        self._dedupe_tool_output("webfetch", fetch_text)
+                    ),
                     tool_call_id=fetch_call["id"],
                 ))
 
@@ -2627,7 +2878,14 @@ class AgentV2:
                         if fetched_url and fetched_url not in research_sources:
                             research_sources.append(fetched_url)
 
-                    messages.append(ToolMessage(content=self._truncate_tool_text(str(result)), tool_call_id=tool_id or tool_name))
+                    messages.append(
+                        ToolMessage(
+                            content=self._truncate_tool_text(
+                                self._dedupe_tool_output(tool_name, str(result))
+                            ),
+                            tool_call_id=tool_id or tool_name,
+                        )
+                    )
             else:
                 # Exceeded max rounds - give LLM one tool-free synthesis pass
                 if tui and hasattr(tui, "write_progress"):

@@ -1,0 +1,60 @@
+## 复审结论：FAIL
+
+### 完成判据
+
+1. **工具输出截断：FAIL**
+   - 普通文本路径已保证 `≤ limit`。
+   - JSON 容器、长 key、长数字及兜底链总体可控。
+   - 但 `_truncate_json_chars()` 的顶层长字符串路径存在硬上限漏洞：
+
+```python
+budget = max(1, char_limit - 2)
+return json.dumps(parsed[:budget], ensure_ascii=False)
+```
+
+当 `char_limit` 为 `1` 或 `2` 时，返回的最短 JSON 字符串 `"x"` 长度为 `3`，超出限制。
+
+```python
+_truncate_json_chars("long", 1)  # 返回 '"l"'，长度 3
+_truncate_json_chars("long", 2)  # 返回 '"l"'，长度 3
+```
+
+新增测试只覆盖了 JSON 对象 `limit=5`，未覆盖顶层 JSON 字符串的极小限制。
+
+2. **模型输出上限：PASS**  
+   测试及现有 resolver 证据充分。
+
+3. **推理模型 few-shot 豁免：PASS**
+
+4. **重复工具输出去重：PASS**
+   顺序正确：原始输出指纹 → 去重 → 字符截断。新增差异区测试有效。
+
+5. **token/cache 指标记录：PASS（但命中率下降需关注）**
+   已记录 token 下降 19.9%。命中率从 91.22% 降至 83.87%，若项目另有“命中率不得下降”阈值，则需另行判定；当前提供的 B6 判据仅要求任务级 token 对比记录。
+
+6. **失败结果不缓存：PASS**
+   B6 未触碰响应缓存写入路径，已有测试覆盖。
+
+### CB1–CB8
+
+- CB1–CB4：PASS
+- CB5：指标已记录；命中率较基线下降，建议后续调查
+- CB6：PASS，未修改缓存写入路径
+- CB7：PASS，evals 持平，无已证实回归
+- **CB8：PASS**  
+  根据文档，`cache.tool_output_max_chars` 默认 `2000` 是 B6 明确设计要求，不属于未授权行为变更。
+
+### 阻断项
+
+**阻断项 1：JSON 顶层字符串在极小 limit 下可能超限。**
+
+建议在顶层字符串分支增加最小合法 JSON 兜底，例如：
+
+```python
+rendered = json.dumps(parsed[:budget], ensure_ascii=False)
+if len(rendered) <= char_limit:
+    return rendered
+return AgentV2._minimal_json(char_limit)
+```
+
+并新增 `limit=1`、`limit=2` 的顶层 JSON 字符串测试。修复后建议复审。

@@ -221,6 +221,9 @@ def _default_config() -> dict:
             "enabled": True,
             "prompt_prefix_cache": True,
             "ttl": 3600,
+            # B6: 工具输出落地前截断的字符上限（opencode compaction.ts 2k 语义）。
+            # 0 / 负数 = 关闭截断（现状行为）。截断只作用于新落地消息，不碰前缀。
+            "tool_output_max_chars": 2000,
         },
         "mcpServers": {},
         "lsp": {},

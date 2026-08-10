@@ -1,0 +1,51 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-8.4.2, pluggy-1.5.0 -- D:\Anaconda3\python.exe
+cachedir: .pytest_cache
+rootdir: D:\agent-demo\RxyCode\RxyCode1_1_0\.worktrees\phase-b-cache2
+configfile: pytest.ini
+plugins: anyio-4.10.0, langsmith-0.9.0, asyncio-1.4.0, base-url-2.1.0, cov-7.1.0, playwright-0.8.0, timeout-2.4.0, xdist-3.8.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 180.0s
+timeout method: thread
+timeout func_only: False
+collecting ... collected 37 items
+
+tests/test_cache/test_token_governance.py::test_tool_output_max_chars_default_2000 PASSED [  2%]
+tests/test_cache/test_token_governance.py::test_truncate_tool_text_overlong_plain_text PASSED [  5%]
+tests/test_cache/test_token_governance.py::test_truncate_tool_text_short_untouched PASSED [  8%]
+tests/test_cache/test_token_governance.py::test_truncate_tool_text_json_structure_preserved PASSED [ 10%]
+tests/test_cache/test_token_governance.py::test_truncate_tool_text_json_short_untouched PASSED [ 13%]
+tests/test_cache/test_token_governance.py::test_truncate_tool_text_does_not_pollute_prefix PASSED [ 16%]
+tests/test_cache/test_token_governance.py::test_truncate_tool_text_honors_token_limit_too PASSED [ 18%]
+tests/test_cache/test_token_governance.py::test_truncate_json_top_level_string_hard_bounded PASSED [ 21%]
+tests/test_cache/test_token_governance.py::test_truncate_json_huge_number_hard_bounded PASSED [ 24%]
+tests/test_cache/test_token_governance.py::test_truncate_json_long_key_hard_bounded PASSED [ 27%]
+tests/test_cache/test_token_governance.py::test_truncate_plain_tiny_limit_hard_bounded PASSED [ 29%]
+tests/test_cache/test_token_governance.py::test_truncate_json_tiny_limit_hard_bounded PASSED [ 32%]
+tests/test_cache/test_token_governance.py::test_truncate_json_top_level_string_tiny_limit PASSED [ 35%]
+tests/test_cache/test_token_governance.py::test_truncate_json_top_level_empty_string_tiny_limit PASSED [ 37%]
+tests/test_cache/test_token_governance.py::test_truncate_json_no_progress_loop_terminates PASSED [ 40%]
+tests/test_cache/test_token_governance.py::test_truncate_json_long_key_dropped_keeps_structure PASSED [ 43%]
+tests/test_cache/test_token_governance.py::test_truncate_json_key_exactly_32_dropped PASSED [ 45%]
+tests/test_cache/test_token_governance.py::test_truncate_json_nested_long_key_dropped PASSED [ 48%]
+tests/test_cache/test_token_governance.py::test_dedup_repeated_fingerprint_set_semantics PASSED [ 51%]
+tests/test_cache/test_token_governance.py::test_tool_output_max_chars_rejects_bool PASSED [ 54%]
+tests/test_cache/test_token_governance.py::test_dedup_uses_raw_output_not_truncated PASSED [ 56%]
+tests/test_cache/test_token_governance.py::test_resolve_output_limit_catalog_exact PASSED [ 59%]
+tests/test_cache/test_token_governance.py::test_resolve_output_limit_unknown_model_high_fallback PASSED [ 62%]
+tests/test_cache/test_token_governance.py::test_resolve_output_limit_never_8192_global PASSED [ 64%]
+tests/test_cache/test_token_governance.py::test_resolve_output_limit_provider_default PASSED [ 67%]
+tests/test_cache/test_token_governance.py::test_raw_stream_uses_resolver_not_global_8192 PASSED [ 70%]
+tests/test_cache/test_token_governance.py::test_include_few_shot_reasoning_model_off PASSED [ 72%]
+tests/test_cache/test_token_governance.py::test_include_few_shot_non_reasoning_default_on PASSED [ 75%]
+tests/test_cache/test_token_governance.py::test_include_few_shot_reasoning_explicit_policy_wins PASSED [ 78%]
+tests/test_cache/test_token_governance.py::test_include_few_shot_reasoning_explicit_none_policy PASSED [ 81%]
+tests/test_cache/test_token_governance.py::test_dedup_fingerprint_json_key_order_insensitive PASSED [ 83%]
+tests/test_cache/test_token_governance.py::test_dedup_fingerprint_distinct_content_differs PASSED [ 86%]
+tests/test_cache/test_token_governance.py::test_dedup_fingerprint_timestamp_logs_not_folded PASSED [ 89%]
+tests/test_cache/test_token_governance.py::test_dedup_tool_output_second_call_placeholder PASSED [ 91%]
+tests/test_cache/test_token_governance.py::test_dedup_tool_output_distinct_content_kept PASSED [ 94%]
+tests/test_cache/test_token_governance.py::test_dedup_tool_output_different_tools_kept PASSED [ 97%]
+tests/test_cache/test_token_governance.py::test_dedup_tool_output_plain_text_fingerprint PASSED [100%]
+
+============================= 37 passed in 8.28s ==============================
