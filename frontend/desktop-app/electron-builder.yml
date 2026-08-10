@@ -19,6 +19,9 @@ extraResources:
     to: runtime
 win:
   executableName: rxycode-desktop
+  target:
+    - nsis        # 综合 Release：安装版（桌面快捷方式默认开启，安装时可取消）
+    - zip         # 便携包 Release：解压即用，无安装器、无快捷方式
 nsis:
   artifactName: rxycode-desktop-${version}-setup.${ext}
   shortcutName: ${productName}

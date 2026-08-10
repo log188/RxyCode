@@ -122,6 +122,38 @@ def _repo_root() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _default_desktop_dir() -> str:
+    """Default location for the unpacked portable desktop build."""
+    base = os.environ.get("RXYCODE_DESKTOP_DIR")
+    if base:
+        return base
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or os.path.expanduser("~")
+    return os.path.join(home, ".rxycode", "desktop")
+
+
+def _resolve_desktop_executable(desktop_dir: str | None = None) -> str | None:
+    """Locate the packaged desktop executable.
+
+    Search order: explicit *desktop_dir*, then the default
+    ``~/.rxycode/desktop`` directory (both ``rxycode-desktop.exe`` on
+    Windows and ``rxycode-desktop`` on POSIX). Returns None when not found.
+    """
+    candidates: list[str] = []
+    dirs = [desktop_dir] if desktop_dir else [_default_desktop_dir()]
+    for d in dirs:
+        if not d:
+            continue
+        candidates.append(os.path.join(d, "rxycode-desktop.exe"))
+        candidates.append(os.path.join(d, "rxycode-desktop"))
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK | os.R_OK):
+            return candidate
+    # Fall back to PATH lookup.
+    import shutil
+
+    return shutil.which("rxycode-desktop") or shutil.which("rxycode-desktop.exe")
+
+
 def _resolve_transport() -> str:
     """OpenTUI backend transport: stdio (default) or http (fallback)."""
     raw = (os.environ.get("RXYCODE_TRANSPORT") or "stdio").strip().lower()
@@ -172,6 +204,17 @@ def _bun_executable():
         except OSError:
             continue
     return None
+
+
+def _npm_executable() -> str | None:
+    """Locate npm (used by the desktop-app dev fallback)."""
+    import shutil
+
+    npm = shutil.which("npm")
+    if npm:
+        return npm
+    npm_cmd = shutil.which("npm.cmd")
+    return npm_cmd or None
 
 
 def _install_bun_runtime() -> str | None:
@@ -589,6 +632,56 @@ def cli(ctx, model, api, api_port, log_level, print_logs):
                 h.flush()
             except Exception:
                 pass
+
+
+@cli.command("gui")
+@click.option(
+    "--desktop-dir",
+    default=None,
+    help="Path to the unpacked desktop build (default: ~/.rxycode/desktop or RXYCODE_DESKTOP_DIR).",
+)
+def gui(desktop_dir):
+    """Launch the RxyCode Desktop app (Phase 4)."""
+    import subprocess
+
+    from .log.logger import get_logger
+
+    _log = get_logger()
+
+    exe = _resolve_desktop_executable(desktop_dir)
+    if exe is not None:
+        _log.info("Launching packaged desktop", extra={"exe": exe})
+        proc = subprocess.Popen([exe], shell=False)
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            proc.wait(timeout=5)
+        return
+
+    # Dev fallback: run the desktop-app via npm.
+    app_dir = os.path.join(_frontend_dir(), "desktop-app")
+    if not os.path.exists(os.path.join(app_dir, "package.json")):
+        raise click.ClickException(
+            "Desktop app sources are missing (frontend/desktop-app). "
+            "Reinstall RxyCode or run from the source checkout. "
+            "Or place a packaged desktop build in ~/.rxycode/desktop."
+        )
+    _log.info("Launching desktop from source", extra={"app_dir": app_dir})
+    npm_exe = _npm_executable()
+    if npm_exe is None:
+        raise click.ClickException(
+            "npm was not found on PATH; install the packaged desktop "
+            "build into ~/.rxycode/desktop instead."
+        )
+    env = dict(os.environ)
+    env["RXYCODE_REPO_DIR"] = _repo_root()
+    proc = subprocess.Popen([npm_exe, "run", "dev"], cwd=app_dir, env=env, shell=False)
+    try:
+        proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        proc.wait(timeout=5)
 
 
 @cli.command()

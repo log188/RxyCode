@@ -183,6 +183,7 @@ async def onboard(params: dict[str, Any]) -> dict[str, Any]:
 
     await asyncio.to_thread(
         add_model,
+        name=config_key,
         api_key=api_key,
         base_url=base_url,
         model_name=provider_model_id,

@@ -89,6 +89,173 @@ function ApiKeyRow({
   )
 }
 
+function AddModelPanel({ models }: { models: UseModelsResult }): React.JSX.Element {
+  const [presets, setPresets] = useState<Array<{ id: string; name: string; base_url: string; category?: string }>>([])
+  const [selectedPreset, setSelectedPreset] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [discovered, setDiscovered] = useState<Array<{ id: string }>>([])
+  const [selected, setSelected] = useState<Record<string, boolean>>({})
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const loadPresets = async (): Promise<void> => {
+    const items = await models.listPresets()
+    setPresets(items)
+    if (items.length > 0) {
+      setSelectedPreset(items[0].id)
+      setBaseUrl(items[0].base_url)
+    }
+  }
+
+  const applyPreset = (presetId: string): void => {
+    setSelectedPreset(presetId)
+    const preset = presets.find((p) => p.id === presetId)
+    if (preset) setBaseUrl(preset.base_url)
+  }
+
+  const runDiscover = async (): Promise<void> => {
+    if (apiKey.trim() === '' || baseUrl.trim() === '') {
+      setNotice('请先填写 API Key 与 Base URL')
+      return
+    }
+    setBusy(true)
+    setNotice(null)
+    try {
+      const found = await models.discover(apiKey.trim(), baseUrl.trim())
+      if (found.length === 0) {
+        setNotice('未发现模型，请检查凭据与地址')
+        setDiscovered([])
+      } else {
+        setDiscovered(found)
+        setSelected(Object.fromEntries(found.map((m) => [m.id, true])))
+        setNotice(`发现 ${found.length} 个模型`)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const submitOnboard = async (): Promise<void> => {
+    if (discovered.length === 0) {
+      setNotice('请先探测模型')
+      return
+    }
+    const ids = discovered.filter((m) => selected[m.id]).map((m) => m.id)
+    if (ids.length === 0) {
+      setNotice('请至少勾选一个模型')
+      return
+    }
+    setBusy(true)
+    setNotice(null)
+    try {
+      if (ids.length === 1) {
+        const result = await models.onboard({
+          providerModelId: ids[0],
+          apiKey: apiKey.trim(),
+          baseUrl: baseUrl.trim()
+        })
+        setNotice(result.ok ? `已添加 ${ids[0]}` : result.message ?? '添加失败')
+      } else {
+        const result = await models.onboardBatch({
+          apiKey: apiKey.trim(),
+          baseUrl: baseUrl.trim(),
+          modelIds: ids
+        })
+        if (result.ok) {
+          const failed = result.failed ?? []
+          setNotice(failed.length > 0 ? `已添加 ${ids.length - failed.length} 个，失败 ${failed.length} 个` : `已添加 ${ids.length} 个模型`)
+        } else {
+          setNotice(result.message ?? '批量添加失败')
+        }
+      }
+      setDiscovered([])
+      setSelected({})
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="addmodel-card">
+      <div className="addmodel-title">添加模型</div>
+      <div className="addmodel-row">
+        <span className="label">Provider 预设</span>
+        <select
+          className="addmodel-select"
+          value={selectedPreset}
+          onChange={(event) => applyPreset(event.target.value)}
+          onFocus={() => void loadPresets()}
+        >
+          <option value="">（选择预设）</option>
+          {presets.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="addmodel-row">
+        <span className="label">Base URL</span>
+        <input
+          className="addmodel-input"
+          type="text"
+          placeholder="https://api.example.com/v1"
+          value={baseUrl}
+          onChange={(event) => setBaseUrl(event.target.value)}
+        />
+      </div>
+      <div className="addmodel-row">
+        <span className="label">API Key</span>
+        <input
+          className="addmodel-input"
+          type="password"
+          placeholder="粘贴 API Key（不回显）"
+          value={apiKey}
+          onChange={(event) => setApiKey(event.target.value)}
+        />
+      </div>
+      <div className="addmodel-actions">
+        <button
+          type="button"
+          className="addmodel-discover"
+          disabled={busy || apiKey.trim() === '' || baseUrl.trim() === ''}
+          onClick={() => void runDiscover()}
+        >
+          探测模型
+        </button>
+        {discovered.length > 0 && (
+          <button
+            type="button"
+            className="addmodel-onboard"
+            disabled={busy}
+            onClick={() => void submitOnboard()}
+          >
+            添加勾选模型
+          </button>
+        )}
+      </div>
+      {discovered.length > 0 && (
+        <div className="addmodel-discovered">
+          {discovered.map((model) => (
+            <label key={model.id} className="addmodel-check">
+              <input
+                type="checkbox"
+                checked={selected[model.id] === true}
+                onChange={(event) =>
+                  setSelected((prev) => ({ ...prev, [model.id]: event.target.checked }))
+                }
+              />
+              {model.id}
+            </label>
+          ))}
+        </div>
+      )}
+      {notice !== null && <p className="addmodel-notice">{notice}</p>}
+    </div>
+  )
+}
+
 function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const [tab, setTab] = useState<SettingsTab>('model')
   const diagnostics = useDiagnostics()
@@ -176,13 +343,14 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                           className="model-remove"
                           onClick={() => void props.models.remove(model.id)}
                         >
-                          删除
+                           删除
                         </button>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
+              {props.models.supported && <AddModelPanel models={props.models} />}
             </section>
           )}
           {tab === 'apikey' && (

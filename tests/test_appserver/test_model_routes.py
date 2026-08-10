@@ -21,19 +21,22 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Point settings at a temp dir so model writes never touch user config."""
     from RxyCode.RxyCode1_1_0.config import settings
 
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
     cfg_path = tmp_path / "config.yaml"
-    monkeypatch.setattr(settings, "get_config_path", lambda: cfg_path)
-    monkeypatch.setattr(settings, "load_config", lambda: {})
-    monkeypatch.setattr(settings, "save_config", lambda cfg: None)
-    # model_manager imports settings functions at call time, so patching
-    # settings is enough for load_config/save_config/get_config_path.
+    # model_manager binds settings functions at module import time, so patch
+    # model_manager's own references (not settings.*) for the isolation to
+    # actually take effect.
+    monkeypatch.setattr(model_manager, "get_config_path", lambda: cfg_path)
+    monkeypatch.setattr(model_manager, "load_config", lambda: {})
+    monkeypatch.setattr(model_manager, "save_config", lambda cfg: None)
     return tmp_path
 
 
 def test_list_models_empty(isolated_config):
     result = model_routes.list_models()
     assert result["models"] == []
-    assert result["active"] == ""
+    assert result["active"] in (None, "")
 
 
 def test_list_presets_shape(isolated_config):

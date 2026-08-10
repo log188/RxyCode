@@ -37,6 +37,27 @@ export interface ModelsSnapshot {
   recent: string[]
 }
 
+export interface ProviderPreset {
+  id: string
+  name: string
+  base_url: string
+  category?: string
+}
+
+export interface DiscoveredModel {
+  id: string
+  object?: string
+}
+
+export interface OnboardResult {
+  ok: boolean
+  error_code?: string
+  message?: string
+  id?: string
+  onboarded?: string[]
+  failed?: Array<{ id: string; reason: string }>
+}
+
 export interface UseModelsOptions {
   platform: AppserverPlatform
   info: AppserverInfo | null
@@ -55,6 +76,20 @@ export interface UseModelsResult {
   upsertCredential(id: string, apiKey: string): Promise<boolean>
   deleteCredential(id: string): Promise<boolean>
   testConnection(id: string): Promise<{ ok: boolean; message: string }>
+  listPresets(): Promise<ProviderPreset[]>
+  discover(apiKey: string, baseUrl: string): Promise<DiscoveredModel[]>
+  onboard(args: {
+    providerModelId: string
+    apiKey: string
+    baseUrl: string
+    nickname?: string
+  }): Promise<OnboardResult>
+  onboardBatch(args: {
+    apiKey: string
+    baseUrl: string
+    modelIds: string[]
+    skipProbe?: boolean
+  }): Promise<OnboardResult>
 }
 
 export function useModels({
@@ -199,6 +234,100 @@ export function useModels({
     []
   )
 
+  const listPresets = useCallback(async (): Promise<ProviderPreset[]> => {
+    const client = connectionRef.current?.client
+    if (client === null || client === undefined) return []
+    try {
+      const r = (await client.requestWithTimeout('models/presets', {}, 30_000)) as {
+        presets?: ProviderPreset[]
+      }
+      return r.presets ?? []
+    } catch {
+      return []
+    }
+  }, [])
+
+  const discover = useCallback(
+    async (apiKey: string, baseUrl: string): Promise<DiscoveredModel[]> => {
+      const client = connectionRef.current?.client
+      if (client === null || client === undefined) return []
+      try {
+        const r = (await client.requestWithTimeout(
+          'models/discover',
+          { api_key: apiKey, base_url: baseUrl },
+          30_000
+        )) as { ok?: boolean; models?: DiscoveredModel[] }
+        if (r.ok === false) return []
+        return r.models ?? []
+      } catch {
+        return []
+      }
+    },
+    []
+  )
+
+  const onboard = useCallback(
+    async (args: {
+      providerModelId: string
+      apiKey: string
+      baseUrl: string
+      nickname?: string
+    }): Promise<OnboardResult> => {
+      const client = connectionRef.current?.client
+      if (client === null || client === undefined) {
+        return { ok: false, error_code: 'transport', message: 'appserver not connected' }
+      }
+      try {
+        const r = (await client.requestWithTimeout(
+          'models/onboard',
+          {
+            provider_model_id: args.providerModelId,
+            api_key: args.apiKey,
+            base_url: args.baseUrl,
+            nickname: args.nickname
+          },
+          30_000
+        )) as OnboardResult
+        if (r.ok === true) await refresh()
+        return r
+      } catch (e) {
+        return { ok: false, error_code: 'transport', message: e instanceof Error ? e.message : String(e) }
+      }
+    },
+    [refresh]
+  )
+
+  const onboardBatch = useCallback(
+    async (args: {
+      apiKey: string
+      baseUrl: string
+      modelIds: string[]
+      skipProbe?: boolean
+    }): Promise<OnboardResult> => {
+      const client = connectionRef.current?.client
+      if (client === null || client === undefined) {
+        return { ok: false, error_code: 'transport', message: 'appserver not connected' }
+      }
+      try {
+        const r = (await client.requestWithTimeout(
+          'models/onboard_batch',
+          {
+            api_key: args.apiKey,
+            base_url: args.baseUrl,
+            model_ids: args.modelIds,
+            skip_probe: args.skipProbe ?? true
+          },
+          60_000
+        )) as OnboardResult
+        if (r.ok === true) await refresh()
+        return r
+      } catch (e) {
+        return { ok: false, error_code: 'transport', message: e instanceof Error ? e.message : String(e) }
+      }
+    },
+    [refresh]
+  )
+
   return {
     supported,
     loading,
@@ -209,6 +338,10 @@ export function useModels({
     remove,
     upsertCredential,
     deleteCredential,
-    testConnection
+    testConnection,
+    listPresets,
+    discover,
+    onboard,
+    onboardBatch
   }
 }

@@ -27,6 +27,8 @@ _STORE_VERSION = 1
 _STORE_LOCK = threading.RLock()
 _REFERENCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _SID_PATTERN = re.compile(r"^S-\d(?:-\d+)+$")
+# Module-level platform probe so tests can force POSIX vs Windows branches.
+_os_name = os.name
 
 
 def _windows_current_sid() -> str:
@@ -162,29 +164,67 @@ def _dpapi_transform(payload: bytes, *, decrypt: bool) -> bytes:
         kernel32.LocalFree(output_blob.pbData)
 
 
-def _protect(value: str) -> str:
-    payload = value.encode("utf-8")
-    if os.name == "nt":
+_KEYRING_SERVICE = "rxycode.credentials"
+
+
+def _keyring_available() -> bool:
+    """True when a desktop keyring backend is importable and usable."""
+    try:
+        import keyring  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+def _protect(value: str, reference: str | None = None) -> str:
+    """Encrypt *value* for the current user.
+
+    Windows: DPAPI.  POSIX with a desktop keyring (macOS Keychain / Linux
+    Secret Service): the raw secret lives in the OS keyring keyed by
+    *reference*, and only a ``keyring-v1:<reference>`` marker is persisted.
+    POSIX without a keyring (CI / headless): owner-only file, base64 value.
+    """
+    if _os_name == "nt":
+        payload = value.encode("utf-8")
         protected = _dpapi_transform(payload, decrypt=False)
-        prefix = "dpapi-v1:"
-    else:
-        protected = payload
-        prefix = "file-v1:"
-    return prefix + base64.b64encode(protected).decode("ascii")
+        return "dpapi-v1:" + base64.b64encode(protected).decode("ascii")
+    if reference is not None and _keyring_available():
+        try:
+            import keyring
+
+            keyring.set_password(_KEYRING_SERVICE, reference, value)
+            return "keyring-v1:" + reference
+        except Exception:
+            # Keyring unusable at runtime (locked keychain, no DBus): fall back.
+            pass
+    payload = value.encode("utf-8")
+    return "file-v1:" + base64.b64encode(payload).decode("ascii")
 
 
 def _unprotect(value: str) -> str:
     if value.startswith("dpapi-v1:"):
-        if os.name != "nt":
+        if _os_name != "nt":
             raise ValueError("This credential is bound to a Windows user account")
         payload = _dpapi_transform(
             base64.b64decode(value[9:], validate=True), decrypt=True
         )
-    elif value.startswith("file-v1:"):
+        return payload.decode("utf-8")
+    if value.startswith("file-v1:"):
         payload = base64.b64decode(value[8:], validate=True)
-    else:
-        raise ValueError("Unsupported credential storage format")
-    return payload.decode("utf-8")
+        return payload.decode("utf-8")
+    if value.startswith("keyring-v1:"):
+        reference = value[len("keyring-v1:"):]
+        try:
+            import keyring
+
+            secret = keyring.get_password(_KEYRING_SERVICE, reference)
+        except Exception:
+            secret = None
+        if not secret:
+            raise ValueError("Stored model credential is unavailable")
+        return secret
+    raise ValueError("Unsupported credential storage format")
 
 
 def _secret_path(config_path: Path) -> Path:
@@ -222,7 +262,7 @@ def store_credential(value: str, config_path: Path) -> str:
     with _STORE_LOCK:
         credentials = _read_store(path)
         reference = uuid.uuid4().hex
-        credentials[reference] = _protect(value)
+        credentials[reference] = _protect(value, reference)
         _write_store(path, credentials)
     return reference
 
@@ -243,9 +283,20 @@ def delete_credential(reference: str, config_path: Path) -> None:
     if not isinstance(reference, str) or not _REFERENCE_PATTERN.fullmatch(reference):
         return
     path = _secret_path(config_path)
+    keyring_was_backed = False
     with _STORE_LOCK:
         credentials = _read_store(path)
         if reference not in credentials:
             return
+        keyring_was_backed = str(credentials[reference]).startswith("keyring-v1:")
         del credentials[reference]
         _write_store(path, credentials)
+    # Best-effort cleanup of the OS keyring entry (macOS Keychain /
+    # Linux Secret Service) when the removed blob was keyring-backed.
+    if keyring_was_backed:
+        try:
+            import keyring
+
+            keyring.delete_password(_KEYRING_SERVICE, reference)
+        except Exception:
+            pass

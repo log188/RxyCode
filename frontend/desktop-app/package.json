@@ -27,6 +27,7 @@
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && npm run runtime:prepare && electron-builder --dir",
     "build:win": "npm run build && npm run runtime:prepare && electron-builder --win",
+    "build:win:zip": "npm run build && npm run runtime:prepare && electron-builder --win zip",
     "build:mac": "electron-vite build && npm run runtime:prepare -- --platform darwin && electron-builder --mac",
     "build:linux": "electron-vite build && npm run runtime:prepare -- --platform linux && electron-builder --linux"
   },
