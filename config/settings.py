@@ -423,3 +423,18 @@ def get_model_config(model_name: str, cfg: Optional[dict] = None) -> dict:
     if model_name not in models:
         raise ValueError(f"Model '{model_name}' not found. Available: {list(models.keys())}")
     return resolve_model_config(models[model_name])
+
+def concurrent_api_slots() -> int:
+    """C4 switch: RXYCODE_CONCURRENT_API (PHASE-C §4.4).
+
+    ``0`` (default) — legacy global-serial behaviour: a single global slot
+    (``max_concurrent=1``), so any second run is rejected/queued exactly as
+    before.  ``N`` (N >= 1) — global cap N plus one slot per session.
+    Invalid/negative values fall back to ``0``.
+    """
+    raw = os.environ.get("RXYCODE_CONCURRENT_API", "0").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return value if value > 0 else 0

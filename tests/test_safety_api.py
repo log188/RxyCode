@@ -1,4 +1,4 @@
-"""API-level integration tests for the safety gate (阶段二):
+﻿"""API-level integration tests for the safety gate (阶段二):
 POST /approve endpoint and approval_request SSE events in /chat/stream.
 """
 import json
@@ -135,7 +135,12 @@ class TestStreamApprovalEvent:
                     f"no approval_request in SSE body: {body[:400]}"
                 )
                 assert '"type": "final"' in body
-                assert not api_server._chat_lock.locked()
+                # C4: the global _chat_lock is gone; the equivalent guarantee
+                # is that the session slot is released after the stream ends.
+                slots = api_server._api_session_slots
+                assert slots is not None, 'slots must be initialized by the request'
+                assert not slots._global.locked()
+                assert not any(v > 0 for v in slots._active.values())
         finally:
             api_server._state.clear()
             api_server._state.update(original_state)
@@ -215,7 +220,12 @@ class TestStreamApprovalEvent:
                 assert approval_id not in broker._decisions
                 assert broker._sink is None
                 assert api_server._state["busy"] is False
-                assert not api_server._chat_lock.locked()
+                # C4: the global _chat_lock is gone; the equivalent guarantee
+                # is that the session slot is released after the stream ends.
+                slots = api_server._api_session_slots
+                assert slots is not None, 'slots must be initialized by the request'
+                assert not slots._global.locked()
+                assert not any(v > 0 for v in slots._active.values())
         finally:
             api_server._state.clear()
             api_server._state.update(original_state)

@@ -102,14 +102,20 @@ def test_process_singletons_start_clean_after_prior_test():
 
 
 @pytest.mark.asyncio
-async def test_api_chat_lock_can_be_left_locked_without_escaping_test():
+async def test_api_slot_can_be_left_locked_without_escaping_test():
+    """C4: the global _chat_lock is gone; the equivalent is the session
+    slots object, which must not leak a held slot across tests (each test
+    loop gets a freshly built instance)."""
     from RxyCode.RxyCode1_1_0 import api_server
 
-    await api_server._chat_lock.acquire()
-    assert api_server._chat_lock.locked()
+    slots = api_server._get_api_session_slots()
+    await slots._global.acquire()
+    assert slots._global.locked()
 
 
-def test_api_chat_lock_starts_unlocked_after_prior_test():
+@pytest.mark.asyncio
+async def test_api_slot_starts_unlocked_after_prior_test():
     from RxyCode.RxyCode1_1_0 import api_server
 
-    assert not api_server._chat_lock.locked()
+    slots = api_server._get_api_session_slots()
+    assert not slots._global.locked()
