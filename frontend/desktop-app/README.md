@@ -47,12 +47,13 @@ This is an honest status of what the Phase 4 desktop MVP does NOT do yet.
 The app is usable for chat/streaming/approval/workspace flows; the items
 below are explicitly out of scope or blocked by backend protocol gaps.
 
-1. **Model management / API Key management / Phase 3 limit summary are
-   `BLOCKED_PREREQUISITE` placeholders** in Settings. The appserver JSON-RPC
-   protocol has no model/credential management methods and the desktop app
-   honors DC1 (protocol-client only), so these panels cannot be wired without
-   backend protocol additions. Configure models and keys in the backend
-   (config.yaml / HTTP API) instead.
+1. **Model / API Key management are live via appserver JSON-RPC**
+   (`models/*`, `credentials/*`): the Settings page lists models (with the
+   Phase 3 limit summary when the backend provides it), switches the active
+   model, tests connections, deletes models, and stores/clears API keys.
+   Keys are stored by the backend credential_store (Windows DPAPI) and never
+   echoed to the renderer. Servers without the new methods fall back to the
+   BLOCKED panel automatically (method-not-found detection).
 2. **No subagent UI yet**: the desktop shell does not consume Phase B
    subagent events (`child_session/*`), `@agent` mention, `/children`,
    `/child`, `/parent` or `agent/invoke`. The OpenTUI frontend has those;
