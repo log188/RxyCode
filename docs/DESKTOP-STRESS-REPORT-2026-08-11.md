@@ -140,4 +140,4 @@ python -m pytest tests/unit/test_gui_command.py tests/test_appserver/test_stdio_
 仍待修复（本轮不应掩盖）：
 
 1. 多个明确只读的 `glob/grep/read` 工作流仍会在结束时错误触发“requested side effect has no verified WRITE/DANGER tool execution”。DTS-11 的原始 JSONL 已证明实际工具均为 READ，需在后端增加“设置副作用尝试标志”的可观测性后再做最小修复，不能凭猜测放宽安全门禁。
-2. 明确要求加载已安装 Skill 会路由到 `download_skill`，并显示“no approval broker available”。需分别验证路由意图和 Desktop approval broker 的服务端请求桥接。
+2. 已修复“installed skill”误路由到 `download_skill`（`a15b079`）：DTS-08 重跑实际调用了只读 `skill`。但随后仍命中上项只读工具的副作用证据误判；因此 Skill 路由问题已关闭，证据门禁问题仍待修复。
