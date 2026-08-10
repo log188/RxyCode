@@ -12,6 +12,7 @@ and starts the API server.
 - `rxycode --version`: Report the package version without initializing runtime state
 - `rxycode --api`: Start the API server only
 - `rxycode config`: Manage model configuration
+- `rxycode config model-limits`: Inspect/set per-model output limits (`inspect` / `set-auto`)
 
 The console script is declared in `pyproject.toml` and implemented by `entrypoint.py`. `_package_root/RxyCode/` provides the stable module bridge while the existing `RxyCode.RxyCode1_1_0.*` import contract remains intact.
 
@@ -34,9 +35,17 @@ Routes to OpenTUI or Ink:
 | unset / default | Prefer **OpenTUI** when Bun + `frontend/opentui-app` exist (classic dark+pink visuals); else Ink |
 
 ## Core: _launch_opentui_tui(model, port)
-1. Require `bun` on PATH and `frontend/opentui-app/{package.json,src/index.tsx}`.
-2. Start the authenticated loopback API (same token handoff as Ink).
-3. Launch `bun run src/index.tsx` in `frontend/opentui-app` with `RXYCODE_API_*` env vars.
+1. Ensure Bun is available: `_ensure_bun(required=True)` **auto-downloads and
+   installs Bun** (`_install_bun_runtime`) when missing; only a failed install
+   errors. `RXYCODE_SKIP_BUN_INSTALL=1` skips auto-install.
+2. `_ensure_opentui_dependencies()` runs `bun install` in `frontend/opentui-app`
+   when dependencies are missing.
+3. Start the authenticated loopback API (same token handoff as Ink).
+4. Launch `bun run src/index.tsx` in `frontend/opentui-app` with `RXYCODE_API_*` env vars.
+
+`_resolve_tui_backend` also accepts an explicit `auto` value; `_resolve_transport()`
+reads `RXYCODE_TRANSPORT` (stdio/http) and `_resolve_model_label()` derives the
+model display label.
 
 ## Core: _launch_ink_tui(model, port)
 Launch sequence:

@@ -37,6 +37,12 @@ Implements Model Context Protocol (MCP) client for connecting to external MCP se
   deadline, and return bounded/redacted content
 - `disconnect()`: unblock requests and terminate the complete process tree
 - `load_mcp_servers(config)`: return lifecycle-owned clients and tools
+- `create_mcp_tools(config)`: factory producing the discovered `StructuredTool` adapters
+- `list_resources()` / `read_resource(uri)`: MCP Resources support (client.py:498/508)
+
+**Public types:** `MCPTool` (client.py:88), `MCPLoadResult` (:108),
+`MCPError` / `MCPTimeoutError` / `MCPCancelledError` (:75-84). Client
+attributes `connected`, `tools_changed`, `protocol_version`, `last_error_type`.
 
 **Configuration:**
 - `mcpServers` in `config.yaml`: `{name: {type, command, args, env, timeout}}`

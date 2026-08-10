@@ -23,12 +23,15 @@ rollback via `RXYCODE_TUI=ink`.
 | opentui-app/src/App.tsx | Main OpenTUI app — chat, input, shortcuts, dialog routing |
 | opentui-app/src/index.tsx | OpenTUI entry — CliRenderer alternate screen + lifecycle |
 | opentui-app/src/chatApi.ts | Transport facade — delegates to `transport/` (http or stdio) |
-| opentui-app/src/transport/ | P5 transport layer: `httpTransport`, `stdioTransport`, notify mapper |
+| opentui-app/src/transport/ | P5 transport layer: `httpTransport`, `stdioTransport`, `httpAdmin.ts`, `notifyToStreamEvent.ts`, `sseParser.ts` |
+| opentui-app/src/mention.ts | `@agent` mention autocomplete + dispatch over stdio `agent/invoke` |
 | opentui-app/src/dialog/* | Nested settings / select / confirm / prompt dialogs |
 | opentui-app/src/CommandPalette.tsx | Ctrl+P command palette |
 | opentui-app/src/ApprovalDialog.tsx | Tool approval UI |
 | opentui-app/src/Markdown.tsx | Markdown rendering |
 | opentui-app/src/streamReducer.ts | Streaming message state |
+| opentui-app/src/commands.ts / commandRouter.ts | Slash-command parsing/routing |
+| opentui-app/src/Modal.tsx / brand.ts / statusBar.ts | Shared UI primitives |
 
 ## Key Files (Ink — fallback)
 | File | Purpose |
@@ -76,8 +79,11 @@ rollback via `RXYCODE_TUI=ink`.
 **Event Types:**
 - progress: Thinking progress updates
 - token: Streaming text tokens
+- reasoning: Model reasoning (thinking) stream
 - tool_call: Tool execution started
 - tool_result: Tool execution completed
+- approval_request: Tool approval request (see ApprovalDialog)
+- question_request: Correlated choice/free-text question
 - final: Final response
 - error: Error occurred
 - plan/step: Planning step updates

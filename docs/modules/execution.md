@@ -9,7 +9,8 @@ Handles the execution of individual subtasks within the LangGraph pipeline. Mana
 | executor.py | Executor - runs individual subtasks with tool-calling loop |
 | tool_orchestrator.py | ToolOrchestrator - manages tool execution and result formatting |
 | tool_journal.py | Crash-safe pending/completed journal for WRITE/DANGER calls |
-| scheduler.py | TaskScheduler - cron-like scheduled task execution |
+| evidence.py | `ToolEvidence` / `ArtifactEvidence` / `build_tool_evidence` / `deterministic_issues` - deterministic tool-boundary evidence contract |
+| scheduler.py | Deterministic DAG scheduler (`get_ready_tasks`/`get_parallel_groups`/`build_dag`). **Cron scheduling lives in `scheduler/`** (see [scheduler.md](scheduler.md)) |
 
 ## Core Code: executor.py (Executor)
 
@@ -39,22 +40,25 @@ are expressed at the graph layer via LangGraph's `recursion_limit`.)
 - Handles tool errors gracefully (timeout, crash, invalid args)
 
 **Key Methods:**
-- register(tool): Add a tool to the registry
+- register(name, tool, *, risk=None): Add a tool to the registry with an optional risk override
 - execute_tool(name, args, config) -> str: Execute a tool by name **through
   the safety gate** (阶段二): policy classification -> write-path whitelist
   -> dry-run -> approval -> execute -> audit. READ-level tools skip
   approval; WRITE/DANGER need approval unless the level is in
   `safety.auto_approve` or was always-allowed this session. Every decision
-  is appended to `~/.rxycode/logs/audit.jsonl`. See
+  is appended to `~/.RxyCode/logs/audit.jsonl`. See
   [docs/modules/safety.md](safety.md).
   Path-bearing write arguments include `save_path`, so custom download
   destinations are checked against the same writable-root policy.
-- get_tools() -> list: Return all registered tools for LLM binding
+  The same-run identical-call dedup (`_live_tool_dedup`) suppresses duplicate
+  tool calls within one run.
+- get_all() -> dict / list_names() -> list: Return all registered tools for
+  LLM binding (there is no `get_tools()`)
 - select_tools(hints) -> list: Select tools by hint. On hint mismatch,
   returns only the read-only core subset (READONLY_TOOL_NAMES:
-  read/view/grep/glob/ls — adapted from Claude Code's read-only whitelist
-  concept) instead of every tool, so a bad hint never silently grants
-  write/execute capabilities.
+  read/view/grep/glob/ls/datetime/websearch/webfetch — adapted from Claude
+  Code's read-only whitelist concept) instead of every tool, so a bad hint
+  never silently grants write/execute capabilities.
 
 `ToolOrchestrator.execute_tool()` applies the optional shared tool deadline from
 `execution.tool_timeout_seconds`. The default is `1800` seconds and wraps only
@@ -99,14 +103,19 @@ the stable identity is tool + argument digest + identical-call ordinal. If a
 replanned request materially changes the tool or arguments, it is treated as a
 new logical operation.
 
-## Core Code: scheduler.py (TaskScheduler)
+## Core Code: scheduler.py (execution/scheduler.py)
 
-**Purpose:** Runs prompts on a cron schedule.
+**Purpose:** Deterministic DAG task scheduler used by the parallel executor — no
+LLM, no cron. It exposes `get_ready_tasks()` / `get_parallel_groups()` /
+`build_dag()` to fan out independent subtasks.
 
-**Key Methods:**
-- add_task(cron_expr, prompt) -> Task: Add a scheduled task
-- list_tasks() -> list: List all tasks
-- remove_task(id) -> bool: Remove a task
-- enable_task(id) / disable_task(id): Toggle task
-- start(): Start the scheduler loop
-- Storage: ~/.rxycode/scheduler_tasks.json
+Cron-style scheduled prompts live in `scheduler/` (`scheduler/manager.py`
+`ScheduledTaskManager`, `scheduler/cron.py` `CronExpression`) and are described
+in [scheduler.md](scheduler.md).
+
+## Core Code: executor.py evidence round budget
+
+Each task's ReAct loop runs under `execution.max_tool_rounds` (default 10),
+enforced by `_ToolRoundLimitMiddleware` (executor.py:50-98, 128-173). Tool
+results are normalized through `build_tool_evidence()` so the validator and
+final-output grounding checks share the same deterministic evidence contract.

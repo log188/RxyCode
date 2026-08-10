@@ -19,6 +19,8 @@ and `api_server.py` can share one schema instead of ad-hoc SSE field names.
 | `types.py` | Shared literals (`RiskLevelName`, `RunStatus`, ...) |
 | `schema.py` | `export_schema()` + `python -m protocol.schema` CLI |
 | `schema.json` | Frozen export checked by `tests/test_protocol_schema.py` |
+| `subagents.py` | `SUBAGENT_PROTOCOL_VERSION=1`: AgentDefinition, TaskRequest, TaskResult, TriggerKind, ChildStatus, WorkspaceMode, BudgetSpec, PermissionSpec, ContextEnvelope |
+| `subagents_schema.json` | Machine-validatable subagent protocol schema |
 
 ## SSE event inventory (P1 step 3)
 
@@ -29,22 +31,24 @@ Select-String -Path api_server.py -Pattern '"type":\s*"' |
   ForEach-Object { "$($_.LineNumber): $($_.Line.Trim())" }
 ```
 
-### `api_server.py` `StreamTUI` / chat queue (`type` field)
+### `api_server.py` → `api_server_stream.py` `StreamTUI` / chat queue (`type` field)
+
+StreamTUI was split out of `api_server.py` into `api_server_stream.py`. The
+`type` fields map to protocol models as follows (line refs are
+`api_server_stream.py` unless noted):
 
 | SSE `type` | Source (file:line) | Payload fields | Protocol model |
 |------------|-------------------|----------------|----------------|
-| `token` | `api_server.py:2307` (`flush_stream_buffers`; buffer key `token` :2297) | `text` | `event/message_delta` (`MessageDelta`) |
-| `progress` | `api_server.py:2297` (buffer key `progress`; `write_progress` :2328) | `text` | `event/progress` (`ProgressUpdate`) |
-| `reasoning` | `api_server.py:2297` (buffer) + `:2421` (`_emit_thinking_snapshot`; snapshot `_put` :2428) | `text`, optional `snapshot: true` | `event/reasoning_snapshot` (`ReasoningSnapshot`) |
-| `plan` | `api_server.py:2350` (`write_plan`; `_put` :2354) | `steps` | `event/plan` (`PlanUpdate`) |
-| `step` | `api_server.py:2355` (`write_step`; `_put` :2358) | `index`, `total`, `text` | `event/step` (`StepProgress`) |
-| `tool_call` | `api_server.py:2359` (`write_tool_call`) | `name`, `args`, `message_id`, optional `timestamp` | `event/tool_begin` (`ToolBegin`; `call_id` <- `message_id`) |
-| `tool_result` | `api_server.py:2386` (`write_tool_result`) | `result`, `status`, optional `message_id` | `event/tool_end` (`ToolEnd`) |
-| `error` | `api_server.py:2349` (`write_error` :2346), `:2603`, `:2627` | `message`, optional `message_id`, `run_id`, `status` | `event/error` (`ErrorNotification`) |
+| `token` | `api_server_stream.py:299` (`_put`; buffer key `token`; `flush_stream_buffers` :306) | `text` | `event/message_delta` (`MessageDelta`) |
+| `progress` | `api_server_stream.py:327` (`write_progress`; buffer key `progress`) | `text` | `event/progress` (`ProgressUpdate`) |
+| `reasoning` | `api_server_stream.py:420` (`_emit_thinking_snapshot`) | `text`, optional `snapshot: true` | `event/reasoning_snapshot` (`ReasoningSnapshot`) |
+| `plan` | `api_server_stream.py:349` (`write_plan`; `_put` :299) | `steps` | `event/plan` (`PlanUpdate`) |
+| `step` | `api_server_stream.py:354` (`write_step`) | `index`, `total`, `text` | `event/step` (`StepProgress`) |
+| `tool_call` | `api_server_stream.py:358` (`write_tool_call`) | `name`, `args`, `message_id`, optional `timestamp` | `event/tool_begin` (`ToolBegin`; `call_id` <- `message_id`) |
+| `tool_result` | `api_server_stream.py:385` (`write_tool_result`) | `result`, `status`, optional `message_id` | `event/tool_end` (`ToolEnd`) |
+| `error` | `api_server_stream.py` (`write_error`), `api_server.py` | `message`, optional `message_id`, `run_id`, `status` | `event/error` (`ErrorNotification`) |
 | `final` | `core/session.py:57` via `notification_to_sse_event` | `text`, `thinking`, `run_id`, token fields, `session_schema_version` | `event/final` (`FinalAnswer`) + `event/token_usage` (`TokenUsage`) |
-| `done` | `api_server.py:2639` (stream teardown) | `run_id`, `status` | `event/done` (`RunComplete`) |
-
-Legacy empty-message guard still emits inline JSON at `api_server.py:2458` (`error` + `done`).
+| `done` | `api_server_stream.py` (stream teardown) | `run_id`, `status` | `event/done` (`RunComplete`) |
 
 ### Bidirectional server requests (still SSE today)
 
@@ -60,7 +64,19 @@ HTTP replies today: `POST /approve` and `POST /question/respond` in `api_server.
 | Protocol model | Notes |
 |----------------|-------|
 | `TaskStarted`, `TaskComplete` | Reserved for LangGraph task boundaries (future Session emit) |
-| `JobStatusUpdate` | Reserved for background job lifecycle (P4 appserver) |
+
+`JobStatusUpdate` and `ServerHeartbeat` are **already emitted on the wire** by
+`appserver/server.py` (`_emit_job_state()` at :112-115 emits `submitted`/
+`running`/`failed`; `ServerHeartbeat` at :484).
+
+### Subagent JSON-RPC methods (appserver)
+
+`appserver/server.py` registers (server.py:527-552):
+- `session/set_thinking_expanded`, `session/warm`
+- `agent/invoke` — user `@agent` mention dispatch
+- `task/start` — explicit subagent dispatch
+- `subagents/list` — list registered agent definitions
+- `subagents/capability` — feature flags + capability report
 
 ## Commands
 
@@ -86,6 +102,6 @@ python -m ruff check protocol
 
 ## Dependencies
 
-- **Consumers (today)**: `appserver/` (`server.py:33,37` imports `JobStatusUpdate`/`ServerHeartbeat`), `core/session.py` (imports `protocol.notifications`)
+- **Consumers (today)**: `appserver/` (`server.py`, `subagent_routes.py`), `core/session.py` (imports `protocol.notifications`), `core/subagents/` (imports `protocol.subagents`)
 - **Consumers (future)**: `frontend/protocol-client`
-- **Sources today**: `api_server.py` SSE, `core/safety/approval.py`, `core/question.py`
+- **Sources today**: `api_server.py`/`api_server_stream.py` SSE, `core/safety/approval.py`, `core/question.py`, `core/subagents/` events

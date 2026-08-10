@@ -44,7 +44,8 @@ Only design patterns are ported; all implementation is original.
 
 - `get_embeddings(texts, config) -> np.ndarray`: Batch embed texts via OpenAI-compatible `/embeddings` API (64 texts per batch). Returns `(N, dim)` float32 array. Empty array if unavailable.
 - `is_embedding_available() -> bool`: Check if embedding is configured and enabled
-- `_EmbeddingCache`: Thread-safe disk cache (`~/.rxycode/rag_cache/embeddings.json`), keyed by `sha256(text)[:16]`
+- `get_embedding_config()`: Resolve embedding config from `rag.embedding`
+- `_EmbeddingCache`: Thread-safe disk cache (`~/.RxyCode/rag_cache/embeddings.json`), keyed by `sha256(namespace \0 text)[:24]`
 - Config resolution: `rag.embedding.base_url` / `api_key` default to None, which means the active model's credentials are reused automatically
 - `clear_embedding_cache()`: Clear the on-disk embedding cache
 
@@ -69,6 +70,10 @@ Only design patterns are ported; all implementation is original.
 
 **Code Search:**
 - `code_search(query, top_k=8) -> str`: Search the codebase for code relevant to a natural language query. Uses vector similarity search if embeddings are available, falls back to keyword matching otherwise.
+- `retrieve_context(query, ...)`: The **primary prompt-retrieval entry** used by
+  MemoryManager context injection — offline keyword ranking, optional
+  `allow_network` embeddings, `prefer_live_files` live-bridge, bounded by
+  `MAX_RETRIEVAL_TOP_K=20` / `MAX_RETRIEVAL_CHARS=20000`.
 - `_vector_search(query, top_k)`: Vector similarity search via the store
 - `_keyword_search(query, top_k)`: Fallback keyword-based search on chunk content (simple word matching, normalized by content length)
 - Auto-registered as a `StructuredTool` in the global tool registry on import
@@ -127,7 +132,7 @@ rag:
     base_url: null                  # Reuse active model's base_url if null
     api_key: null                   # Reuse active model's api_key if null
     model: text-embedding-3-small   # Embedding model name
-  top_k: 8                          # Default number of search results
+  top_k: 8                          # `code_search` tool default; prompt retrieval default is 6 (`DEFAULT_RETRIEVAL_TOP_K`)
   max_context_chars: 6000           # Hard prompt-injection character bound
   context_cache_entries: 64         # Thread-safe LRU entry bound
   context_cache_ttl_seconds: 30     # In-run expiry; clears each top-level run
@@ -136,8 +141,8 @@ rag:
 ```
 
 **Data locations:**
-- Embedding cache: `~/.rxycode/rag_cache/embeddings.json`
-- Vector index: `~/.rxycode/rag_index/<project_hash>/` (meta.jsonl + vectors.npy + file_index.json)
+- Embedding cache: `~/.RxyCode/rag_cache/embeddings.json`
+- Vector index: `~/.RxyCode/rag_index/<project_hash>/` (meta.jsonl + vectors.npy + file_index.json)
 
 ## Dependencies
 - **Internal**: `config/settings.py` (rag config, model credentials), `tools/registry` (code_search tool registration)

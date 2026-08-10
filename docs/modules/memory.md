@@ -21,7 +21,9 @@ never enumerates another session's private facts.
 | short_term.py | ShortTermMemory - sliding window of recent messages |
 | long_term.py | LongTermMemory - persistent compressed context store |
 | compressor.py | Compresses conversation history into summaries |
-| search.py | Semantic search across memory entries |
+| search.py | BM25 keyword search across memory entries |
+| vector_memory.py | ExperienceVectorMemory - retrievable vector store for reusable execution experiences/plans |
+| session_tui.py | SessionRecordingTUI - full-session recording TUI adapter |
 | auto_memory.py | Automatic extraction of important facts from conversations (regex + LLM) |
 | user_memory.py | UserMemory - explicit /memory add/list/remove/search commands |
 | chat_storage.py | ChatStorage - save/load/list named conversations |
@@ -51,13 +53,23 @@ never enumerates another session's private facts.
 - Tier 3: Store compressed summaries in long-term memory
 
 ## Core Code: search.py
-- search_memory(query, top_k=5) -> list[SearchResult]: Semantic search across all memory entries using embedding similarity
+- `search_memory(query, top_k=10) -> list[SearchResult]`: **BM25 keyword
+  search** across all memory entries (not embedding similarity)
+
+## Core Code: vector_memory.py (ExperienceVectorMemory)
+
+Reusable-experience vector store used by MemoryManager:
+- `store_execution(...)`: persist a validated execution
+- `store_experience(...)` / `store_plan_experience(...)`: persist reusable
+  experiences / validated plans
+- `log_error(...)`: record a failure for later retrieval
+- `get_retrieval_context(query)`: inject retrieved experiences into prompt context
 
 ## Core Code: user_memory.py
 - UserMemory.add(text) -> dict: Save a user fact
 - UserMemory.list_all() -> list: List all saved facts
 - UserMemory.remove(id) -> bool: Remove a fact by ID
-- search_memory(query) -> list: Search saved facts by semantic similarity
+- search_memory(query) -> list: Search saved facts by keyword similarity
 
 ## Core Code: chat_storage.py
 - ChatStorage.save(name, messages) -> bool: Save conversation

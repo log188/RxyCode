@@ -74,9 +74,17 @@ prints the per-layer session counts and rates alongside persisted entry statisti
 
 ## Core API
 
-- `precise_cache.get(system, query, namespace="") -> dict | None`
-- `precise_cache.put(system, query, response, namespace="")`
+- `precise_cache.get(system_prompt, query, tool_name="", tool_args="", prompt_version="", namespace="") -> dict | None`
+- `precise_cache.put(system_prompt, query, response, tool_name="", tool_args="", tool_calls=None, ttl=7200, prompt_version="", namespace="")`
 - `precise_cache.get_stats() -> dict`
 - `semantic_cache.get(query, namespace="") -> dict | None`
-- `semantic_cache.put(query, response, namespace="")`
+- `semantic_cache.put(query, response, tool_calls=None, ttl=7200, namespace="")`
 - `semantic_cache.get_stats() -> dict`
+
+## Text normalization
+
+`cache/text_normalizer.py` provides `normalize_query` / `normalize_tool_args` /
+`extract_intent` used by the **semantic** layer. These do **not** participate in
+precise-cache key construction (the precise layer hashes raw bytes).
+
+Both caches also expose `clean_expired()` and `clear()` maintenance methods.

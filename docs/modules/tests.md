@@ -2,7 +2,13 @@
 
 RxyCode 的测试分为确定性常规门禁、平台专项测试和显式 opt-in 的 live 测试。普通 CI 不访问收费模型或公网。
 
-2026-07-25 本地最终基线：`2320 collected`，其中 `2319` 个确定性 Python 测试通过（`2311` 个常规/并行用例和 `8` 个串行用例），`1` 个 live 测试因没有测试专用 provider 凭据而未运行。2026-07-26 本次 TUI 回归验证：前端为 `28 files / 153 tests`，thinking/SSE 聚焦契约为 `12 tests`，Windows ConPTY 为 `19 + 2` 个场景通过。
+测试规模随 Phase A/B/C 持续增长。已记录的确定性全量基线：`10412 passed / 3 skipped`
+（v1.2.8 release 记录，`python -m pytest tests -q`）；Phase 4 子代理桥接合入后的
+核心回归为 `530 passed / 1 skipped`（`tests/test_subagents tests/test_appserver
+tests/test_core/test_agent_tool_contracts.py tests/test_safety_gate.py
+tests/stress_test/test_phase4_harness.py`，跳过项为需要 `RXYCODE_APPSERVER_LIVE=1`
+的真实 appserver live 测试）。前端基线：`28 files / 153 tests`；thinking/SSE 聚焦契约
+`12 tests`；Windows ConPTY `19 + 2` 个场景通过。
 
 ## 测试层
 
@@ -122,6 +128,12 @@ python -m pytest tests/live -m live -v
 
 ## 覆盖率策略
 
-2026-07-25 在新增分发测试之前生成的确定性并行/串行覆盖率快照中，核心包范围分支覆盖率为 `77.1%`，workflow 核心门槛为 `67%`；全项目分支覆盖率为 `71.7%`，门槛为 `60%`。新增分发测试不降低门槛，但不能把旧快照冒充为 2319 个确定性测试重新合并后的结果。双门槛让 `main.py`、`api_server.py`、evals、MCP、RAG、scheduler 和 LSP 的低覆盖代码保持可见且不可回退。CI 仍按 unit、integration、contract、serial、legacy regression 五 lane 采集。提升流程是：连续多次 CI 记录稳定结果后，通过 workflow 评审小步提高；不得下调。覆盖率数字不能替代主链、权限、恢复和终端协议的行为断言。
+v1.2.8 release 记录核心包范围分支覆盖率为 `77.1%`（workflow 核心门槛 `67%`）、
+全项目分支覆盖率为 `71.7%`（门槛 `60%`）。覆盖率数字随 Phase 新增代码持续演进，
+具体以 CI 实际采集为准。双门槛让 `main.py`、`api_server.py`、evals、MCP、RAG、
+scheduler 和 LSP 的低覆盖代码保持可见且不可回退。CI 仍按 unit、integration、
+contract、serial、legacy regression 五 lane 采集。提升流程是：连续多次 CI 记录
+稳定结果后，通过 workflow 评审小步提高；不得下调。覆盖率数字不能替代主链、权限、
+恢复和终端协议的行为断言。
 
 当前目录没有 `.git`，没有 GitHub-hosted workflow 运行证据；当前机器也没有 Docker 二进制。上述数字来自本地等价命令，live provider 与镜像构建不能写成已通过。

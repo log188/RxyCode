@@ -12,7 +12,7 @@ code vendored.
 |------|---------|
 | policy.py | RiskLevel (READ/WRITE/DANGER), static defaults, argument-aware `classify_tool_risk`, write-path and dry-run policy |
 | approval.py | ApprovalRequest/Decision, ApprovalBroker ABC, TuiApproval (CLI), SseApproval (API), global singleton |
-| audit.py | AuditLogger -> ~/.rxycode/logs/audit.jsonl, sensitive-key redaction |
+| audit.py | AuditLogger -> ~/.RxyCode/logs/audit.jsonl, sensitive-key redaction |
 
 ## Core Code: policy.py
 
@@ -39,11 +39,11 @@ and unknown workflow operations are DANGER. Missing or unknown memory/task
 operations retain their conservative WRITE defaults.
 
 **Write-path whitelist:** `is_write_allowed(path, config)` resolves the
-target and requires it to live under cwd, `~/.rxycode/output/` (or
-`RXYCODE_OUTPUT_DIR`), or `safety.allowed_write_paths`. `Path.relative_to`
-prefix check blocks `../` escapes and sibling-prefix confusion. The tool
-orchestrator applies this check to download `save_path` values as well as
-normal file path arguments.
+target and requires it to live under cwd, `~/.RxyCode/output/` (or
+`RXYCODE_OUTPUT_DIR`), the `execution.workspace_root` (when configured), or
+`safety.allowed_write_paths`. `Path.relative_to` prefix check blocks `../`
+escapes and sibling-prefix confusion. The tool orchestrator applies this
+check to download `save_path` values as well as normal file path arguments.
 
 **Dry-run:** `safety.dry_run: true` in config or `RXYCODE_DRY_RUN=1` makes
 WRITE/DANGER tools return `[dry-run] 未实际执行: <summary>` without running.
@@ -71,7 +71,7 @@ global accessor. No broker + WRITE/DANGER tool => rejected (fail-closed).
 
 ## Core Code: audit.py
 
-Every gated call appends one JSONL record to `~/.rxycode/logs/audit.jsonl`:
+Every gated call appends one JSONL record to `~/.RxyCode/logs/audit.jsonl`:
 `ts, run_id (log/logger.py RUN_ID), tool, risk, args, approval, result`.
 - `approval` ∈ auto / approved / rejected / always / dry_run
 - args sanitized recursively: keys matching api_key/password/token/secret/
@@ -79,6 +79,8 @@ Every gated call appends one JSONL record to `~/.rxycode/logs/audit.jsonl`:
   command/query strings (Bearer, api_key/token/password assignments, and
   `sk-...` keys) are redacted before values are truncated to 200 chars
 - Thread-safe (single lock); write failures are swallowed (best-effort)
+- Audit file rotation: logs are rotated by `log/logger.py` when the audit
+  JSONL grows (bounded size retention)
 
 ## Gate Integration (execution/tool_orchestrator.py)
 
@@ -88,14 +90,32 @@ point, called by `AgentV2._execute_tool`:
 1. classify by tool name and arguments (including bash and composite operations)
 2. write-path whitelist (WRITE/DANGER tools with a path arg)
 3. dry-run simulation (WRITE/DANGER only)
-4. approval (READ exempt; `safety.auto_approve: ["write"]` exempts a level)
+4. approval (READ exempt; `safety.auto_approve: ["write"]` exempts a level;
+   `permission_mode` = `full_auto` (auto-approve all), `auto_edit`
+   (file-edit tools only), or `confirm_all` (default: WRITE/DANGER need approval))
 5. execute + audit
+
+## Subagent permission boundary (core/subagents/)
+
+Phase 4 bridges `ChildRuntime` to a fresh `AgentV2` for each child and
+installs a child permission guard *before* the orchestrator gate:
+- `core/subagents/permissions.py` — `PermissionPolicy` allow/ask/deny with
+  system hard-reject rules (e.g. child `edit` on `.git/**`/`venv/**`, child
+  `bash` `git push`/`rm -rf`/`pip uninstall`/`npm publish` always denied)
+- `ChildRuntime.check_tool(name, args)` evaluates the child policy and audits
+  the decision; a deny returns `[blocked: child permission denied ...]`
+  without invoking the tool
+- Workspace enforcement (`core/subagents/workspace.py`): `read_only` /
+  `leased_write` / `isolated_worktree` modes gate edits and bash commands
+- Task dispatch is gated by `permission.task` (`TaskPermissionSpec`) and the
+  global subagent depth limit
 
 ## Config (config/settings.py `_default_config`)
 
 ```yaml
 safety:
   enabled: true
+  permission_mode: confirm_all  # full_auto | auto_edit | confirm_all
   auto_approve: []          # level names: "read" | "write" | "danger"
   allowed_write_paths: []   # extra writable roots
   dry_run: false

@@ -24,7 +24,7 @@ class NodeSpan:
     start_ts: float         # unix timestamp
     end_ts: float           # unix timestamp (0 if not finished)
     token_usage: dict       # {"prompt_tokens": N, "completion_tokens": M, "total_tokens": K}
-    status: str             # "ok" / "error" / "timeout" / "cancelled"
+    status: str             # "ok" / "error" / "timeout" ("cancelled" is caller-side)
     error_msg: str          # empty if status == "ok"
 ```
 
@@ -40,11 +40,19 @@ The `Tracer` class collects NodeSpans for a single run and persists to JSONL.
 - `start_span(node_name, task_id="") -> NodeSpan`: Start timing a node execution. Returns a span with `end_ts=0` (not yet finished). The caller should pass the returned span to `end_span()`.
 - `end_span(span, status="ok", token_usage=None, error_msg="") -> None`: End a span, mutate it in place (set end_ts, status, token_usage, error_msg), and append one JSON line to the trace file.
 - `get_spans() -> list[NodeSpan]`: Load all spans from the trace JSONL file. Always reads from disk so it sees persisted data.
-- `summary() -> dict`: Per-node stats: count, total_duration, p50, p99, total_tokens, prompt_tokens, completion_tokens. Keyed by node_name.
+- `summary() -> dict`: Per-node stats: count, total_duration_s, p50_duration_s,
+  p99_duration_s, total_tokens, prompt_tokens, completion_tokens. Keyed by node_name.
 
 **Global Singleton:**
 - `get_tracer() -> Tracer`: Return the process-global Tracer singleton (lazy-init)
 - `reset_tracer(run_id=None) -> Tracer`: Discard the current global Tracer and create a fresh one. Useful for tests or when starting a new run with an explicit run_id.
+
+**Retention:** `Tracer(run_id, retention_runs, manage_retention)` prunes old
+run files via `core/log_retention.prune_run_files`; default retention is 200
+runs (`observability.trace_retention_runs`).
+
+**Redaction:** `end_span` error messages are passed through
+`log/log_helpers.redact_sensitive` before persistence.
 
 ### Percentile Calculation
 

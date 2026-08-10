@@ -16,7 +16,7 @@ headless core and the same typed `protocol/` schema.
   standalone with `rxycode --api`
 - Requests enter the agent through the headless `Session` facade
   (`core/session.py`) rather than calling `AgentV2` directly
-- File size: 2,011 lines. Docstring:
+- File size: 2,029 lines. Docstring:
   "RxyCode API Server - FastAPI backend for the Ink TUI"
 
 ### Module structure (post-thinning)
@@ -26,8 +26,8 @@ files:
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `api_server.py` | 2,011 | FastAPI route assembly layer (HTTP/SSE adapter): 8 `@app.` routes, request models, startup/auth; mounts `models_router` via `app.include_router` (api_server.py:71) |
-| `api_server_models.py` | 305 | Model-management endpoints (`/models`, `/models/presets`, `/models/discover`, `/models/onboard`, `/models/onboard/batch`) on an `APIRouter` (`models_router`), plus their request models |
+| `api_server.py` | 2,029 | FastAPI route assembly layer (HTTP/SSE adapter): 8 `@app.` routes, request models, startup/auth; mounts `models_router` via `app.include_router` (api_server.py:71) |
+| `api_server_models.py` | 355 | Model-management endpoints (`/models`, `/models/presets`, `/models/discover`, `/models/onboard`, `/models/onboard/batch`) on an `APIRouter` (`models_router`), plus their request models |
 | `api_server_stream.py` | 451 | SSE transport classes: `APIProxyTUI` (11), `StreamSessionRecorder` (125), `StreamTUI` (271) |
 
 ## Phase 2 Adapter Positioning
@@ -58,12 +58,14 @@ Per the Phase 2 development doc (docs/plans/opus5-plan/rxycode/00-EXECUTION-PLAN
 - `api_server.py` is the HTTP+SSE transport implementation of the *same*
   protocol: one contract, two transports (stdio vs HTTP+SSE).
 
-This direction is already partially realized: `/chat/stream` routes through
-`Session` — `from .core.session import Session, notification_to_sse_event`
-(api_server.py:1844), an `_emit_protocol` callback that converts protocol
-notifications to SSE events (1846-1849), a `Session(...)` built with
-`emit=_emit_protocol` (1851-1856), and `session.prompt(agent, ...)` (1858-1863).
-`/cancel` similarly uses `Session.interrupt` (1666-1673).
+This direction is already realized: **both** `/chat/stream` and `/chat` route
+through `Session` — `from .core.session import Session, notification_to_sse_event`
+(api_server.py:1862), an `_emit_protocol` callback that converts protocol
+notifications to SSE events (1864), a `Session(...)` built with
+`emit=_emit_protocol` (1869-1872), and `session.prompt(agent, ...)` (1876).
+`/chat` (non-streaming) constructs the same `Session` at 816-821.
+`/cancel` similarly uses `Session.interrupt` (1670). Run lifecycle is wrapped by
+`_api_run_lifecycle` (api_server.py:1919).
 
 ### Backward-compatibility hard constraint
 
@@ -132,14 +134,14 @@ on `models_router` in api_server_models.py and mounted via
 |----------|--------|------|---------|
 | /status | GET | 715 | Current status: model, mode, memory, billing, cache, token stats |
 | /models | GET | 115 | Model nicknames and provider model IDs (never credentials) |
-| /models/presets | GET | 158 | Connection presets (provider + base URL only, no model IDs) |
-| /models/discover | POST | 170 | Probe a provider's model catalogue with supplied credentials; never persists |
-| /models/onboard | POST | 197 | Probe an unsaved model configuration, then persist it on success |
-| /models/onboard/batch | POST | 278 | Add multiple discovered models without per-model chat probes |
-| /chat | POST | 770 | Non-streaming chat with the same run lifecycle and terminal classification |
-| /chat/stream | POST | 1732 | Send message, receive SSE stream of events |
-| /cancel | POST | 1652 | Cancel the active chat or command lifecycle (via `Session.interrupt`) |
-| /command | POST | 1681 | Execute slash commands (/help, /clear, etc.) |
+| /models/presets | GET | 187 | Connection presets (provider + base URL only, no model IDs) |
+| /models/discover | POST | 199 | Probe a provider's model catalogue with supplied credentials; never persists |
+| /models/onboard | POST | 226 | Probe an unsaved model configuration, then persist it on success |
+| /models/onboard/batch | POST | 328 | Add multiple discovered models without per-model chat probes |
+| /chat | POST | 770 | Non-streaming chat through the same `Session` facade and run lifecycle |
+| /chat/stream | POST | 1750 | Send message, receive SSE stream of events |
+| /cancel | POST | 1670 | Cancel the active chat or command lifecycle (via `Session.interrupt`) |
+| /command | POST | 1699 | Execute slash commands (/help, /clear, etc.) |
 | /approve | POST | 656 | Resolve a pending safety approval |
 | /question/respond | POST | 669 | Resolve a correlated Agent question with a choice, text, or cancellation |
 | /log | POST | 698 | Receive recursively redacted frontend diagnostics |
@@ -162,16 +164,17 @@ on `models_router` in api_server_models.py and mounted via
   - error: Non-success result, with `failed`, `timed_out`, or `cancelled` status
   - done: Stream complete, carrying the terminal run status
 
-The runner drives the agent through `Session` (api_server.py:1851-1863):
+The runner drives the agent through `Session` (api_server.py:1869-1876):
 protocol notifications are converted to SSE via `_emit_protocol` /
 `notification_to_sse_event`; terminal status comes from `session.prompt`.
+`_api_run_lifecycle` (1919) wraps each run with the run lifecycle.
 
 Only classified successful results emit `final`. Agent/build/tool failure
 sentinels are emitted as `error` and counted under their real terminal status.
 Tool events preserve their `message_id`; request/response events preserve their
 approval or question ID so concurrent runs cannot update the wrong UI item.
-Legacy guards still inline SSE JSON: the empty-message guard (1742), invalid
-mode (1747-1752), and busy-stream guard (1758-1762) each emit `error` + `done`
+Legacy guards still inline SSE JSON: the empty-message guard (1760), invalid
+mode (1765-1770), and busy-stream guard (1776-1780) each emit `error` + `done`
 directly.
 
 ## Core: /status

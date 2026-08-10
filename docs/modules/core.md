@@ -41,27 +41,28 @@ Session restoration searches the current date, earlier dated records, and the le
   `ainvoke()` and `astream()` call. It re-wraps `bind_tools()` and
   `with_structured_output()` so fast path, graph, and sub-agent calls retain
   both behaviors.
-- AgentV2 (line ~746): The main agent. Handles user input routing, fast-path optimization, sub-agent delegation, compose mode, and the full LangGraph pipeline.
-- SubAgentV2 (line ~3407): Lightweight sub-agent for parallel task execution.
+- AgentV2 (line ~747): The main agent. Handles user input routing, fast-path optimization, compose mode, and the full LangGraph pipeline. Also owns session lifecycle (`set_session`/`reset_session`/`switch_model`/`list_checkpoints`), hooks, trajectory and checkpoint/journal integration.
+- SubAgentV2 (line ~3763): Legacy sub-agent compatibility shim (`$` prefix commands). Superseded by `core/subagents/` (ChildSessionManager + ChildRuntime).
 
 **How a Request Flows:**
 1. AgentV2.run(user_input, mode) is called
 2. Plan mode uses a dedicated read-only tool loop and never enters the execution graph
 3. Download intent check (_detect_download_intent) for build/compose requests
 4. Fast path: simple queries go directly to _fast_reply() (with 2-level cache: exact + semantic)
-5. Sub-agent path: complex multi-task queries use _run_with_subagents()
+5. Parallel path: complex multi-task queries set `parallel_requested` on the graph state and execute through LangGraph's parallel executor. The legacy `_run_with_subagents()` is **disabled** (`core/agent_v2.py:2950-2954` raises `RuntimeError`); use `core/subagents/` ChildSessionManager for isolated subagent dispatch.
 6. Compose path: plan+build mode uses _run_compose()
 7. Full pipeline: complex build tasks go through the LangGraph pipeline in graph.py
 
 **Key Methods in AgentV2:**
 - _fast_reply(user_input): Direct LLM call with caching. Uses astream() in stream mode, ainvoke() otherwise. Includes tiktoken fallback for token estimation when streaming chunks lack usage metadata.
-- _register_tools(): Registers all available tools (bash, read, write, edit, grep, glob, git, webfetch, websearch, file_download, etc.) into the tool orchestrator.
+- _register_tools(): Registers all available tools via `core/builtin_tool_registration.register_builtin_tools()` (bash, read, write, edit, grep, glob, git, webfetch, websearch, file_download, `task`/`task_manage`, subagent dispatch, etc.). When `subagents_enabled` is on, the `task` name is the isolated subagent dispatch tool and the task-list tool registers as `task_manage`.
 - _is_simple_query(text): Heuristic to decide if a query can skip the full pipeline.
 - _detect_download_intent(text): Regex-based detection of file download, skill download, and MCP download intents.
 - _run_plan_only(user_input): Produces planning text with an explicit read/view/ls/grep/glob/websearch/webfetch/datetime allowlist; mutating calls are hidden and rejected, and the execution graph is never entered.
 - cancel(): Cancels the active asyncio request task and propagates cancellation to an active graph task.
 - _extract_and_save_code(response, user_input): Compatibility no-op; implicit code saving/opening was removed. Models must use safety-gated write/open tools explicitly.
-- _should_use_subagents(text): Checks if a task has multiple independent subtasks that can run in parallel.
+- set_session(session_id)/reset_session()/switch_model(name)/list_checkpoints(): Durable session lifecycle, model switch and checkpoint inspection.
+- register_hook/unregister_hook: lifecycle hooks (`before`/`after`/`error`) via `core/hooks.py`.
 - `_handle_rag_tool_after(context)`: Internal production lifecycle hook. Successful code-affecting tool calls immediately invalidate prompt RAG context and enqueue a debounced incremental refresh; indexing never blocks the tool response.
 - `runtime_status()`: Reports live RAG worker state/generations/failures,
   provider/model rate-limit balance, and aggregate MCP connection/tool/error
@@ -126,10 +127,14 @@ Implements the LangGraph state machine with these nodes:
 6. compressor_node: Compresses context when it grows too large
 7. error_recovery_node: Handles errors with retry logic
 8. synthesizer_node: Combines all results into a final response
+9. reflection_node (graph.py:1299): Reflects on validation failures and decides retry/replan/terminate
+10. final_verifier_node (graph.py:1304): Verifies grounded synthesis claims; the actual terminal node (`synthesizer -> final_verifier -> END`)
 
 **Routing Functions:**
 - route_next(state): Decides next node after decomposer (execute or synthesize)
 - route_after_validator(state): Decides next node after validator (synthesize, replan, or re-execute)
+- route_after_reflection(state) (graph.py:1249): Decides next node after reflection
+- route_entry(state) (graph.py:1261): Entry routing into the graph
 - build_graph(): Constructs the full StateGraph with all nodes and edges
 
 **Watchdog Pattern:**
@@ -177,7 +182,13 @@ Defines AgentState (TypedDict) - the shared state object passed between all grap
 - user_input, session_id, task_tree, memory_context
 - conversation_history, current_task_id, execution_results
 - final_response, phase, error
-- _llm, _memory, _tool_orchestrator, _tui (internal references)
+- `parallel_tasks`, `parallel_requested` (parallel executor fan-out)
+- `reflections`, `failure_attribution`, `replan_count`, `reflection_action`
+- `final_verification` (grounded-synthesis verification result)
+- `compression_count`
+- _llm, _memory, _tool_orchestrator, _tui, _tracer, _checkpoint_store,
+  _checkpoint_mode, _checkpoint_key_input, _hooks, _hook_audit, _model_router,
+  _trajectory, _capabilities (internal references)
 
 `TaskNode.effect` persists the planner's `TaskEffect` (`read`, `write`,
 `danger`, or backward-compatible `auto`). The executor uses `read` to enforce a
@@ -232,13 +243,12 @@ and `tests/test_core/test_request_routing.py`.
 ### P7 intentional lazy imports
 
 P7 tracks function-scoped imports under `core/`, `execution/`, `planning/`,
-`validation/`, and `synthesis/` via `scripts/count_lazy_imports.py` (budget **50**).
+`validation/`, and `synthesis/` via `scripts/count_lazy_imports.py` (budget **70**).
 
-Current total: **34 / 50** (`python scripts/count_lazy_imports.py --by-file`).
-
-The table below is **exhaustive** for every file that contributes to that count.
-Each row explains why the import stays function-scoped (or try-block scoped) instead
-of being hoisted to module level.
+Current total: **72 / 70** (`python scripts/count_lazy_imports.py --by-file`).
+The budget is currently **over budget** and must be reduced; the table below is
+**non-exhaustive** (representative) since Phase B/C subagent modules and new
+providers added several entries.
 
 | Module | Count | Reason |
 |--------|------:|--------|
@@ -263,7 +273,41 @@ of being hoisted to module level.
 now use module-scope absolute imports (config reads go through `config.settings`).
 
 Regression guard: `tests/test_core/test_lazy_import_budget.py` (milestone & final budget)
-and `python scripts/count_lazy_imports.py` (must stay `< 50`).
+and `python scripts/count_lazy_imports.py` (must stay `< 70`).
+
+### Isolated Subagents (`core/subagents/`, Phase B/C/D)
+
+The subagent system is a separate package under `core/`:
+- `manager.py` — `ChildSessionManager`: the single dispatch path for `task` tool,
+  `@agent` mention, and command subtasks (validates definition/mode, permission.task,
+  depth, context, budget, then executes through `ChildRuntime`).
+- `runtime.py` — `AgentRuntime` + `ChildRuntime` facade. Each child creates an
+  **independent `AgentV2`** bound to a child session id, installs a child permission
+  guard before `AgentV2`'s tool gate, and normalizes result/usage/telemetry/errors
+  into `TaskResult`. Parent cancel propagates to the active child AgentV2.
+- `sessions.py` — `ChildSession` lifecycle state machine + `SessionTree` (recursive
+  parent cancellation).
+- `definitions.py` / `config_loader.py` — `AgentDefinitionRegistry` and
+  JSON/Markdown/YAML agent-definition loaders (`config/agents/`).
+- `permissions.py` — `PermissionPolicy` allow/ask/deny evaluation with system hard-reject.
+- `budget.py` — `BudgetGuard` (steps/tokens/time/concurrency).
+- `workspace.py` — `WorkspaceValidator` + `LeaseManager` (read_only / leased_write /
+  isolated_worktree).
+- `events.py` — `ChildSessionEvent` + `EventStore` (monotonic seq, idempotency, replay).
+- `registry_provider.py` — process-wide manager singleton (`init_manager`/`get_manager`).
+
+Dispatch entry points: `tools/subagent_task_tool.py` (`task` tool),
+`tools/task_manage.py` (`task_manage` list tool), `tools/agent_invoke.py`
+(`@agent` mention). Protocol types live in `protocol/subagents.py`.
+
+### Supporting modules
+
+- `core/research_policy.py` — research fast-path policy (`get_research_policy`),
+  including `is_research_summary_request` routing for research-summary intents.
+- `core/run_lifecycle.py` — `RunLifecycle` wrapper used by `api_server` around `Session.prompt`.
+- `core/hooks.py` — lifecycle `HookRegistry` (`before`/`after`/`error`).
+- `core/checkpoints.py` — durable `CheckpointStore` for graph snapshots and side-effect journaling.
+- `core/trajectory.py` — per-run trajectory persistence.
 
 ## Dependencies
 - langchain_core for message types

@@ -5,7 +5,8 @@
 provider 描述"这一族模型和 OpenAI 默认行为有什么不同"，无状态单例，被多个 Agent 并发使用。
 默认实现 == Phase A 之前的 OpenAI 行为；未识别模型落到 OpenAIProvider。
 
-注册表（`core/providers/__init__.py`）当前登记：`DeepSeekProvider`、`DoubaoProvider`、
+注册表（`core/providers/__init__.py`）当前登记：`OpenAIProvider`、`DeepSeekProvider`、
+`KimiProvider`、`GLMProvider`、`MiniMaxProvider`、`MIMOProvider`、`DoubaoProvider`、
 `AnthropicProvider`、`QwenProvider`，兜底 `_FALLBACK = OpenAIProvider()`。
 
 ## ModelCapabilities 字段表（含义 / 默认值 / 来源）
@@ -68,14 +69,14 @@ Provider 探测结果 > Provider 默认值。所有 provider 的 `capabilities()
 > | 家族 | 调研 | 实现 | 当前路由 |
 > |---|---|---|---|
 > | OpenAI | §7.2 | OpenAIProvider（A12：兜底 + 显式能力） | 已注册 |
-> | DeepSeek | §7.1 | DeepSeekProvider | 已注册 |
+> | DeepSeek | §7.1 | DeepSeekProvider（A22 v4 适配） | 已注册 |
+> | Kimi | §7.3 | KimiProvider | 已注册 |
+> | GLM | §7.4 | GLMProvider | 已注册 |
+> | MiniMax | §7.5 | MiniMaxProvider | 已注册 |
+> | MIMO | §7.6 | MIMOProvider | 已注册 |
 > | Anthropic | §7.8 | AnthropicProvider | 已注册 |
 > | Qwen | §7.7 | QwenProvider | 已注册 |
 > | Doubao | §7.9 | DoubaoProvider（A23） | 已注册 |
-> | Kimi | §7.3 | A13 待实现 | OpenAIProvider 兜底 |
-> | GLM | §7.4 | A14 待实现 | OpenAIProvider 兜底 |
-> | MiniMax | §7.5 | A15 待实现 | OpenAIProvider 兜底 |
-> | MIMO | §7.6 | A16 待实现 | OpenAIProvider 兜底 |
 
 
 ## 新增一个 Provider 的完整流程
