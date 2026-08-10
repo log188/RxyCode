@@ -13,7 +13,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const repoDir = resolve(appDir, '..', '..')
+const repoDir = resolve(process.env.RXYCODE_REPO_DIR ?? resolve(appDir, '..', '..'))
 const outputDir = resolve(process.argv[2] ?? join(repoDir, 'artifacts', 'real-gui-probe'))
 const debugPort = 9371
 const vite = join(appDir, 'node_modules', 'electron-vite', 'bin', 'electron-vite.js')
@@ -98,8 +98,9 @@ async function main(): Promise<void> {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
       setter.call(textarea, ${JSON.stringify(prompt)});
       textarea.dispatchEvent(new Event('input', { bubbles: true }));
-      document.querySelector('.send').click();
     })()`)
+    await waitFor(async () => (await has('.send:not(:disabled)')) ? true : null, 5_000, 'enabled send button')
+    await evaluate(`document.querySelector('.send').click()`)
     await waitFor(async () => (await has('.running-indicator')) ? true : null, 20_000, 'run start')
     try {
       await waitFor(async () => (await has('.tool-card')) ? true : null, 45_000, 'first real tool card')
