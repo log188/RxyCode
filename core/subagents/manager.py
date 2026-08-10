@@ -36,6 +36,7 @@ from protocol.subagents import (
     TaskRequest,
     TaskResult,
     TriggerKind,
+    UsageRecord,
     WorkspaceMode,
     WorkspaceScope,
 )
@@ -565,7 +566,6 @@ class ChildSessionManager:
         error=None,
     ) -> TaskResult:
         """Build a terminal TaskResult for a session."""
-        from protocol.subagents import UsageRecord
 
         return TaskResult(
             request_id=request.request_id,

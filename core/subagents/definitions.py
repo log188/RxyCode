@@ -7,6 +7,7 @@ singleton registry used by ChildSessionManager at runtime.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from protocol.subagents import (
     AgentDefinition,
@@ -322,7 +323,6 @@ def _load_from_directory(
     builtin: bool,
 ) -> None:
     """Load all agent definition files from a directory."""
-    from pathlib import Path
 
     if directory is None:
         return
