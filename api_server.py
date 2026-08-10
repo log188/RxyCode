@@ -476,7 +476,12 @@ async def startup(_app: FastAPI | None = None):
     service_loop = _asyncio.get_running_loop()
 
     from .config.settings import get_data_dir, get_scheduler_config, load_config
-    from .utils.queue import QueueManager
+    from .utils.queue import QueueManager, register_shared_loop
+
+    # C6: this lifespan's loop becomes the process-wide shared loop so
+    # synchronous callers (queue.run_task) submit to it instead of creating
+    # a fresh loop per task.
+    register_shared_loop(service_loop)
 
     cfg = load_config()
     scheduler_cfg = get_scheduler_config(cfg)
@@ -558,6 +563,7 @@ async def startup(_app: FastAPI | None = None):
 async def shutdown(_app: FastAPI | None = None) -> None:
     """Stop lifespan services and join every submitted background operation."""
     scheduler = _state.get("scheduler")
+    own_service_loop = _state.get("service_loop")
     with _service_futures_lock:
         futures = list(_state.get("service_futures") or ())
     for future in futures:
@@ -608,6 +614,19 @@ async def shutdown(_app: FastAPI | None = None) -> None:
             "init_task": None,
         }
     )
+
+    # C6: this lifespan's loop is going away; drop the shared-loop
+    # registration ONLY if this lifespan still owns it (a later overlapping
+    # lifespan may have registered its own loop, which must survive), so
+    # synchronous callers fall back to the process-wide queue loop instead
+    # of submitting to a dead loop.
+    try:
+        from .utils.queue import get_shared_loop, register_shared_loop
+
+        if get_shared_loop() is own_service_loop:
+            register_shared_loop(None)
+    except Exception:
+        pass
     target_app = _app or app
     target_app.state.queue_manager = None
     target_app.state.scheduler = None
