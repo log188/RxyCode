@@ -246,6 +246,278 @@
       "title": "ShutdownRequest",
       "type": "object"
     },
+    "ModelsListRequest": {
+      "description": "List configured models with provider grouping and Phase 3 limit summary.\n\nMaps ``models/list``. Response carries ``models``, ``active``, ``recent``.",
+      "properties": {
+        "method": {
+          "const": "models/list",
+          "default": "models/list",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "ModelsListRequest",
+      "type": "object"
+    },
+    "ModelsPresetsRequest": {
+      "description": "List provider connection presets (base URL only, no model ids).\n\nMaps ``models/presets``; the client discovers ids via ``models/discover``.",
+      "properties": {
+        "method": {
+          "const": "models/presets",
+          "default": "models/presets",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "ModelsPresetsRequest",
+      "type": "object"
+    },
+    "ModelsDiscoverRequest": {
+      "description": "Probe a provider catalogue with a credential; never persists.\n\nMaps ``models/discover``. ``api_key`` is never stored or echoed.",
+      "properties": {
+        "method": {
+          "const": "models/discover",
+          "default": "models/discover",
+          "title": "Method",
+          "type": "string"
+        },
+        "api_key": {
+          "title": "Api Key",
+          "type": "string"
+        },
+        "base_url": {
+          "title": "Base Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "api_key",
+        "base_url"
+      ],
+      "title": "ModelsDiscoverRequest",
+      "type": "object"
+    },
+    "ModelsOnboardRequest": {
+      "description": "Probe credentials in memory and persist a working model mapping.\n\nMaps ``models/onboard``. ``api_key`` is stored by the backend\ncredential_store (Windows DPAPI) and never returned.",
+      "properties": {
+        "method": {
+          "const": "models/onboard",
+          "default": "models/onboard",
+          "title": "Method",
+          "type": "string"
+        },
+        "provider_model_id": {
+          "title": "Provider Model Id",
+          "type": "string"
+        },
+        "api_key": {
+          "title": "Api Key",
+          "type": "string"
+        },
+        "base_url": {
+          "title": "Base Url",
+          "type": "string"
+        },
+        "nickname": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nickname"
+        }
+      },
+      "required": [
+        "provider_model_id",
+        "api_key",
+        "base_url"
+      ],
+      "title": "ModelsOnboardRequest",
+      "type": "object"
+    },
+    "ModelsOnboardBatchRequest": {
+      "description": "Probe + persist multiple models with one credential.\n\nMaps ``models/onboard_batch``.",
+      "properties": {
+        "method": {
+          "const": "models/onboard_batch",
+          "default": "models/onboard_batch",
+          "title": "Method",
+          "type": "string"
+        },
+        "api_key": {
+          "title": "Api Key",
+          "type": "string"
+        },
+        "base_url": {
+          "title": "Base Url",
+          "type": "string"
+        },
+        "model_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Model Ids",
+          "type": "array"
+        },
+        "provider_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Id"
+        },
+        "provider_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Name"
+        },
+        "active_model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Model Id"
+        },
+        "skip_probe": {
+          "default": true,
+          "title": "Skip Probe",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "api_key",
+        "base_url",
+        "model_ids"
+      ],
+      "title": "ModelsOnboardBatchRequest",
+      "type": "object"
+    },
+    "ModelsRemoveRequest": {
+      "description": "Remove a model by config key.\n\nMaps ``models/remove``.",
+      "properties": {
+        "method": {
+          "const": "models/remove",
+          "default": "models/remove",
+          "title": "Method",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "ModelsRemoveRequest",
+      "type": "object"
+    },
+    "ModelsSetActiveRequest": {
+      "description": "Switch the active model.\n\nMaps ``models/set_active``.",
+      "properties": {
+        "method": {
+          "const": "models/set_active",
+          "default": "models/set_active",
+          "title": "Method",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "ModelsSetActiveRequest",
+      "type": "object"
+    },
+    "ModelsTestConnectionRequest": {
+      "description": "Live credential test for an existing model.\n\nMaps ``models/test_connection``.",
+      "properties": {
+        "method": {
+          "const": "models/test_connection",
+          "default": "models/test_connection",
+          "title": "Method",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "ModelsTestConnectionRequest",
+      "type": "object"
+    },
+    "CredentialsUpsertRequest": {
+      "description": "Store/refresh a model API key (backend DPAPI, never echoed).\n\nMaps ``credentials/upsert``.",
+      "properties": {
+        "method": {
+          "const": "credentials/upsert",
+          "default": "credentials/upsert",
+          "title": "Method",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "api_key": {
+          "title": "Api Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "api_key"
+      ],
+      "title": "CredentialsUpsertRequest",
+      "type": "object"
+    },
+    "CredentialsDeleteRequest": {
+      "description": "Clear a model's stored API key reference.\n\nMaps ``credentials/delete``.",
+      "properties": {
+        "method": {
+          "const": "credentials/delete",
+          "default": "credentials/delete",
+          "title": "Method",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "CredentialsDeleteRequest",
+      "type": "object"
+    },
     "MessageDelta": {
       "description": "SSE ``type: token`` via ``StreamTUI._buffer(\"token\")`` / flush (api_server.py).",
       "properties": {
@@ -998,6 +1270,36 @@
         },
         {
           "$ref": "#/$defs/ShutdownRequest"
+        },
+        {
+          "$ref": "#/$defs/ModelsListRequest"
+        },
+        {
+          "$ref": "#/$defs/ModelsPresetsRequest"
+        },
+        {
+          "$ref": "#/$defs/ModelsDiscoverRequest"
+        },
+        {
+          "$ref": "#/$defs/ModelsOnboardRequest"
+        },
+        {
+          "$ref": "#/$defs/ModelsOnboardBatchRequest"
+        },
+        {
+          "$ref": "#/$defs/ModelsRemoveRequest"
+        },
+        {
+          "$ref": "#/$defs/ModelsSetActiveRequest"
+        },
+        {
+          "$ref": "#/$defs/ModelsTestConnectionRequest"
+        },
+        {
+          "$ref": "#/$defs/CredentialsUpsertRequest"
+        },
+        {
+          "$ref": "#/$defs/CredentialsDeleteRequest"
         }
       ]
     },

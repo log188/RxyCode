@@ -813,3 +813,96 @@ button:disabled {
 .crash-report-list li {
   word-break: break-all;
 }
+
+/* Phase 4 D5: model list + API key rows */
+.models-list, .apikey-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.model-row, .apikey-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.model-row.active {
+  border-color: rgba(120, 200, 120, 0.5);
+}
+.model-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.model-name {
+  font-weight: 600;
+}
+.model-id, .model-provider {
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.6);
+}
+.model-badge {
+  font-size: 0.75em;
+  color: #7ac87a;
+  border: 1px solid rgba(120, 200, 120, 0.5);
+  border-radius: 4px;
+  padding: 0 4px;
+  align-self: flex-start;
+}
+.model-limit {
+  font-size: 0.75em;
+  color: rgba(255, 255, 255, 0.5);
+}
+.model-actions {
+  display: flex;
+  gap: 6px;
+}
+.model-actions button, .apikey-save, .apikey-delete {
+  font-size: 0.8em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  cursor: pointer;
+}
+.model-remove, .apikey-delete {
+  border-color: rgba(255, 120, 120, 0.4);
+  color: #ff9b9b;
+}
+.model-activate {
+  border-color: rgba(120, 200, 120, 0.4);
+  color: #9bdd9b;
+}
+.apikey-row {
+  flex-wrap: wrap;
+}
+.apikey-model {
+  font-weight: 600;
+}
+.apikey-id {
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.6);
+}
+.apikey-input {
+  flex: 1;
+  min-width: 180px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.3);
+  color: #fff;
+}
+.apikey-saved {
+  font-size: 0.75em;
+  color: #7ac87a;
+}
+.settings-error {
+  color: #ff9b9b;
+  font-size: 0.85em;
+}

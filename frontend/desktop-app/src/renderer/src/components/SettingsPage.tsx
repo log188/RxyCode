@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useDiagnostics, type UpdateStatus } from '../../../platform/index.mts'
+import type { UseModelsResult } from '../hooks/useModels'
+import type { ModelEntry } from '../hooks/useModels'
 
 export type SettingsTab = 'model' | 'apikey' | 'workspace' | 'diagnostics'
 
@@ -12,6 +14,7 @@ export interface SettingsPageProps {
   onClose: () => void
   onPickWorkspace: () => void
   onClearWorkspace: () => void
+  models: UseModelsResult
 }
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
@@ -38,6 +41,50 @@ function BlockedPanel({ title, detail }: { title: string; detail: string }): Rea
       <span className="blocked-badge">BLOCKED_PREREQUISITE</span>
       <p className="blocked-title">{title}</p>
       <p className="blocked-detail">{detail}</p>
+    </div>
+  )
+}
+
+function ApiKeyRow({
+  modelId,
+  modelName,
+  onSave,
+  onDelete
+}: {
+  modelId: string
+  modelName: string
+  onSave: (key: string) => void
+  onDelete: () => void
+}): React.JSX.Element {
+  const [key, setKey] = useState('')
+  const [saved, setSaved] = useState(false)
+
+  const submit = (): void => {
+    if (key.trim() === '') return
+    onSave(key.trim())
+    setKey('')
+    setSaved(true)
+    window.setTimeout(() => setSaved(false), 2000)
+  }
+
+  return (
+    <div className="apikey-row">
+      <span className="apikey-model">{modelName}</span>
+      <span className="apikey-id">{modelId}</span>
+      <input
+        type="password"
+        className="apikey-input"
+        placeholder="粘贴 API Key（不回显）"
+        value={key}
+        onChange={(event) => setKey(event.target.value)}
+      />
+      <button type="button" className="apikey-save" disabled={key.trim() === ''} onClick={submit}>
+        保存
+      </button>
+      <button type="button" className="apikey-delete" onClick={onDelete}>
+        清除
+      </button>
+      {saved && <span className="apikey-saved">已保存（后端加密存储）</span>}
     </div>
   )
 }
@@ -73,23 +120,95 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           {tab === 'model' && (
             <section className="settings-panel">
               <h2>模型</h2>
-              <BlockedPanel
-                title="模型管理不可用"
-                detail="后端协议契约缺失：protocol/schema.json 无 model 管理方法，Desktop 只能通过 protocol-client 消费后端 config/model_manager.py（DC1）。本卡不新增协议方法、不读取后端配置文件、不伪造数据。"
-              />
-              <BlockedPanel
-                title="Phase 3 上限来源摘要不可用"
-                detail="Phase 3（M1–M8：按真实 model_id 解析输出上限并提供 limit_source 摘要协议字段）未落地；协议无 model_max_output_tokens / resolved_max_tokens / limit_source。按验收要求，此处如实呈现阻塞状态，不展示伪造的上限数据。"
-              />
+              {!props.models.supported ? (
+                <>
+                  <BlockedPanel
+                    title="模型管理不可用（旧版 appserver）"
+                    detail="当前 appserver 未提供 models/* JSON-RPC 方法。请升级后端到支持 Phase 4 D5 的版本，或先用 OpenTUI / HTTP API 配置模型。"
+                  />
+                  <BlockedPanel
+                    title="Phase 3 上限来源摘要"
+                    detail="resolved_max_tokens / limit_source / context_window 由后端 models/list 提供；旧版 appserver 无此字段时此处不可用。"
+                  />
+                </>
+              ) : (
+                <div className="models-list">
+                  {props.models.loading && <p className="settings-hint">加载中…</p>}
+                  {props.models.error !== null && (
+                    <p className="settings-error">{props.models.error}</p>
+                  )}
+                  {(props.models.snapshot?.models ?? []).length === 0 && (
+                    <p className="settings-hint">尚无模型。请先添加模型（模型管理在 OpenTUI / HTTP API）。</p>
+                  )}
+                  {(props.models.snapshot?.models ?? []).map((model: ModelEntry) => (
+                    <div key={model.id} className={`model-row${model.active ? ' active' : ''}`}>
+                      <div className="model-main">
+                        <span className="model-name">{model.nickname || model.name}</span>
+                        <span className="model-id">{model.id}</span>
+                        <span className="model-provider">{model.provider_name}</span>
+                        {model.active && <span className="model-badge">当前</span>}
+                        {model.limit_source !== undefined && (
+                          <span className="model-limit">
+                            max_out={model.resolved_max_tokens ?? 'auto'} · {model.limit_source}
+                            {model.warning ? ` · ⚠ ${model.warning}` : ''}
+                          </span>
+                        )}
+                      </div>
+                      <div className="model-actions">
+                        {!model.active && (
+                          <button
+                            type="button"
+                            className="model-activate"
+                            onClick={() => void props.models.setActive(model.id)}
+                          >
+                            设为当前
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="model-test"
+                          onClick={() => void props.models.testConnection(model.id)}
+                        >
+                          测试连接
+                        </button>
+                        <button
+                          type="button"
+                          className="model-remove"
+                          onClick={() => void props.models.remove(model.id)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           )}
           {tab === 'apikey' && (
             <section className="settings-panel">
               <h2>API Key</h2>
-              <BlockedPanel
-                title="API Key 管理不可用"
-                detail="后端协议契约缺失：protocol/schema.json 无凭据/模型写入方法，Desktop 无法把密钥交给后端 credential_store（DC4 要求系统密钥链；后端冻结、schema 零改动）。本卡不绕过协议自行落盘密钥。"
-              />
+              {!props.models.supported ? (
+                <BlockedPanel
+                  title="API Key 管理不可用（旧版 appserver）"
+                  detail="当前 appserver 未提供 credentials/* JSON-RPC 方法。密钥由后端 credential_store 加密存储（Windows DPAPI），桌面端只提交、不回显。"
+                />
+              ) : (
+                <div className="apikey-list">
+                  {(props.models.snapshot?.models ?? []).length === 0 && (
+                    <p className="settings-hint">尚无模型可配置密钥。</p>
+                  )}
+                  {(props.models.snapshot?.models ?? []).map((model: ModelEntry) => (
+                    <ApiKeyRow
+                      key={model.id}
+                      modelId={model.id}
+                      modelName={model.nickname || model.name}
+                      onSave={(key) => void props.models.upsertCredential(model.id, key)}
+                      onDelete={() => void props.models.deleteCredential(model.id)}
+                    />
+                  ))}
+                </div>
+              )}
             </section>
           )}
           {tab === 'workspace' && (

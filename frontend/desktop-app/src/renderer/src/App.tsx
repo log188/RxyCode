@@ -6,6 +6,7 @@ import Composer from './components/Composer'
 import SessionList from './components/SessionList'
 import SettingsPage from './components/SettingsPage'
 import { useConversation } from './hooks/useConversation'
+import { useModels } from './hooks/useModels'
 import {
   effectiveWorkspaceRoot,
   loadWorkspaceSettings,
@@ -28,6 +29,12 @@ function App(): React.JSX.Element {
   const running = activeSessionId !== null && conversation.state.runningBySession[activeSessionId]
   const pendingApproval = conversation.state.approvals[0] ?? null
   const effectiveWorkspace = effectiveWorkspaceRoot(workspaceSettings, info?.repoRoot ?? '')
+  const models = useModels({
+    platform,
+    info,
+    status,
+    refreshKey: settingsOpen ? 1 : 0
+  })
 
   const start = (): void => {
     platform.start()
@@ -150,6 +157,7 @@ function App(): React.JSX.Element {
           onClose={() => setSettingsOpen(false)}
           onPickWorkspace={() => void pickWorkspace()}
           onClearWorkspace={clearWorkspace}
+          models={models}
         />
       )}
     </div>
