@@ -278,6 +278,16 @@ def detect_download_intent(text: str) -> tuple[str, str, str] | None:
     """Return (type, name, package) for skill/mcp/file downloads."""
     text_lower = text.lower().strip()
 
+    # Loading an already-installed skill is an ordinary read-only tool call,
+    # not a request to install one.  Without this guard the permissive legacy
+    # skill pattern below can capture the tail of "installed" (for example
+    # ``ed``) and route a Desktop request into dangerous ``download_skill``.
+    if re.search(
+        r"\b(?:use|load)\s+(?:the\s+)?installed\s+skill\s+(?:tool\b|[a-z0-9_-]+\b)",
+        text_lower,
+    ):
+        return None
+
     url_pattern = (
         r"(https?://[^\s]+\.(?:zip|tar|gz|pdf|doc|docx|xls|xlsx|ppt|pptx|txt|md|"
         r"json|xml|csv|jpg|jpeg|png|gif|mp3|mp4|exe|msi|dmg|deb|rpm|apk|ipa))"
