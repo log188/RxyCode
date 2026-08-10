@@ -23,6 +23,25 @@ const prompt = process.env.RXYCODE_REAL_GUI_PROMPT ??
 
 const delay = (ms: number): Promise<void> => new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
 
+function extractTerminalMetrics(lines: string[]): Record<string, unknown> {
+  const messages = lines.flatMap((line) => {
+    if (!line.startsWith('stdout: ')) return []
+    try { return [JSON.parse(line.slice('stdout: '.length)) as Record<string, any>] } catch { return [] }
+  })
+  const final = messages.findLast((message) => message.method === 'event/final')?.params
+  const token = messages.findLast((message) => message.method === 'event/token_usage')?.params
+  const promptResult = messages.findLast((message) =>
+    typeof message.result === 'object' && message.result !== null && 'input_tokens' in message.result
+  )?.result
+  const source = final ?? promptResult ?? token ?? {}
+  return {
+    input_tokens: Number(source.input_tokens ?? token?.input_tokens ?? 0),
+    output_tokens: Number(source.output_tokens ?? token?.output_tokens ?? 0),
+    cache_hit_tokens: Number(source.cache_hit_tokens ?? token?.cache_hit_tokens ?? 0),
+    cache_hit_rate: Number(source.cache_hit_rate ?? token?.cache_hit_rate ?? 0)
+  }
+}
+
 async function waitFor<T>(probe: () => Promise<T | null>, timeoutMs: number, label: string): Promise<T> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -34,6 +53,7 @@ async function waitFor<T>(probe: () => Promise<T | null>, timeoutMs: number, lab
 }
 
 async function main(): Promise<void> {
+  const startedAt = Date.now()
   if (!existsSync(vite)) throw new Error(`electron-vite missing: ${vite}`)
   mkdirSync(outputDir, { recursive: true })
   const dev = spawn(process.execPath, [vite, 'dev', '--', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`], {
@@ -130,6 +150,14 @@ async function main(): Promise<void> {
       viewport: { width: innerWidth, height: innerHeight },
       shellScroll: { y: scrollY, height: document.documentElement.scrollHeight }
     }))()`)
+    const lines = await evaluate('window.__rxyProbeLogs ?? []') as string[]
+    const result = {
+      prompt,
+      elapsed_ms: Date.now() - startedAt,
+      metrics: extractTerminalMetrics(lines),
+      snapshot
+    }
+    writeFileSync(join(outputDir, 'real-gui-result.json'), JSON.stringify(result, null, 2))
     if (!snapshot.final || snapshot.error) throw new Error(`invalid real GUI terminal state: ${JSON.stringify(snapshot)}`)
     if (snapshot.tools.length < 3) throw new Error(`expected multiple real tool cards: ${JSON.stringify(snapshot.tools)}`)
     if (snapshot.tools.some((tool) => tool.className.includes('running'))) {
@@ -138,7 +166,6 @@ async function main(): Promise<void> {
     if (snapshot.shellScroll.y !== 0 || snapshot.shellScroll.height > snapshot.viewport.height) {
       throw new Error(`desktop shell scrolled unexpectedly: ${JSON.stringify(snapshot.shellScroll)}`)
     }
-    writeFileSync(join(outputDir, 'real-gui-result.json'), JSON.stringify({ prompt, snapshot }, null, 2))
     console.log(`REAL_GUI_PROBE_OK ${outputDir}`)
   } finally {
     ws?.close()

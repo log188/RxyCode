@@ -29,6 +29,18 @@ def test_read_only_search_summarize_task_is_not_side_effecting():
     ) is False
 
 
+def test_explicit_read_only_tool_sequence_is_not_a_side_effect_request():
+    """Desktop may ask the model to execute inspection tools without writing."""
+    title = (
+        "Execute exactly these read-only tools: glob for appserver/runtime.py; "
+        "grep for install_tui_context_hook; then read lines 1-45. "
+        "Do not call bash, cd, ls, write, shell, web, or any other tool."
+    )
+    assert task_requires_side_effect_evidence(
+        title=title, result="", effect="auto"
+    ) is False
+
+
 def test_declared_search_effect_is_exempt():
     """显式声明 effect=search（_NON_SIDE_EFFECT_EFFECTS）直接豁免。"""
     assert task_requires_side_effect_evidence(

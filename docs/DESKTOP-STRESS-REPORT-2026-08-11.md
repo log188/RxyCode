@@ -100,3 +100,44 @@ python -m pytest tests/unit/test_gui_command.py tests/test_appserver/test_stdio_
 
 - 当前机器没有已配置的真实 MCP server；DTS 中的 MCP 与 Skill 卡通过协议回放验证 Desktop 的渲染、会话隔离、失败与审批路径，不宣称调用了真实远程 MCP。
 - 本报告的 15 条未跑长模型任务，目的是以零模型费用找出 Desktop 前端问题。真实模型的 token/caching 统计应由 appserver 在每次 provider 响应中标准化后上报 UI；这属于后续 Phase 的可观测性工作。
+
+## 补充：真实模型与真实 Electron 复测（2026-08-11）
+
+本节替代上文“15 条均为确定性 appserver 回放”的结论，记录随后完成的真实验收：每例均启动生产 `python -m appserver`、真实 Electron、真实模型，通过 CDP 输入提示词和截屏；没有使用 Computer Use。每个探针都在 `finally` 中 `taskkill /T /F` Electron 进程树并删除临时 profile。结束后复核：无残留 Electron 进程。
+
+模型策略：DTS-01 至 DTS-14 使用低成本 `opencode-go/deepseek-v4-flash`；DTS-15 临时使用 `zen/gpt-5.6-luna`，完成后恢复 `active_model: opencode-go/deepseek-v4-flash`。DTS-07 临时注册本机 stdio MCP 回显服务并恢复完整 `config.yaml`；它没有网络能力，也没有读取密钥。
+
+真实结果为 9 通过 / 6 预期失败。失败不是忽略：它们验证了失败 UI 已正确终态化（消息为错误态、全部已开始的工具卡为错误态、不会遗留“运行中”卡）。全部原始提示词、完整 final answer、截图和逐例 JSON 指标保存在未入库工件目录：
+
+`D:\agent-demo\RxyCode\RxyCode1_1_0\.worktrees\phase4-desktop-stress-20260811\artifacts\desktop-real-suite-20260811\DTS-*/`
+
+| ID | 用户式业务提示词（精确工具约束摘要） | 结果 / final answer 摘要 | 工具 | 耗时 | input / output / cache-hit / hit-rate |
+| --- | --- | --- | --- | ---: | --- |
+| DTS-01 | 审计 appserver 启动上下文：glob → grep → read；禁用写入与联网 | 失败：模型仍调用 websearch/webfetch，最终被副作用证据门禁拦截 | websearch, webfetch×3, glob, grep, read | 58.185s | 未上报终态用量 |
+| DTS-02 | 审查协议通知契约：glob → grep `event/token_usage` → read | 通过：确认 TokenUsage/FinalAnswer 的 JSON-RPC 事件契约 | glob, grep, read | 23.704s | 未上报终态用量 |
+| DTS-03 | 审查 conversation terminal state：glob → grep → read | 失败：只读工具完成后仍收到“无 WRITE/DANGER 证据” | glob, grep, read | 25.705s | 32,604 / 776 / 30,464 / 93.44% |
+| DTS-04 | 审查模型输出限制目录：glob → grep → read | 失败：同一错误门禁路径 | glob, grep, read | 26.018s | 36,250 / 739 / 32,512 / 89.69% |
+| DTS-05 | 审查 Desktop 审批规则：glob → grep → read | 失败：同一错误门禁路径 | glob, grep, read | 26.109s | 32,660 / 817 / 29,952 / 91.71% |
+| DTS-06 | 审查 session 缓存遥测：glob → grep → read | 通过：确认 per-turn delta 与 TokenUsage/FinalAnswer 输出 | glob, grep, read | 25.595s | 未上报终态用量 |
+| DTS-07 | 发票对账场景：调用真实本机 MCP echo，再核查 token 协议 | 通过：final answer 返回 `desktop-test-echo:invoice-reconciliation-2026` 并解释协议字段 | mcp_desktop_test_echo_echo, glob, read | 22.803s | 24,222 / 660 / 17,024 / 70.28% |
+| DTS-08 | 要求加载已安装 `tdd` Skill，再审查只读测试 | 失败：路由错误调用 `download_skill`，且无审批 broker | download_skill | 11.362s | 未上报终态用量 |
+| DTS-09 | 审查 protocol schema 缓存字段：glob → grep → read | 通过：确认 schema 表面与缓存字段定义 | glob, grep, read | 28.539s | 32,063 / 562 / 29,952 / 93.42% |
+| DTS-10 | 审查 appserver worker 输出：glob → grep → read | 通过：确认 JSON-RPC result 带 cache-hit 字段 | glob, grep, read | 24.765s | 35,196 / 709 / 32,384 / 92.01% |
+| DTS-11 | 审查 Desktop 启动运行时：glob → grep → read | 失败：目标文件不存在后模型做只读回退，最终仍误触发证据门禁 | glob×4, grep×3, read | 33.392s | 49,105 / 1,764 / 44,160 / 89.93% |
+| DTS-12 | 审查审批渲染规则：glob → grep → read | 失败：同一错误门禁路径 | glob, grep, read | 22.582s | 未上报终态用量 |
+| DTS-13 | 审查 session token 合同：glob → grep → read | 通过：确认 input delta 注入 TokenUsage、FinalAnswer 与 PromptResult | glob, grep, read | 22.197s | 26,874 / 616 / 23,680 / 88.11% |
+| DTS-14 | 审查 worker cache-hit 输出：glob → grep → read | 通过：确认 worker 传递四项 token/缓存字段 | glob, grep, read | 22.959s | 34,639 / 371 / 31,872 / 92.01% |
+| DTS-15 | Zen 模型审计 TUI 绑定：glob → grep → read | 通过：`zen/gpt-5.6-luna` 返回路径、绑定证据和并发风险 | glob, grep, read | 22.174s | 26,565 / 205 / 19,374 / 72.93% |
+
+可汇总的 10 个终态用量事件合计：input 330,178、output 7,219、cache-hit 291,374、加权缓存命中率 88.25%。15 个场景总墙钟 396.089 秒。5 个失败/终态路径未发出 token usage 通知；报告把它标成“未上报”，不把未知数据记成 0。
+
+本轮发现并已修复：
+
+1. 真实 appserver 以顶层 `python -m appserver` 启动时，可能从同级 checkout 混入旧版绝对包导入；现已将 canonical 包名绑定到启动 checkout，并有子进程回归测试。
+2. 真实任务只有 `tool_begin`、缺少 `tool_end` 时，Desktop 曾将完成后的工具卡保持为“运行中”；成功 final 现在收敛为完成，失败 prompt result 收敛为错误，两个状态都有 reducer 回归测试和真实 Electron 截图验收。
+3. Desktop 真实探针现记录 final/prompt result 的 input、output、cache-hit、命中率和耗时；终态有运行中工具卡会直接判失败。
+
+仍待修复（本轮不应掩盖）：
+
+1. 多个明确只读的 `glob/grep/read` 工作流仍会在结束时错误触发“requested side effect has no verified WRITE/DANGER tool execution”。DTS-11 的原始 JSONL 已证明实际工具均为 READ，需在后端增加“设置副作用尝试标志”的可观测性后再做最小修复，不能凭猜测放宽安全门禁。
+2. 明确要求加载已安装 Skill 会路由到 `download_skill`，并显示“no approval broker available”。需分别验证路由意图和 Desktop approval broker 的服务端请求桥接。
