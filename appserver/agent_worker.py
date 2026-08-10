@@ -718,6 +718,25 @@ class AgentWorker:
             self._fail_all_parent_pending(RuntimeError("worker shutdown"))
 
 
+def _configure_event_loop() -> None:
+    """C5: prefer uvloop on non-Windows when RXYCODE_UVLOOP=1 (default).
+
+    Windows is not supported by uvloop; a missing uvloop falls back to the
+    default asyncio loop.  Must run before ``asyncio.run`` so the loop
+    policy is installed before the loop is created.
+    """
+    if os.environ.get("RXYCODE_UVLOOP", "1") != "1":
+        return
+    if sys.platform == "win32":
+        return
+    try:
+        import uvloop  # noqa: PLC0415
+
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass  # fall back to the default loop; unit-tested
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -725,6 +744,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    _configure_event_loop()
     asyncio.run(AgentWorker().run())
 
 

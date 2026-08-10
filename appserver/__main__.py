@@ -18,8 +18,28 @@ def _configure_logging() -> None:
     )
 
 
+def _configure_event_loop() -> None:
+    """C5: prefer uvloop on non-Windows when RXYCODE_UVLOOP=1 (default).
+
+    Windows is not supported by uvloop; a missing uvloop falls back to the
+    default asyncio loop.  Must run before ``asyncio.run`` so the loop
+    policy is installed before the loop is created.
+    """
+    if os.environ.get("RXYCODE_UVLOOP", "1") != "1":
+        return
+    if sys.platform == "win32":
+        return
+    try:
+        import uvloop  # noqa: PLC0415
+
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass  # fall back to the default loop; unit-tested
+
+
 def main() -> None:
     _configure_logging()
+    _configure_event_loop()
     stub = os.environ.get("RXYCODE_APPSERVER_STUB") == "1"
     server = AppServer(stub=stub)
     try:
