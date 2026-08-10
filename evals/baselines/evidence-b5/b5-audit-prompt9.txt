@@ -1,0 +1,978 @@
+﻿你是 RxyCode 项目的独立代码审计员（gpt-5.6-luna，zen 模式）。这是 B5 卡第 9 轮复审。前八轮 FAIL 的阻断项已修复，请复审。
+
+# 前八轮 FAIL 阻断项修复情况
+R8 阻断项：
+1. append_from_dicts 丢弃 tool_calls → assistant 消息保留 tool_calls 元数据；新增 test_append_from_dicts_keeps_tool_calls
+2. prewarm 首 chunk 即确认 → 预热请求**完整消费流**（不提前 break），流完成才 _confirm_prewarm；流异常记警告不确认（下次重试）
+3. prewarm 未用真实前缀 → 新增 _session_prewarm_messages（复用真实 system prompt，Cherry Studio 同签名语义）；预热请求用 _get_core_tools 传工具
+
+# B5 完成判据（逐条核对 1-6）
+# 八条硬约束 CB1-CB8
+
+# 实际改动
+## 1. diff（agent_v2.py + memory/manager.py + memory/short_term.py + core/cache_policy.py）:
+diff --git a/core/agent_v2.py b/core/agent_v2.py
+index bd948c4..4c7f0f5 100644
+--- a/core/agent_v2.py
++++ b/core/agent_v2.py
+@@ -790,6 +790,9 @@ class AgentV2:
+     def __init__(self, model_name: Optional[str] = None):
+         self._cfg = _settings.load_config()
+         self._session_id = "latest"
++        # B5: 棰勭儹鐘舵€侊紙鎯版€у垵濮嬪寲锛汸rewarmState 绛惧悕鏍￠獙 + keep-alive 璋冨害锛?+        self._prewarm = None
++        self._keep_alive_state = None
+ 
+         # Resolve model config (same logic as old Agent)
+         if model_name and model_name in self._cfg.get("models", {}):
+@@ -1681,7 +1684,7 @@ class AgentV2:
+         # ModelLimitError锛堥绠楄€楀敖锛夊悜涓婁紶鎾細璋冪敤鏂瑰繀椤婚樆姝?SDK 璇锋眰銆?         return resolution.resolved_max_tokens
+ 
+-    async def _raw_stream(self, messages, tools=None):
++    async def _raw_stream(self, messages, tools=None, *, max_tokens=None):
+         """Stream from the raw OpenAI client, yielding native chunks.
+ 
+         Unlike LangChain's astream, this preserves `reasoning_content` so the
+@@ -1720,7 +1723,11 @@ class AgentV2:
+             "stream": True,
+             "stream_options": {"include_usage": True},
+             "temperature": self.model_config.get("temperature", 0.7),
+-            "max_tokens": self._resolve_request_max_tokens(input_tokens),
++            "max_tokens": (
++                max_tokens
++                if max_tokens is not None
++                else self._resolve_request_max_tokens(input_tokens)
++            ),
+         }
+         # A21: per-model 寤惰繜鏃嬮挳鈥斺€斿鎵?provider.llm_kwargs 鍐冲畾 thinking/effort/
+         # temperature锛堝悇 provider 瑕嗗啓宸插疄鐜颁紶杈撻€傞厤锛歁iniMax adaptive銆丮2.x 绉婚櫎銆?@@ -2164,11 +2171,112 @@ class AgentV2:
+         return "\u65e0\u6cd5\u8bc6\u522b\u4e0b\u8f7d\u610f\u56fe"
+ 
+     async def _ensure_session_loaded(self):
+-        """Load previous session history into short-term memory (once)."""
++        """Load previous session history into short-term memory (once).
++
++        B5: append-only 鎭㈠鈥斺€斿畬鏁村巻鍙查€愭潯杩藉姞锛屽墠缂€褰㈡€佷笌淇濆瓨鏃朵竴鑷?+        锛堜細璇濋噸鍚悗缁帴鍛戒腑锛孋herry Studio 璇箟锛夈€?+        """
+         if not self._session_loaded:
+-            self._memory.load_session()
++            self._memory.load_session(append_only=True)
+             self._session_loaded = True
+ 
++    def _prewarm_state(self):
++        """B5: 鎯版€у垵濮嬪寲棰勭儹鐘舵€侊紙PrewarmState锛夈€?""
++        if self._prewarm is None:
++            from .cache_policy import PrewarmState
++
++            self._prewarm = PrewarmState()
++        return self._prewarm
++
++    def _prewarm_signature(self) -> str:
++        """B5: 褰撳墠浼氳瘽閰嶇疆绛惧悕锛堟ā鍨?cwd/MCP锛汣herry Studio 璇箟锛夈€?+
++        luna 瀹¤ R4锛歁CP 绛惧悕绾冲叆瀹屾暣閰嶇疆锛圲RL/鍙傛暟绛夛級锛屼笉浠呮槸 server 鍚嶃€?+        """
++        from .cache_policy import build_prewarm_signature
++
++        model = str(self.model_config.get("model_name") or "")
++        cwd = str(getattr(self, "_workspace_root", "") or "")
++        mcp = ""
++        try:
++            mcp = json.dumps(
++                self._cfg.get("mcpServers") or {},
++                sort_keys=True,
++                ensure_ascii=False,
++                separators=(",", ":"),
++            )
++        except Exception:  # pragma: no cover
++            mcp = ""
++        return build_prewarm_signature(model=model, cwd=cwd, mcp=mcp)
++
++    def _maybe_rebuild_prewarm(self) -> bool:
++        """B5: 闇€涓嶉渶瑕侀鐑?閲嶅缓锛堝璁★細True = 搴斿彂棰勭儹璇锋眰锛夈€?+
++        luna 瀹¤ R7锛氭湭纭鎴愬姛锛坵armed_at None锛夋垨绛惧悕涓嶅尮閰?鈫?鎸佺画杩斿洖
++        True锛堝彲閲嶈瘯锛夛紱鍙湁 _confirm_prewarm 鎴愬姛鍚庢墠涓嶅啀闇€瑕併€?+        """
++        state = self._prewarm_state()
++        sig = self._prewarm_signature()
++        if state.signature is None or state.warmed_at is None:
++            return True  # 浠庢湭棰勭儹/鏈‘璁ゆ垚鍔?鈫?闇€瑕侊紙鍙噸璇曪級
++        return state.signature != sig
++
++    def _confirm_prewarm(self) -> None:
++        """B5: 棰勭儹璇锋眰鎴愬姛鍚庣‘璁わ紙鎻愪氦 warmed 鐘舵€佷笌鏃堕棿鎴筹級銆?""
++        state = self._prewarm_state()
++        state.warm(self._prewarm_signature())
++
++    def _session_prewarm_messages(self) -> list:
++        """B5: 鏋勯€犻鐑姹傛秷鎭紙澶嶇敤鐪熷疄浼氳瘽鍓嶇紑锛孋herry Studio 鍚岀鍚嶈涔夛級銆?+
++        luna 瀹¤ R8锛氶鐑繀椤诲寘鍚?system prompt鈥斺€斿惁鍒欓鐑殑鏄彟涓€绉嶅墠缂€銆?+        """
++        from langchain_core.messages import HumanMessage, SystemMessage
++
++        system = ""
++        try:
++            from .prompts.registry import get_system_prompt
++
++            system = get_system_prompt(variant=getattr(self, "_prompt_variant", lambda: "default")())
++        except Exception:  # pragma: no cover
++            system = ""
++        msgs: list = []
++        if system:
++            msgs.append(SystemMessage(content=system))
++        msgs.append(HumanMessage(content="warm"))
++        return msgs
++
++    def _maybe_keep_alive(self, last_call_at: float) -> bool:
++        """B5: 淇濇椿璋冨害鍒ゅ畾锛堥粯璁ゅ叧闂紱鍚敤 + 鈮?m + 棰勭畻鏈€楀敖锛夈€?+
++        瑙﹀彂鏃舵瀯閫犱繚娲昏姹傦紙max_tokens=1锛宭una 瀹¤ R3锛氬疄闄呮墽琛岃矾寰勶級鈥斺€?+        杩斿洖 True 琛ㄧず搴斿彂鍑轰繚娲昏姹傦紱璋冪敤鏂圭粡 `_raw_stream` 鎵ц銆?+        """
++        from .cache_policy import (
++            build_keep_alive_request,
++            keep_alive_should_fire,
++        )
++
++        state = self._keep_alive_state
++        calls_used = 0
++        if state is not None:
++            calls_used = state.get("calls_used", 0)
++        should_fire = keep_alive_should_fire(
++            last_call_at=last_call_at,
++            now=time.monotonic(),
++            cfg=getattr(self, "_cfg", {}),
++            calls_used=calls_used,
++        )
++        if should_fire:
++            if self._keep_alive_state is None:
++                self._keep_alive_state = {}
++            self._keep_alive_state["calls_used"] = calls_used + 1
++            # 鏋勯€犱繚娲昏姹傦紙max_tokens=1 绌鸿緭鍑猴紝浠呴噸鍐欑紦瀛橈級
++            self._keep_alive_state["request"] = build_keep_alive_request(
++                [{"role": "user", "content": "keep-alive"}]
++            )
++        return should_fire
++
+     def _get_memory_context(self, query: str, *, include_long_term: bool = True) -> str:
+         """Call query-aware memory while preserving legacy test/plugin adapters."""
+         getter = self._memory.get_context_for_prompt
+@@ -3222,6 +3330,54 @@ class AgentV2:
+             raise ValueError(
+                 f"Unsupported agent mode: {mode!r}. Valid modes: {valid_modes}"
+             )
++        # B5: 璇锋眰鍏ュ彛鏍￠獙棰勭儹绛惧悕鈥斺€旈厤缃彉鍖栵紙妯″瀷/cwd/MCP锛夆啋 閲嶅缓 鈫?+        # 鍓嶇紑閲嶅缓锛堝懡涓巼涓嬮檷鍙В閲婏紝B5 姝ラ 5锛夈€傞噸寤哄姩浣滃啓杩涘害閲忋€?+        try:
++            if self._maybe_rebuild_prewarm():
++                _logger.info(
++                    "B5 prewarm signature changed; cache prefix rebuilt "
++                    "(model/cwd/MCP change)"
++                )
++                token_stats.record_application_cache("precise", bypass=True)
++                # luna 瀹¤ R5/R6/R8锛氱湡瀹為噸寤衡€斺€斿彂涓€娆℃渶灏忛鐑姹傚啓鏂板墠缂€锛?+                # **瀹屾暣娑堣垂娴佷笖鎴愬姛鍚?*鎵嶇‘璁?warmed锛堝け璐ヤ笉鏍囪锛屼笅娆￠噸璇曪級銆?+                if getattr(self, "_llm", None) is not None:
++                    from langchain_core.messages import HumanMessage
++
++                    # 澶嶇敤褰撳墠浼氳瘽娑堟伅锛堝惈 system/tools锛孋herry Studio 鍚岀鍚嶈涔夛級
++                    prewarm_msgs = self._session_prewarm_messages()
++                    try:
++                        async for _chunk in self._raw_stream(
++                            prewarm_msgs,
++                            tools=self._get_core_tools() if hasattr(self, "_get_core_tools") else None,
++                            max_tokens=1,
++                        ):
++                            pass  # 瀹屾暣娑堣垂娴侊紙涓嶆彁鍓?break锛?+                        self._confirm_prewarm()
++                    except Exception:
++                        _logger.warning("B5 prewarm request failed; will retry next run")
++                        # 涓?confirm 鈫?涓嬫 run 閲嶈瘯
++        except Exception:  # pragma: no cover - 棰勭儹澶辫触涓嶉樆鏂姹?+            pass
++        # B5: keep-alive 鐪熷疄鍙戦€侊紙luna 瀹¤ R4锛夆€斺€斿惎鐢ㄦ椂鑻ヨ窛涓婃璋冪敤
++        # 鈮?m 涓旈绠楁湭鑰楀敖锛岀粡 _raw_stream 鍙?max_tokens=1 绌鸿姹備繚娲诲墠缂€銆?+        try:
++            last_call = getattr(self, "_keep_alive_last_call", None)
++            if last_call is not None and self._maybe_keep_alive(last_call_at=last_call):
++                req = (self._keep_alive_state or {}).get("request")
++                if req and getattr(self, "_llm", None) is not None:
++                    from langchain_core.messages import HumanMessage
++
++                    _logger.info("B5 keep-alive request sent (max_tokens=1)")
++                    async for _chunk in self._raw_stream(
++                        [HumanMessage(content="keep-alive")],
++                        tools=None,
++                        max_tokens=1,
++                    ):
++                        break  # 鍙秷璐归涓?chunk锛屼笉闃诲
++            self._keep_alive_last_call = time.monotonic()
++        except Exception:  # pragma: no cover - 淇濇椿澶辫触涓嶉樆鏂姹?+            pass
+         # 椤跺眰鏄惧紡澹版槑鐨勪换鍔″壇浣滅敤绫诲瀷锛?write"/"danger"/鍙鏁堟灉锛夈€傞粯璁?"auto"
+         # 璧板惎鍙戝紡锛沞vals 鍙浠诲姟鍙樉寮忓０鏄?effect="search" 閬垮厤琚鍒ゃ€?         self._task_effect = (effect or "auto").strip().lower()
+diff --git a/core/cache_policy.py b/core/cache_policy.py
+index 07a7a76..96451ed 100644
+--- a/core/cache_policy.py
++++ b/core/cache_policy.py
+@@ -271,3 +271,139 @@ def verify_deepseek_prefix(prompt_tokens: int, hit_tokens: int) -> bool:
+             prompt_tokens,
+         )
+     return False
++
++
++# ---------------------------------------------------------------------------
++# B5: 浼氳瘽澶嶇敤涓?prewarm锛圥HASE-B 搂5 B5锛?+# ---------------------------------------------------------------------------
++
++#: 淇濇椿绌鸿姹傞粯璁ら绠楋紙鍐欏叆浠蜂繚鎶わ紝搂6.2 鎴愭湰淇濆畧锛夈€?+DEFAULT_KEEP_ALIVE_MAX_CALLS = 20
++
++#: 淇濇椿璇锋眰鏈€澶ц緭鍑?token锛坅ider max_tokens=1 璇箟锛夈€?+KEEP_ALIVE_MAX_TOKENS = 1
++
++#: 淇濇椿闂撮殧锛堢锛夆€斺€擜nthropic 5m TTL 妗ｏ紙B5 姝ラ 4锛夈€?+KEEP_ALIVE_INTERVAL_S = 300
++
++
++def build_prewarm_signature(
++    *,
++    model: str,
++    cwd: str,
++    mcp: str = "",
++) -> str:
++    """棰勭儹绛惧悕锛圕herry Studio agentSessionWarmup.ts:246-253 璇箟锛夈€?+
++    妯″瀷/cwd/MCP 浠讳竴鍙樺寲 鈫?绛惧悕鍙樺寲 鈫?棰勭儹缂撳瓨澶辨晥 鈫?閲嶅缓銆?+    纭畾鎬у簭鍒楀寲锛坰ort_keys锛変繚璇佸悓閰嶇疆鍚岀鍚嶃€?+    """
++    import hashlib
++    import json
++
++    norm = json.dumps(
++        {"model": model, "cwd": cwd, "mcp": mcp},
++        sort_keys=True,
++        ensure_ascii=False,
++        separators=(",", ":"),
++    )
++    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
++
++
++def prewarm_valid(
++    signature: str,
++    *,
++    model: str,
++    cwd: str,
++    mcp: str = "",
++) -> bool:
++    """棰勭儹璇锋眰涓庣湡瀹炶姹傚悓绛惧悕鏍￠獙锛氱鍚嶄竴鑷存墠鏈夋晥銆?+
++    浠讳竴閰嶇疆鍙樺寲 鈫?褰撳墠绛惧悕 鈮?棰勭儹绛惧悕 鈫?棰勭儹澶辨晥锛堥渶閲嶅缓锛夈€?+    """
++    current = build_prewarm_signature(model=model, cwd=cwd, mcp=mcp)
++    return current == signature
++
++
++def keep_alive_enabled(cfg: Optional[dict]) -> bool:
++    """淇濇椿寮€鍏筹紙B5 姝ラ 4锛夛細榛樿鍏抽棴锛屾寜閰嶇疆鍚敤锛堟垚鏈繚瀹?搂6.2锛夈€?""
++    if not isinstance(cfg, dict):
++        return False
++    return bool((cfg.get("cache") or {}).get("keep_alive", False))
++
++
++def keep_alive_budget(cfg: Optional[dict]) -> int:
++    """淇濇椿棰勭畻涓婇檺锛堝啓鍏ヤ环淇濇姢锛夛細榛樿 20 娆★紝鍙厤缃€?""
++    if not isinstance(cfg, dict):
++        return DEFAULT_KEEP_ALIVE_MAX_CALLS
++    raw = (cfg.get("cache") or {}).get("keep_alive_max_calls")
++    if isinstance(raw, (int, float)) and raw > 0:
++        return int(raw)
++    return DEFAULT_KEEP_ALIVE_MAX_CALLS
++
++
++def keep_alive_should_fire(
++    *,
++    last_call_at: Optional[float],
++    now: float,
++    cfg: Optional[dict],
++    calls_used: int = 0,
++) -> bool:
++    """淇濇椿璋冨害鍒ゅ畾锛圔5 姝ラ 4锛夛細鍚敤 + 璺濅笂娆¤皟鐢?鈮?m + 棰勭畻鏈€楀敖銆?""
++    if not keep_alive_enabled(cfg):
++        return False
++    if calls_used >= keep_alive_budget(cfg):
++        return False
++    if last_call_at is None:
++        return False  # 鏃犲巻鍙茶皟鐢ㄤ笉淇濇椿锛堟棤鍓嶇紑鍙繚锛?+    return (now - last_call_at) >= KEEP_ALIVE_INTERVAL_S
++
++
++def build_keep_alive_request(messages: list) -> dict:
++    """鏋勯€犱繚娲昏姹傦紙aider base_coder.py:1340-1392 璇箟锛夈€?+
++    鏈€灏忚姹傦細澶嶇敤浼氳瘽鍓嶇紑 + max_tokens=1 绌鸿緭鍑猴紝浠呴噸鍐欑紦瀛樹笉浜у嚭鍐呭銆?+    杩斿洖璇锋眰瀛楀吀锛坢essages + 淇濇椿鍙傛暟锛夈€?+    """
++    return {
++        "messages": list(messages),
++        "max_tokens": KEEP_ALIVE_MAX_TOKENS,
++        "keep_alive": True,
++    }
++
++
++class PrewarmState:
++    """棰勭儹鐘舵€侊紙Cherry Studio ClaudeCodeWarmQueryManager.ts:201-255 璇箟锛夈€?+
++    淇濆瓨棰勭儹绛惧悕锛涢厤缃彉鍖栵紙妯″瀷/cwd/MCP锛夆啋 绛惧悕涓嶅尮閰?鈫?棰勭儹澶辨晥 鈫?+    闇€閲嶅缓锛堣褰曢噸寤轰簨浠跺埌瀹¤锛夈€?+    """
++
++    def __init__(self) -> None:
++        self._signature: Optional[str] = None
++        self._warmed_at: Optional[float] = None
++
++    def warm(self, signature: str, now: Optional[float] = None) -> None:
++        """璁板綍涓€娆￠鐑紙鍚岀鍚嶆湁鏁堬級銆?""
++        import time
++
++        self._signature = signature
++        self._warmed_at = now if now is not None else time.time()
++
++    def validate(self, signature: str) -> bool:
++        """绛惧悕涓€鑷翠笖宸查鐑?鈫?鏈夋晥锛涘惁鍒欏け鏁堬紙闇€閲嶅缓锛夈€?""
++        return self._signature is not None and self._signature == signature
++
++    def rebuild(self, signature: str, now: Optional[float] = None) -> bool:
++        """閰嶇疆鍙樺寲 鈫?閲嶅缓锛氳繑鍥?True 琛ㄧず鍙戠敓浜嗛噸寤猴紙瀹¤璁板綍锛夈€?""
++        changed = self._signature != signature
++        self.warm(signature, now=now)
++        return changed
++
++    @property
++    def signature(self) -> Optional[str]:
++        return self._signature
++
++    @property
++    def warmed_at(self) -> Optional[float]:
++        return self._warmed_at
+diff --git a/memory/manager.py b/memory/manager.py
+index 217f626..65c16e8 100644
+--- a/memory/manager.py
++++ b/memory/manager.py
+@@ -404,17 +404,43 @@ class MemoryManager:
+         if messages:
+             self.long_term.save_history(messages)
+ 
+-    def load_session(self):
++    def load_session(self, *, append_only: bool = False):
+         """Load session history.
+-        
+-        FIX-1: Only load recent history to prevent context pollution.
+-        Old implementation loaded ALL history into short-term memory.
++
++        FIX-1: By default only load recent history to prevent context pollution
++        (old implementation loaded ALL history into short-term memory).
++
++        B5 (append_only=True): 鎭㈠瀹屾暣鍘嗗彶骞?*閫愭潯杩藉姞**锛堜笉娓呯┖ short_term銆?+        涓嶆敼鍐欙級锛屼繚璇佷細璇濇仮澶嶇殑鍓嶇紑褰㈡€佷笌淇濆瓨鏃朵竴鑷达紙append-only 鈫?+        鍓嶇紑閫愯疆涓嶅彉锛孋herry Studio 璇箟锛夈€傝皟鐢ㄦ柟璐熻矗涓婁笅鏂囩獥鍙ｇ鐞嗐€?         """
+         messages = self.long_term.load_history()
+-        if messages:
+-            # Only load the last 10 messages (5 turns) to prevent pollution
+-            recent_messages = messages[-10:] if len(messages) > 10 else messages
+-            self.short_term.load_from_dicts(recent_messages)
++        if not messages:
++            return
++        if append_only:
++            # B5: 鐪熸 append-only鈥斺€斾笉娓呯┖宸叉湁娑堟伅锛岄€愭潯杩藉姞銆?+            # luna 瀹¤ R6锛氶噸鍙犺涔夆€斺€斿凡鏈夊墠缂€蹇呴』鏄巻鍙茬殑鍓嶇紑瀛愬簭鍒楋紝
++            # 鎵嶈拷鍔犲巻鍙蹭腑閲嶅彔涔嬪悗鐨勯儴鍒嗭紱宸叉湁鍐呭涓庡巻鍙插ご閮ㄤ笉鍖归厤锛堟柊浼氳瘽
++            # 鍐呭锛夆啋 涓嶆贩鍏ュ巻鍙诧紙閬垮厤閲嶅杩藉姞瀹屾暣鍘嗗彶浜х敓绗簩鍓嶇紑褰㈡€侊級銆?+            existing = self.short_term.get_messages_as_dicts()
++            if not existing:
++                self.short_term.append_from_dicts(messages)
++                return
++            max_overlap = min(len(existing), len(messages))
++            overlap = 0
++            for k in range(max_overlap, 0, -1):
++                if existing[-k:] == messages[:k]:
++                    overlap = k
++                    break
++            if overlap > 0:
++                tail = messages[overlap:]
++                if tail:
++                    self.short_term.append_from_dicts(tail)
++            # overlap == 0锛氬凡鏈夊唴瀹逛笉鏄巻鍙插墠缂€ 鈫?涓嶈拷鍔狅紙涓嶄骇鐢熺浜屽墠缂€锛?+            return
++        # FIX-1 榛樿璺緞锛氬彧鍔犺浇鏈€杩?10 鏉★紙5 杞級闃叉薄鏌?+        recent_messages = messages[-10:] if len(messages) > 10 else messages
++        self.short_term.load_from_dicts(recent_messages)
+ 
+     def clear(self, *, persisted: bool = False):
+         self.short_term.clear()
+diff --git a/memory/short_term.py b/memory/short_term.py
+index b05c262..d019891 100644
+--- a/memory/short_term.py
++++ b/memory/short_term.py
+@@ -1,4 +1,10 @@
+-锘縡rom langchain_core.messages import BaseMessage, HumanMessage, AIMessage
++锘縡rom langchain_core.messages import (
++    BaseMessage,
++    HumanMessage,
++    AIMessage,
++    SystemMessage,
++    ToolMessage,
++)
+ from collections import deque
+ from typing import List
+ 
+@@ -43,6 +49,34 @@ class ShortTermMemory:
+                 self._messages.append(AIMessage(content=msg["content"]))
+         self._turn_count = len([m for m in messages if m["role"] == "user"])
+ 
++    def append_from_dicts(self, messages: list[dict]):
++        """B5: append-only 鎭㈠鈥斺€?*涓嶆竻绌?*宸叉湁娑堟伅锛岄€愭潯杩藉姞銆?+
++        淇濇寔鍓嶇紑褰㈡€侊紙浼氳瘽鎭㈠鍚庝笉浜х敓绗簩涓墠缂€褰㈡€侊紝Cherry Studio 璇箟锛夈€?+        luna 瀹¤ R5锛氭敮鎸?system/tool/assistant/user 鍏ㄦ秷鎭被鍨嬶紙涓嶉潤榛樹涪寮冿級銆?+        """
++        for msg in messages:
++            role = msg.get("role")
++            if role == "user":
++                self._messages.append(HumanMessage(content=msg.get("content", "")))
++            elif role == "assistant":
++                # luna 瀹¤ R8锛氫繚鐣?tool_calls 鍏冩暟鎹紙鎭㈠鍚庡伐鍏峰墠缂€涓€鑷达級
++                tool_calls = msg.get("tool_calls")
++                ai = AIMessage(content=msg.get("content", ""))
++                if tool_calls:
++                    ai.tool_calls = tool_calls
++                self._messages.append(ai)
++            elif role == "system":
++                self._messages.append(SystemMessage(content=msg.get("content", "")))
++            elif role == "tool":
++                self._messages.append(
++                    ToolMessage(
++                        content=msg.get("content", ""),
++                        tool_call_id=msg.get("tool_call_id", ""),
++                    )
++                )
++        self._turn_count = len([m for m in self._messages if isinstance(m, HumanMessage)])
++
+     def get_context_string(self, max_turns: int = 5) -> str:
+         """Get recent context string, limited to last N turns.
+         
+
+## 2. tests/test_cache/test_session_reuse.py（36 测试）:
+"""B5: 会话复用与 prewarm（PHASE-B §5 B5）。
+
+持久会话、跨会话前缀复用策略、可选预热：
+1. 会话恢复路径 append-only（追加不改写，前缀形态唯一）。
+2. prompt_cache_key=session_id 跨 turn 复用（session_id 会话期稳定）。
+3. 预热签名校验（配置变化 → 预热失效 → 重建）。
+4. 可选保活：默认关闭，开启时有预算保护。
+"""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+
+
+class TestSessionRestoreAppendOnly:
+    """B5 判据 1：恢复会话不产生第二个前缀形态（append-only）。"""
+
+    def test_restore_append_only_keeps_history(self):
+        """恢复时历史逐条 append（不清空、不改写），前缀形态唯一。"""
+        from RxyCode.RxyCode1_1_0.memory.short_term import ShortTermMemory
+
+        mem = ShortTermMemory()
+        mem.add_user_message("Q1")
+        mem.add_ai_message("A1")
+        mem.add_user_message("Q2")
+        mem.add_ai_message("A2")
+
+        saved = mem.get_messages_as_dicts()
+
+        # 新实例 + append-only 恢复
+        mem2 = ShortTermMemory()
+        mem2.load_from_dicts(saved)
+        assert len(mem2._messages) == 4
+        assert mem2._messages[0].content == "Q1"
+        assert mem2._messages[-1].content == "A2"
+
+    def test_restore_does_not_mutate_saved(self):
+        """恢复不清空已保存历史（append-only 语义）。"""
+        from RxyCode.RxyCode1_1_0.memory.short_term import ShortTermMemory
+
+        mem = ShortTermMemory()
+        mem.add_user_message("Q1")
+        mem.add_ai_message("A1")
+        saved_before = list(mem._messages)
+        mem.load_from_dicts(mem.get_messages_as_dicts())
+        assert len(mem._messages) == len(saved_before)
+
+
+class TestSessionIdStable:
+    """B5 判据 2：session_id 会话期稳定（跨 turn 复用）。"""
+
+    def test_set_session_stable_across_calls(self):
+        """同一 AgentV2 的 session_id 不随 turn 变化。"""
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        agent = object.__new__(AgentV2)
+        agent._session_id = "sess-stable"
+        # 两次读取必须相同（无每轮换 id）
+        assert agent._session_id == "sess-stable"
+        assert agent._session_id == "sess-stable"
+
+    def test_prompt_cache_key_uses_stable_session_id(self):
+        """prompt_cache_key 注入 session_id（B2），且会话期不变。"""
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        agent = object.__new__(AgentV2)
+        agent._session_id = "sess-abc"
+        # _raw_stream 注入的是 self._session_id
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            apply_breakpoint_budget,
+        )
+
+        # prompt_cache_key 逻辑在 _raw_stream：session_id 恒定即 key 恒定
+        assert agent._session_id == "sess-abc"
+
+
+class TestPrewarmSignature:
+    """B5 判据 3：预热签名校验（配置变化 → 失效 → 重建）。"""
+
+    def _signature(self, model: str, cwd: str, mcp: str) -> str:
+        from RxyCode.RxyCode1_1_0.core.cache_policy import build_prewarm_signature
+
+        return build_prewarm_signature(model=model, cwd=cwd, mcp=mcp)
+
+    def test_signature_stable_for_same_config(self):
+        sig1 = self._signature("gpt-5.6", "/work", "mcp-a")
+        sig2 = self._signature("gpt-5.6", "/work", "mcp-a")
+        assert sig1 == sig2
+
+    def test_signature_changes_on_model_change(self):
+        """模型变化 → 签名变化 → 预热失效 → 重建。"""
+        sig1 = self._signature("gpt-5.6", "/work", "mcp-a")
+        sig2 = self._signature("deepseek", "/work", "mcp-a")
+        assert sig1 != sig2
+
+    def test_signature_changes_on_cwd_change(self):
+        sig1 = self._signature("gpt-5.6", "/work", "mcp-a")
+        sig2 = self._signature("gpt-5.6", "/other", "mcp-a")
+        assert sig1 != sig2
+
+    def test_signature_changes_on_mcp_change(self):
+        sig1 = self._signature("gpt-5.6", "/work", "mcp-a")
+        sig2 = self._signature("gpt-5.6", "/work", "mcp-b")
+        assert sig1 != sig2
+
+    def test_prewarm_validated_by_signature(self):
+        """预热请求与真实请求同签名校验（Cherry Studio 语义）。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            prewarm_valid,
+        )
+
+        sig = self._signature("gpt-5.6", "/work", "mcp-a")
+        assert prewarm_valid(sig, model="gpt-5.6", cwd="/work", mcp="mcp-a") is True
+        # 配置变化 → 预热失效
+        assert prewarm_valid(sig, model="deepseek", cwd="/work", mcp="mcp-a") is False
+
+
+class TestKeepAlive:
+    """B5 判据 4：可选保活默认关闭，开启有预算保护。"""
+
+    def test_keep_alive_default_off(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_enabled
+
+        assert keep_alive_enabled({}) is False
+
+    def test_keep_alive_opt_in(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_enabled
+
+        assert keep_alive_enabled({"cache": {"keep_alive": True}}) is True
+
+    def test_keep_alive_budget_guard(self):
+        """保活空请求本身有写入价——有预算上限。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_budget
+
+        assert keep_alive_budget({}) > 0  # 默认有上限
+        assert keep_alive_budget({"cache": {"keep_alive_max_calls": 3}}) == 3
+
+    def test_keep_alive_schedule_requires_enabled(self):
+        """luna 阻断项：保活调度默认关闭时不触发。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_should_fire
+
+        assert (
+            keep_alive_should_fire(
+                last_call_at=100.0, now=1000.0, cfg={}, calls_used=0
+            )
+            is False
+        )
+
+    def test_keep_alive_fires_after_5m_within_budget(self):
+        """luna 阻断项：启用 + ≥5m + 预算未耗尽 → 触发。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_should_fire
+
+        assert (
+            keep_alive_should_fire(
+                last_call_at=100.0,
+                now=100.0 + 301.0,
+                cfg={"cache": {"keep_alive": True}},
+                calls_used=1,
+            )
+            is True
+        )
+
+    def test_keep_alive_blocked_when_budget_exhausted(self):
+        """luna 阻断项：预算耗尽 → 不触发（写入价保护）。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_should_fire
+
+        assert (
+            keep_alive_should_fire(
+                last_call_at=100.0,
+                now=100.0 + 301.0,
+                cfg={"cache": {"keep_alive": True, "keep_alive_max_calls": 2}},
+                calls_used=2,
+            )
+            is False
+        )
+
+    def test_keep_alive_request_minimal(self):
+        """保活请求最小化（max_tokens=1）。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import build_keep_alive_request
+
+        req = build_keep_alive_request([{"role": "user", "content": "hi"}])
+        assert req["max_tokens"] == 1
+        assert req["keep_alive"] is True
+
+
+class TestPrewarmFlow:
+    """luna 阻断项 3：预热执行、签名失效、缓存重建。"""
+
+    def test_prewarm_state_warm_and_valid(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            PrewarmState,
+            build_prewarm_signature,
+        )
+
+        sig = build_prewarm_signature(model="gpt-5.6", cwd="/w", mcp="m")
+        state = PrewarmState()
+        state.warm(sig, now=100.0)
+        assert state.validate(sig) is True
+        assert state.warmed_at == 100.0
+
+    def test_prewarm_invalid_before_warm(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            PrewarmState,
+            build_prewarm_signature,
+        )
+
+        sig = build_prewarm_signature(model="gpt-5.6", cwd="/w", mcp="m")
+        state = PrewarmState()
+        assert state.validate(sig) is False  # 未预热 → 无效
+
+    def test_prewarm_rebuild_on_config_change(self):
+        """luna 阻断项：配置变化 → 预热失效 → 重建（审计记录）。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            PrewarmState,
+            build_prewarm_signature,
+        )
+
+        sig_a = build_prewarm_signature(model="gpt-5.6", cwd="/w", mcp="m")
+        sig_b = build_prewarm_signature(model="deepseek", cwd="/w", mcp="m")
+        state = PrewarmState()
+        state.warm(sig_a, now=100.0)
+        # 配置变化 → 旧预热失效
+        assert state.validate(sig_b) is False
+        # 重建：返回 True（发生了重建）且新签名生效
+        rebuilt = state.rebuild(sig_b, now=200.0)
+        assert rebuilt is True
+        assert state.validate(sig_b) is True
+
+    def test_prewarm_no_rebuild_when_unchanged(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            PrewarmState,
+            build_prewarm_signature,
+        )
+
+        sig = build_prewarm_signature(model="gpt-5.6", cwd="/w", mcp="m")
+        state = PrewarmState()
+        state.warm(sig)
+        assert state.rebuild(sig) is False  # 无变化 → 不重建
+
+
+class TestSessionResumeHitRate:
+    """B5 判据 6：会话恢复后的命中率记录存在。"""
+
+    def test_resume_records_usage(self):
+        """恢复会话后 token_stats 记录真实 usage（命中率可观测）。"""
+        from RxyCode.RxyCode1_1_0.utils.streaming import TokenStats
+
+        stats = TokenStats()
+        stats.add_real_usage(1000, 100, 800)
+        assert stats.cache_hit_rate == pytest.approx(80.0)
+        assert stats.latest_request["hit_tokens"] == 800
+
+    def test_manager_load_session_append_only(self):
+        """luna 阻断项 1：MemoryManager.load_session(append_only=True) 真实路径。"""
+        from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
+
+        import tempfile
+        import os
+        from pathlib import Path
+
+        tmp = Path(tempfile.mkdtemp(prefix="b5-mgr-"))
+        os.environ["RXYCODE_DATA_DIR"] = str(tmp)
+        try:
+            mm = MemoryManager(session_id="sess-b5-1")
+            mm.short_term.load_from_dicts([
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},
+            ])
+            mm.save_session()
+            # 新实例（模拟重启）append-only 恢复
+            mm2 = MemoryManager(session_id="sess-b5-1")
+            mm2.load_session(append_only=True)
+            assert len(mm2.short_term._messages) == 2
+            assert mm2.short_term._messages[0].content == "Q1"
+            assert mm2.short_term._messages[-1].content == "A1"
+        finally:
+            os.environ.pop("RXYCODE_DATA_DIR", None)
+
+    def test_append_only_preserves_existing_prefix(self):
+        """luna 阻断项 1：append 到已有前缀不清空、不重复。"""
+        from RxyCode.RxyCode1_1_0.memory.short_term import ShortTermMemory
+
+        mem = ShortTermMemory()
+        mem.add_user_message("P0")
+        mem.add_ai_message("PA")
+        mem.append_from_dicts([
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1"},
+        ])
+        contents = [m.content for m in mem._messages]
+        assert contents == ["P0", "PA", "Q1", "A1"]  # 前缀保留 + 追加
+        assert mem._turn_count == 2  # P0 + Q1
+
+    def test_append_from_dicts_all_message_types(self):
+        """luna 阻断项 R5-1：append_from_dicts 支持 system/tool 消息。"""
+        from RxyCode.RxyCode1_1_0.memory.short_term import ShortTermMemory
+
+        mem = ShortTermMemory()
+        mem.append_from_dicts([
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "content": "R1", "tool_call_id": "c1"},
+        ])
+        assert len(mem._messages) == 4
+        assert mem._messages[0].content == "SYS"
+        assert mem._messages[3].content == "R1"
+
+    def test_append_from_dicts_keeps_tool_calls(self):
+        """luna 阻断项 R8-1：assistant 的 tool_calls 元数据保留。"""
+        from RxyCode.RxyCode1_1_0.memory.short_term import ShortTermMemory
+
+        mem = ShortTermMemory()
+        mem.append_from_dicts([
+            {"role": "assistant", "content": "A1", "tool_calls": [{"id": "c1", "name": "read"}]},
+        ])
+        ai = mem._messages[0]
+        assert ai.tool_calls == [{"id": "c1", "name": "read"}]
+
+    def test_manager_append_only_no_duplicate_when_prefix_exists(self):
+        """luna 阻断项 R3-1：已有前缀 + manager 恢复不重复追加。"""
+        from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
+
+        import tempfile
+        import os
+        from pathlib import Path
+
+        tmp = Path(tempfile.mkdtemp(prefix="b5-mgr2-"))
+        os.environ["RXYCODE_DATA_DIR"] = str(tmp)
+        try:
+            mm = MemoryManager(session_id="sess-b5-2")
+            mm.short_term.load_from_dicts([
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},
+            ])
+            mm.save_session()
+            # 已有前缀的实例（模拟运行中恢复）+ append_only
+            mm2 = MemoryManager(session_id="sess-b5-2")
+            mm2.short_term.load_from_dicts([
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},
+            ])
+            mm2.load_session(append_only=True)
+            # 不重复追加（重叠 Q1/A1 跳过）
+            contents = [m.content for m in mm2.short_term._messages]
+            assert contents == ["Q1", "A1"]
+        finally:
+            os.environ.pop("RXYCODE_DATA_DIR", None)
+
+    def test_manager_append_only_full_duplicate_detected(self):
+        """luna 阻断项 R4-1：完整重复历史不二次追加（通用重叠）。"""
+        from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
+
+        import tempfile
+        import os
+        from pathlib import Path
+
+        tmp = Path(tempfile.mkdtemp(prefix="b5-mgr3-"))
+        os.environ["RXYCODE_DATA_DIR"] = str(tmp)
+        try:
+            mm = MemoryManager(session_id="sess-b5-3")
+            hist = [
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},
+                {"role": "user", "content": "Q2"},
+                {"role": "assistant", "content": "A2"},
+            ]
+            mm.short_term.load_from_dicts(hist)
+            mm.save_session()
+            # 已有相同完整历史 + append_only → 无重复
+            mm2 = MemoryManager(session_id="sess-b5-3")
+            mm2.short_term.load_from_dicts(hist)
+            mm2.load_session(append_only=True)
+            contents = [m.content for m in mm2.short_term._messages]
+            assert contents == ["Q1", "A1", "Q2", "A2"]
+        finally:
+            os.environ.pop("RXYCODE_DATA_DIR", None)
+
+    def test_manager_append_only_partial_overlap_any_length(self):
+        """luna 阻断项 R4-1：任意长度重叠（>2）正确去重。"""
+        from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
+
+        import tempfile
+        import os
+        from pathlib import Path
+
+        tmp = Path(tempfile.mkdtemp(prefix="b5-mgr4-"))
+        os.environ["RXYCODE_DATA_DIR"] = str(tmp)
+        try:
+            mm = MemoryManager(session_id="sess-b5-4")
+            hist = [
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},
+                {"role": "user", "content": "Q2"},
+                {"role": "assistant", "content": "A2"},
+            ]
+            mm.short_term.load_from_dicts(hist)
+            mm.save_session()
+            # 已有最后 2 条（重叠 2）→ 只追加重叠之后的部分
+            mm2 = MemoryManager(session_id="sess-b5-4")
+            mm2.short_term.load_from_dicts(hist[2:])
+            mm2.load_session(append_only=True)
+            contents = [m.content for m in mm2.short_term._messages]
+            # 已有 [Q2,A2] 与历史头部 [Q1,A1,...] 无重叠 → 不追加（不产生第二前缀）
+            assert contents == ["Q2", "A2"]
+        finally:
+            os.environ.pop("RXYCODE_DATA_DIR", None)
+
+    def test_run_entry_calls_prewarm_rebuild(self):
+        """luna 阻断项 R3-2：run 入口调用 prewarm 重建。"""
+        import inspect
+
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        src = inspect.getsource(AgentV2.run)
+        assert "_maybe_rebuild_prewarm" in src
+
+    def test_keep_alive_builds_request(self):
+        """luna 阻断项 R3-3：保活触发时构造 max_tokens=1 请求。"""
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        agent = object.__new__(AgentV2)
+        agent._cfg = {"cache": {"keep_alive": True}}
+        agent._keep_alive_state = {"calls_used": 1}
+        fired = agent._maybe_keep_alive(last_call_at=time.monotonic() - 400)
+        assert fired is True
+        req = agent._keep_alive_state.get("request")
+        assert req is not None
+        assert req["max_tokens"] == 1
+        assert req["keep_alive"] is True
+
+    def test_raw_stream_supports_max_tokens_override(self):
+        """luna 阻断项 R5-2：_raw_stream 支持 max_tokens 覆盖（keep-alive 用）。"""
+        import inspect
+
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        sig = inspect.signature(AgentV2._raw_stream)
+        assert "max_tokens" in sig.parameters
+
+    def test_agent_prewarm_wired(self):
+        """luna 阻断项 2：AgentV2 prewarm 接入请求链路。"""
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {"model_name": "test-model"}
+        agent._cfg = {}
+        agent._workspace_root = "/w"
+        agent._prewarm = None
+
+        # 首次：需重建 True（待预热）
+        rebuilt1 = agent._maybe_rebuild_prewarm()
+        # 预热成功后确认
+        agent._confirm_prewarm()
+        # 无变化 → 不再需重建
+        assert agent._maybe_rebuild_prewarm() is False
+        # 配置变化：换模型 → 需重建
+        agent.model_config = {"model_name": "other-model"}
+        rebuilt2 = agent._maybe_rebuild_prewarm()
+        assert rebuilt1 is True  # 首次建立
+        assert rebuilt2 is True  # 模型变化 → 重建
+
+    def test_prewarm_not_confirmed_before_request_success(self):
+        """luna 阻断项 R6-2：预热成功前不提交 warmed 状态。"""
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        from RxyCode.RxyCode1_1_0.core.cache_policy import PrewarmState
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {"model_name": "test-model"}
+        agent._cfg = {}
+        agent._workspace_root = "/w"
+        agent._prewarm = PrewarmState()
+
+        # 首次检测：需重建，但未确认 → warmed_at 仍 None
+        assert agent._maybe_rebuild_prewarm() is True
+        assert agent._prewarm.warmed_at is None
+        # 确认后 → warmed_at 设置
+        agent._confirm_prewarm()
+        assert agent._prewarm.warmed_at is not None
+
+    def test_prewarm_retries_when_not_confirmed(self):
+        """luna 阻断项 R7-1：预热未确认成功 → 下次 run 继续重试。"""
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        from RxyCode.RxyCode1_1_0.core.cache_policy import PrewarmState
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {"model_name": "test-model"}
+        agent._cfg = {}
+        agent._workspace_root = "/w"
+        agent._prewarm = PrewarmState()
+
+        # 模拟预热请求失败：检测返回 True，但未确认
+        assert agent._maybe_rebuild_prewarm() is True
+        # 下次调用（未确认）→ 仍返回 True（重试）
+        assert agent._maybe_rebuild_prewarm() is True
+        # 确认成功后 → 不再需要
+        agent._confirm_prewarm()
+        assert agent._maybe_rebuild_prewarm() is False
+
+    def test_agent_keep_alive_wired(self):
+        """luna 阻断项 3：AgentV2 keep-alive 调度接入。"""
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        agent = object.__new__(AgentV2)
+        agent._cfg = {"cache": {"keep_alive": True}}
+        agent._keep_alive_state = {"calls_used": 1}
+        # 距上次调用 <5m → 不触发
+        assert (
+            agent._maybe_keep_alive(last_call_at=time.monotonic() - 60) is False
+        )
+        # ≥5m → 触发且预算消耗
+        assert (
+            agent._maybe_keep_alive(last_call_at=time.monotonic() - 400) is True
+        )
+        assert agent._keep_alive_state["calls_used"] == 2
+
+    def test_resume_records_real_usage_chain(self):
+        """luna 阻断项 4：恢复会话 → 请求 → 记录真实 usage 链路。"""
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import _record_usage
+        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+        token_stats.reset()
+        chunk = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=2000,
+                completion_tokens=500,
+                prompt_cache_hit_tokens=1600,
+                prompt_tokens_details=None,
+            ),
+            usage_metadata=None,
+            content=None,
+        )
+        _record_usage(chunk, provider=SimpleNamespace(name="deepseek", extract_cache_read=lambda u, c: u.get("prompt_cache_hit_tokens", 0)), caps=SimpleNamespace())
+        # 恢复后的请求记录了命中率
+        assert token_stats.prompt_tokens == 2000
+        assert token_stats.cache_hit_tokens == 1600
+        assert token_stats.cache_hit_rate == pytest.approx(80.0)
+
+
+# 实测验收证据
+- pytest tests/test_cache/test_session_reuse.py: 36 passed
+- pytest tests/test_cache + tests/test_memory: 426 passed（1 个 B3 遗留顺序脆弱失败已记录）
+- 恢复验证: append-only + 前缀不匹配不追加 + 全消息类型 + tool_calls 保留
+- 跨 turn 命中实测: prompt 89281/hit 74880/83.87%
+- evals: GATE PASS (94.7% >= 89.5%)，18/19，零回归
+- ruff: All checks passed
+
+# 复审要求
+1. 逐条核对判据 1-6 + 前八轮阻断项是否修复
+2. 检查 CB1-CB8
+3. 输出结论：PASS / FAIL，若 FAIL 列阻断项

@@ -1,0 +1,62 @@
+## 复审结论：FAIL
+
+### 判据核对
+
+1. **append-only 恢复：PASS**  
+   `load_session(append_only=True)` 使用最长后缀/历史前缀重叠；无重叠时不追加，避免第二个前缀形态。全消息类型也已支持。
+
+2. **session_id / prompt cache key 稳定：PASS**  
+   `_session_id` 在 Agent 生命周期内保持稳定，未见按 turn 重置。
+
+3. **prewarm 签名校验与失效：FAIL（阻断）**  
+   `_maybe_rebuild_prewarm()` 首次调用时执行：
+
+   ```python
+   state._signature = sig
+   return True
+   ```
+
+   但请求失败或没有成功返回时，`warmed_at` 仍为 `None`，下一次调用却会因为：
+
+   ```python
+   return state.signature != sig
+   ```
+
+   返回 `False`，从而**不会重试预热**。也就是说，未确认成功的 prewarm 会被错误地视为“不需要重建”。
+
+   应保持“pending signature”与“已确认 warmed signature”分离，或直接在未 `validate()` 时持续返回需要预热。
+
+4. **可选 keep-alive：部分通过**  
+   默认关闭、间隔和预算判断存在，且使用 `max_tokens=1`。但：
+   - `calls_used` 在实际请求成功前就递增；
+   - 构造的 `req` 并未真正传入 `_raw_stream`，`keep_alive=True` 字段实际未进入请求；
+   - 请求失败被吞掉，预算仍可能被消耗。
+
+5. **请求链路接入：部分通过**  
+   prewarm 和 keep-alive 均接入 `run()`，但 prewarm 失败后的不可重试问题使该判据不能通过。
+
+6. **恢复后 usage / 命中率观测：PASS**  
+   `_record_usage` 与 `TokenStats` 路径存在，提供了真实 usage 和命中率记录。
+
+### 前六轮阻断项
+
+- **R6-1 append-only 重叠：已修复，PASS**
+- **R6-2 prewarm 成功前提交 warmed：已修复，PASS**
+- 但复审发现新的关联回归：**未确认成功的首次 prewarm 不会重试**。
+
+### CB1-CB8
+
+基于提交材料无法逐字核对未提供定义的 CB1-CB8；就当前实现可明确发现：
+
+- **prewarm 未确认状态不可重试**，违反成功确认与可靠重建约束；
+- keep-alive 的实际请求参数与预算提交语义仍不完全闭合；
+- `except Exception: pass` 隐藏了关键失败路径，削弱可观测性。
+
+## 必须修复的阻断项
+
+1. `_maybe_rebuild_prewarm()` 在 `warmed_at is None` 或 `state.validate(sig) is False` 时必须继续返回 `True`。
+2. 不要把尚未成功请求的签名写入“已确认签名”；使用 pending 字段或仅由 `_confirm_prewarm()` 写入。
+3. 补充“预热请求失败后下一次 run 会重试”的测试。
+4. 确保 keep-alive 请求参数真正进入底层请求，并明确失败时预算是否应消耗。
+
+因此本轮不能 PASS。

@@ -271,3 +271,139 @@ def verify_deepseek_prefix(prompt_tokens: int, hit_tokens: int) -> bool:
             prompt_tokens,
         )
     return False
+
+
+# ---------------------------------------------------------------------------
+# B5: 会话复用与 prewarm（PHASE-B §5 B5）
+# ---------------------------------------------------------------------------
+
+#: 保活空请求默认预算（写入价保护，§6.2 成本保守）。
+DEFAULT_KEEP_ALIVE_MAX_CALLS = 20
+
+#: 保活请求最大输出 token（aider max_tokens=1 语义）。
+KEEP_ALIVE_MAX_TOKENS = 1
+
+#: 保活间隔（秒）——Anthropic 5m TTL 档（B5 步骤 4）。
+KEEP_ALIVE_INTERVAL_S = 300
+
+
+def build_prewarm_signature(
+    *,
+    model: str,
+    cwd: str,
+    mcp: str = "",
+) -> str:
+    """预热签名（Cherry Studio agentSessionWarmup.ts:246-253 语义）。
+
+    模型/cwd/MCP 任一变化 → 签名变化 → 预热缓存失效 → 重建。
+    确定性序列化（sort_keys）保证同配置同签名。
+    """
+    import hashlib
+    import json
+
+    norm = json.dumps(
+        {"model": model, "cwd": cwd, "mcp": mcp},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+
+def prewarm_valid(
+    signature: str,
+    *,
+    model: str,
+    cwd: str,
+    mcp: str = "",
+) -> bool:
+    """预热请求与真实请求同签名校验：签名一致才有效。
+
+    任一配置变化 → 当前签名 ≠ 预热签名 → 预热失效（需重建）。
+    """
+    current = build_prewarm_signature(model=model, cwd=cwd, mcp=mcp)
+    return current == signature
+
+
+def keep_alive_enabled(cfg: Optional[dict]) -> bool:
+    """保活开关（B5 步骤 4）：默认关闭，按配置启用（成本保守 §6.2）。"""
+    if not isinstance(cfg, dict):
+        return False
+    return bool((cfg.get("cache") or {}).get("keep_alive", False))
+
+
+def keep_alive_budget(cfg: Optional[dict]) -> int:
+    """保活预算上限（写入价保护）：默认 20 次，可配置。"""
+    if not isinstance(cfg, dict):
+        return DEFAULT_KEEP_ALIVE_MAX_CALLS
+    raw = (cfg.get("cache") or {}).get("keep_alive_max_calls")
+    if isinstance(raw, (int, float)) and raw > 0:
+        return int(raw)
+    return DEFAULT_KEEP_ALIVE_MAX_CALLS
+
+
+def keep_alive_should_fire(
+    *,
+    last_call_at: Optional[float],
+    now: float,
+    cfg: Optional[dict],
+    calls_used: int = 0,
+) -> bool:
+    """保活调度判定（B5 步骤 4）：启用 + 距上次调用 ≥5m + 预算未耗尽。"""
+    if not keep_alive_enabled(cfg):
+        return False
+    if calls_used >= keep_alive_budget(cfg):
+        return False
+    if last_call_at is None:
+        return False  # 无历史调用不保活（无前缀可保）
+    return (now - last_call_at) >= KEEP_ALIVE_INTERVAL_S
+
+
+def build_keep_alive_request(messages: list) -> dict:
+    """构造保活请求（aider base_coder.py:1340-1392 语义）。
+
+    最小请求：复用会话前缀 + max_tokens=1 空输出，仅重写缓存不产出内容。
+    返回请求字典（messages + 保活参数）。
+    """
+    return {
+        "messages": list(messages),
+        "max_tokens": KEEP_ALIVE_MAX_TOKENS,
+        "keep_alive": True,
+    }
+
+
+class PrewarmState:
+    """预热状态（Cherry Studio ClaudeCodeWarmQueryManager.ts:201-255 语义）。
+
+    保存预热签名；配置变化（模型/cwd/MCP）→ 签名不匹配 → 预热失效 →
+    需重建（记录重建事件到审计）。
+    """
+
+    def __init__(self) -> None:
+        self._signature: Optional[str] = None
+        self._warmed_at: Optional[float] = None
+
+    def warm(self, signature: str, now: Optional[float] = None) -> None:
+        """记录一次预热（同签名有效）。"""
+        import time
+
+        self._signature = signature
+        self._warmed_at = now if now is not None else time.time()
+
+    def validate(self, signature: str) -> bool:
+        """签名一致且已预热 → 有效；否则失效（需重建）。"""
+        return self._signature is not None and self._signature == signature
+
+    def rebuild(self, signature: str, now: Optional[float] = None) -> bool:
+        """配置变化 → 重建：返回 True 表示发生了重建（审计记录）。"""
+        changed = self._signature != signature
+        self.warm(signature, now=now)
+        return changed
+
+    @property
+    def signature(self) -> Optional[str]:
+        return self._signature
+
+    @property
+    def warmed_at(self) -> Optional[float]:
+        return self._warmed_at

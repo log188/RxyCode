@@ -1,4 +1,10 @@
-﻿from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+﻿from langchain_core.messages import (
+    BaseMessage,
+    HumanMessage,
+    AIMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from collections import deque
 from typing import List
 
@@ -42,6 +48,34 @@ class ShortTermMemory:
             elif role == "assistant":
                 self._messages.append(AIMessage(content=msg["content"]))
         self._turn_count = len([m for m in messages if m["role"] == "user"])
+
+    def append_from_dicts(self, messages: list[dict]):
+        """B5: append-only 恢复——**不清空**已有消息，逐条追加。
+
+        保持前缀形态（会话恢复后不产生第二个前缀形态，Cherry Studio 语义）。
+        luna 审计 R5：支持 system/tool/assistant/user 全消息类型（不静默丢弃）。
+        """
+        for msg in messages:
+            role = msg.get("role")
+            if role == "user":
+                self._messages.append(HumanMessage(content=msg.get("content", "")))
+            elif role == "assistant":
+                # luna 审计 R8：保留 tool_calls 元数据（恢复后工具前缀一致）
+                tool_calls = msg.get("tool_calls")
+                ai = AIMessage(content=msg.get("content", ""))
+                if tool_calls:
+                    ai.tool_calls = tool_calls
+                self._messages.append(ai)
+            elif role == "system":
+                self._messages.append(SystemMessage(content=msg.get("content", "")))
+            elif role == "tool":
+                self._messages.append(
+                    ToolMessage(
+                        content=msg.get("content", ""),
+                        tool_call_id=msg.get("tool_call_id", ""),
+                    )
+                )
+        self._turn_count = len([m for m in self._messages if isinstance(m, HumanMessage)])
 
     def get_context_string(self, max_turns: int = 5) -> str:
         """Get recent context string, limited to last N turns.

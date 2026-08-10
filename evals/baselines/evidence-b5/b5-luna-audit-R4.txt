@@ -1,0 +1,91 @@
+## 复审结论：FAIL
+
+前三轮阻断项仍未完整修复，且新增实现存在实际路径缺失。
+
+### 判据 1：append-only 会话恢复 — FAIL
+
+重叠检测只覆盖长度 1 或 2：
+
+```python
+if existing[-1] == messages[0]:
+    overlap = 1
+elif existing[-2:] == messages[:2]:
+    overlap = 2
+```
+
+无法处理：
+
+- 已有完整历史前缀（长度大于 2）
+- 长度大于 2 的重叠
+- `existing == messages` 的完整重复场景
+
+例如已有 `Q1,A1,Q2,A2`，历史也是同样 4 条时，代码会再次追加全部历史。
+
+这是 append-only 去重的阻断缺陷。
+
+### 判据 2：稳定 session_id — PASS
+
+`_session_id` 在 Agent 生命周期内保持稳定，当前 diff 未发现按 turn 重建 session id 的问题。
+
+### 判据 3：prewarm 签名校验 — PARTIAL
+
+签名函数和 `PrewarmState` 单元逻辑基本成立，但 MCP 只纳入 server 名称：
+
+```python
+",".join(sorted((self._cfg.get("mcpServers") or {}).keys()))
+```
+
+MCP URL、参数、凭据等配置变化不会导致签名变化。
+
+### 判据 4：可选 keep-alive 与预算 — PARTIAL
+
+默认关闭、5 分钟间隔、预算上限、`max_tokens=1` 均实现。
+
+但 `_maybe_keep_alive()` 只把 request 放入：
+
+```python
+self._keep_alive_state["request"] = ...
+```
+
+未发现其被真实请求链路调用，也未发现该 request 经 `_raw_stream` 或 provider 实际发送。测试只验证方法本身，不验证真实执行路径。
+
+### 判据 5：请求入口 prewarm / 前缀重建 — FAIL
+
+`AgentV2.run()` 确实调用了 `_maybe_rebuild_prewarm()`，但该方法实际只执行：
+
+```python
+state.rebuild(sig)
+```
+
+`PrewarmState.rebuild()` 只是更新签名和时间戳，没有：
+
+- 发起预热请求
+- 清理旧缓存
+- 重建真实 cache prefix
+- 将新 prefix 接入后续请求
+
+因此属于“状态标记重建”，不是实际 prewarm/cache prefix 重建。
+
+### 判据 6：命中率可观测 — PASS / 部分通过
+
+`TokenStats` 和 `_record_usage` 的测试能证明 usage 可记录。但提供的证据主要是独立单元链路，不能证明会话恢复后的真实请求链路一定完整接通。
+
+## CB1-CB8 核对
+
+| 约束 | 结论 |
+|---|---|
+| CB1 append-only、不重复 | **FAIL**，重叠算法不完整 |
+| CB2 session_id 稳定 | PASS |
+| CB3 prewarm 签名稳定且随配置变化 | **PARTIAL**，MCP 内容变化未覆盖 |
+| CB4 keep-alive 默认关闭 | PASS |
+| CB5 keep-alive 成本预算 | PASS |
+| CB6 keep-alive 实际发送 | **FAIL**，未接入真实请求路径 |
+| CB7 prewarm 实际重建前缀 | **FAIL**，仅更新状态 |
+| CB8 usage/命中率可观测 | PARTIAL/PASS |
+
+### 阻断项
+
+1. 将 append-only 重叠检测改为通用最长后缀/前缀匹配，至少正确处理完整重复和任意长度重叠。
+2. 将 keep-alive request 接入真实发送路径，而不是仅存入 state。
+3. prewarm 配置变化时必须实际失效并重建 prefix/cache，而非只更新 `PrewarmState`。
+4. MCP 签名应包含影响请求前缀的完整配置，而不仅是 server 名称。

@@ -790,6 +790,9 @@ class AgentV2:
     def __init__(self, model_name: Optional[str] = None):
         self._cfg = _settings.load_config()
         self._session_id = "latest"
+        # B5: 预热状态（惰性初始化；PrewarmState 签名校验 + keep-alive 调度）
+        self._prewarm = None
+        self._keep_alive_state = None
 
         # Resolve model config (same logic as old Agent)
         if model_name and model_name in self._cfg.get("models", {}):
@@ -1681,7 +1684,7 @@ class AgentV2:
         # ModelLimitError（预算耗尽）向上传播：调用方必须阻止 SDK 请求。
         return resolution.resolved_max_tokens
 
-    async def _raw_stream(self, messages, tools=None):
+    async def _raw_stream(self, messages, tools=None, *, max_tokens=None):
         """Stream from the raw OpenAI client, yielding native chunks.
 
         Unlike LangChain's astream, this preserves `reasoning_content` so the
@@ -1720,7 +1723,11 @@ class AgentV2:
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": self.model_config.get("temperature", 0.7),
-            "max_tokens": self._resolve_request_max_tokens(input_tokens),
+            "max_tokens": (
+                max_tokens
+                if max_tokens is not None
+                else self._resolve_request_max_tokens(input_tokens)
+            ),
         }
         # A21: per-model 延迟旋钮——委托 provider.llm_kwargs 决定 thinking/effort/
         # temperature（各 provider 覆写已实现传输适配：MiniMax adaptive、M2.x 移除、
@@ -2164,10 +2171,111 @@ class AgentV2:
         return "\u65e0\u6cd5\u8bc6\u522b\u4e0b\u8f7d\u610f\u56fe"
 
     async def _ensure_session_loaded(self):
-        """Load previous session history into short-term memory (once)."""
+        """Load previous session history into short-term memory (once).
+
+        B5: append-only 恢复——完整历史逐条追加，前缀形态与保存时一致
+        （会话重启后续接命中，Cherry Studio 语义）。
+        """
         if not self._session_loaded:
-            self._memory.load_session()
+            self._memory.load_session(append_only=True)
             self._session_loaded = True
+
+    def _prewarm_state(self):
+        """B5: 惰性初始化预热状态（PrewarmState）。"""
+        if self._prewarm is None:
+            from .cache_policy import PrewarmState
+
+            self._prewarm = PrewarmState()
+        return self._prewarm
+
+    def _prewarm_signature(self) -> str:
+        """B5: 当前会话配置签名（模型/cwd/MCP；Cherry Studio 语义）。
+
+        luna 审计 R4：MCP 签名纳入完整配置（URL/参数等），不仅是 server 名。
+        """
+        from .cache_policy import build_prewarm_signature
+
+        model = str(self.model_config.get("model_name") or "")
+        cwd = str(getattr(self, "_workspace_root", "") or "")
+        mcp = ""
+        try:
+            mcp = json.dumps(
+                self._cfg.get("mcpServers") or {},
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        except Exception:  # pragma: no cover
+            mcp = ""
+        return build_prewarm_signature(model=model, cwd=cwd, mcp=mcp)
+
+    def _maybe_rebuild_prewarm(self) -> bool:
+        """B5: 需不需要预热/重建（审计：True = 应发预热请求）。
+
+        luna 审计 R7：未确认成功（warmed_at None）或签名不匹配 → 持续返回
+        True（可重试）；只有 _confirm_prewarm 成功后才不再需要。
+        """
+        state = self._prewarm_state()
+        sig = self._prewarm_signature()
+        if state.signature is None or state.warmed_at is None:
+            return True  # 从未预热/未确认成功 → 需要（可重试）
+        return state.signature != sig
+
+    def _confirm_prewarm(self) -> None:
+        """B5: 预热请求成功后确认（提交 warmed 状态与时间戳）。"""
+        state = self._prewarm_state()
+        state.warm(self._prewarm_signature())
+
+    def _session_prewarm_messages(self) -> list:
+        """B5: 构造预热请求消息（复用真实会话前缀，Cherry Studio 同签名语义）。
+
+        luna 审计 R8：预热必须包含 system prompt——否则预热的是另一种前缀。
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        system = ""
+        try:
+            from .prompts.registry import get_system_prompt
+
+            system = get_system_prompt(variant=getattr(self, "_prompt_variant", lambda: "default")())
+        except Exception:  # pragma: no cover
+            system = ""
+        msgs: list = []
+        if system:
+            msgs.append(SystemMessage(content=system))
+        msgs.append(HumanMessage(content="warm"))
+        return msgs
+
+    def _maybe_keep_alive(self, last_call_at: float) -> bool:
+        """B5: 保活调度判定（默认关闭；启用 + ≥5m + 预算未耗尽）。
+
+        触发时构造保活请求（max_tokens=1，luna 审计 R3：实际执行路径）——
+        返回 True 表示应发出保活请求；调用方经 `_raw_stream` 执行。
+        """
+        from .cache_policy import (
+            build_keep_alive_request,
+            keep_alive_should_fire,
+        )
+
+        state = self._keep_alive_state
+        calls_used = 0
+        if state is not None:
+            calls_used = state.get("calls_used", 0)
+        should_fire = keep_alive_should_fire(
+            last_call_at=last_call_at,
+            now=time.monotonic(),
+            cfg=getattr(self, "_cfg", {}),
+            calls_used=calls_used,
+        )
+        if should_fire:
+            if self._keep_alive_state is None:
+                self._keep_alive_state = {}
+            self._keep_alive_state["calls_used"] = calls_used + 1
+            # 构造保活请求（max_tokens=1 空输出，仅重写缓存）
+            self._keep_alive_state["request"] = build_keep_alive_request(
+                [{"role": "user", "content": "keep-alive"}]
+            )
+        return should_fire
 
     def _get_memory_context(self, query: str, *, include_long_term: bool = True) -> str:
         """Call query-aware memory while preserving legacy test/plugin adapters."""
@@ -3222,6 +3330,54 @@ class AgentV2:
             raise ValueError(
                 f"Unsupported agent mode: {mode!r}. Valid modes: {valid_modes}"
             )
+        # B5: 请求入口校验预热签名——配置变化（模型/cwd/MCP）→ 重建 →
+        # 前缀重建（命中率下降可解释，B5 步骤 5）。重建动作写进度量。
+        try:
+            if self._maybe_rebuild_prewarm():
+                _logger.info(
+                    "B5 prewarm signature changed; cache prefix rebuilt "
+                    "(model/cwd/MCP change)"
+                )
+                token_stats.record_application_cache("precise", bypass=True)
+                # luna 审计 R5/R6/R8：真实重建——发一次最小预热请求写新前缀，
+                # **完整消费流且成功后**才确认 warmed（失败不标记，下次重试）。
+                if getattr(self, "_llm", None) is not None:
+                    from langchain_core.messages import HumanMessage
+
+                    # 复用当前会话消息（含 system/tools，Cherry Studio 同签名语义）
+                    prewarm_msgs = self._session_prewarm_messages()
+                    try:
+                        async for _chunk in self._raw_stream(
+                            prewarm_msgs,
+                            tools=self._get_core_tools() if hasattr(self, "_get_core_tools") else None,
+                            max_tokens=1,
+                        ):
+                            pass  # 完整消费流（不提前 break）
+                        self._confirm_prewarm()
+                    except Exception:
+                        _logger.warning("B5 prewarm request failed; will retry next run")
+                        # 不 confirm → 下次 run 重试
+        except Exception:  # pragma: no cover - 预热失败不阻断请求
+            pass
+        # B5: keep-alive 真实发送（luna 审计 R4）——启用时若距上次调用
+        # ≥5m 且预算未耗尽，经 _raw_stream 发 max_tokens=1 空请求保活前缀。
+        try:
+            last_call = getattr(self, "_keep_alive_last_call", None)
+            if last_call is not None and self._maybe_keep_alive(last_call_at=last_call):
+                req = (self._keep_alive_state or {}).get("request")
+                if req and getattr(self, "_llm", None) is not None:
+                    from langchain_core.messages import HumanMessage
+
+                    _logger.info("B5 keep-alive request sent (max_tokens=1)")
+                    async for _chunk in self._raw_stream(
+                        [HumanMessage(content="keep-alive")],
+                        tools=None,
+                        max_tokens=1,
+                    ):
+                        break  # 只消费首个 chunk，不阻塞
+            self._keep_alive_last_call = time.monotonic()
+        except Exception:  # pragma: no cover - 保活失败不阻断请求
+            pass
         # 顶层显式声明的任务副作用类型（"write"/"danger"/只读效果）。默认 "auto"
         # 走启发式；evals 只读任务可显式声明 effect="search" 避免被误判。
         self._task_effect = (effect or "auto").strip().lower()
