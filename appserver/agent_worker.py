@@ -16,9 +16,22 @@ from pydantic import BaseModel
 
 from .bootstrap import bootstrap_agent
 from .emitter import model_to_notification
-from .jsonrpc import write_message
+from .jsonrpc import StreamCoalescer, stream_coalesce_enabled, write_message
 from .runtime import bind_prompt_context, install_tui_context_hook, get_bound_tui, reset_prompt_context
 from .tui import ProtocolTui
+
+try:
+    from ..protocol.notifications import (
+        MessageDelta,
+        ProgressUpdate,
+        ReasoningSnapshot,
+    )
+except ImportError:
+    from protocol.notifications import (
+        MessageDelta,
+        ProgressUpdate,
+        ReasoningSnapshot,
+    )
 
 try:
     from ..core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
@@ -80,12 +93,22 @@ class AgentWorker:
         self._approval = _PipeApproval(self._send_parent_request)
         self._thinking_expanded = False
         self._active_tui: Any | None = None
-        self._pending_writes: set[asyncio.Task[Any]] = set()
         self._write_failures: list[BaseException] = []
         self._run_task: asyncio.Task[Any] | None = None
         #: Request ids that already got a terminal response, so an early-cancel
         #: path never double-replies to the parent.
         self._answered_request_ids: set[int] = set()
+        #: Single serialized stdout writer (C3 ordering): every notification —
+        #: stream notifications from the coalescer sink AND regular emits — is
+        #: submitted to this FIFO queue and drained by one writer task, so
+        #: stdout order matches emit order and terminal responses can be
+        #: ordered after all queued notifications.
+        self._write_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._write_task: asyncio.Task[Any] | None = None
+        #: Serializes the terminal-response hand-off: drain -> submit ->
+        #: wait is atomic against concurrent emits/other responses, so a
+        #: response can never overtake notifications submitted before it.
+        self._write_order_lock = asyncio.Lock()
 
     def _mark_answered(self, request_id: int) -> None:
         self._answered_request_ids.add(request_id)
@@ -109,7 +132,7 @@ class AgentWorker:
         except BaseException as exc:
             _logger.error("flush failed before interrupted response: %r", exc)
         await asyncio.shield(
-            write_message(
+            self._write_ordered(
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -126,43 +149,63 @@ class AgentWorker:
         )
         self._mark_answered(request_id)
 
-    def _on_write_done(self, task: asyncio.Task[Any]) -> None:
-        """Record a notification-write failure persistently.
+    def _ensure_writer(self) -> None:
+        """Idempotently start the single serialized stdout writer (C3)."""
+        if self._write_task is None or self._write_task.done():
+            self._write_task = asyncio.get_running_loop().create_task(
+                self._writer_loop()
+            )
 
-        Persisting the exception in ``_write_failures`` survives the set-removal
-        in the done callback, so a write that finished before ``_flush`` ran is
-        still observable.
-        """
-        self._pending_writes.discard(task)
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            self._write_failures.append(exc)
+    async def _writer_loop(self) -> None:
+        while True:
+            message = await self._write_queue.get()
+            try:
+                await write_message(message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Persist the failure so _flush_pending_writes surfaces it.
+                self._write_failures.append(exc)
+            finally:
+                self._write_queue.task_done()
 
     def _schedule_write(self, message: dict[str, Any]) -> None:
-        """Queue stdout write from sync emit callbacks (T3: no sync I/O on loop)."""
-        task = asyncio.get_running_loop().create_task(write_message(message))
-        self._pending_writes.add(task)
-        task.add_done_callback(self._on_write_done)
+        """Queue a stdout write (sync emit callbacks; T3: no sync I/O on
+        loop).  FIFO with the coalescer sink -> write order == emit order."""
+        self._ensure_writer()
+        self._write_queue.put_nowait(message)
 
     async def _flush_pending_writes(self) -> None:
-        """Wait for all scheduled notifications to hit stdout before a result.
+        """Wait for all queued notifications to hit stdout before a result.
 
         Write failures are surfaced instead of silently swallowed: a lost
         notification breaks event ordering/observability, and a failing stdout
         means the parent is unreachable, so the caller should stop rather than
         keep running RPCs that can never be answered.
         """
-        if self._pending_writes:
-            await asyncio.gather(
-                *list(self._pending_writes), return_exceptions=True
-            )
+        await asyncio.wait_for(self._write_queue.join(), timeout=10.0)
         failures = self._write_failures
         self._write_failures = []
         for exc in failures:
             _logger.error("notification write failed: %r", exc)
             raise RuntimeError("worker stdout write failed") from exc
+
+    async def _write_ordered(self, message: dict[str, Any]) -> None:
+        """Write a terminal response strictly after all queued notifications.
+
+        Drains the queue first (so the response never overtakes already
+        emitted notifications), then submits and waits for the response write
+        itself.  The whole drain->submit->wait window is serialized by
+        ``_write_order_lock`` so a concurrent emit or another response cannot
+        slip in between the drain check and the response submission.  The
+        wait is shielded by the caller when cancellation must not interrupt
+        the hand-off.
+        """
+        self._ensure_writer()
+        async with self._write_order_lock:
+            await self._flush_pending_writes()
+            self._write_queue.put_nowait(message)
+            await asyncio.wait_for(self._write_queue.join(), timeout=10.0)
 
     async def _send_parent_request(
         self, method: str, params: dict[str, Any]
@@ -173,7 +216,7 @@ class AgentWorker:
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[request_id] = future
         try:
-            await write_message(
+            await self._write_ordered(
                 {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
             )
             return await future
@@ -225,7 +268,7 @@ class AgentWorker:
             workspace_root=self._workspace_root,
         )
         await self._flush_pending_writes()
-        await write_message(
+        await self._write_ordered(
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -235,7 +278,7 @@ class AgentWorker:
 
     async def _handle_prompt(self, params: dict[str, Any], request_id: int) -> None:
         if self._agent is None:
-            await write_message(
+            await self._write_ordered(
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -248,6 +291,11 @@ class AgentWorker:
         session_id = str(params.get("session_id", self._session_id))
 
         def emit(notification: BaseModel) -> None:
+            # Ordering barrier: any buffered stream content is submitted to
+            # the FIFO writer BEFORE this plain notification, so stdout order
+            # matches TUI callback order for ALL notification kinds (not just
+            # tool begin/end).
+            tui._flush_pending_stream()
             self._schedule_write(model_to_notification(notification))
 
         tui = ProtocolTui(session_id, emit)
@@ -256,37 +304,90 @@ class AgentWorker:
         tui.set_thinking_expanded(expanded)
         tokens = bind_prompt_context(session_id, tui)
         self._active_tui = tui
-        session = Session(
-            session_id=session_id,
-            workspace_root=self._workspace_root,
-            emit=emit,
-        )
+
+        # C3: batch per-token notifications through a StreamCoalescer
+        # (RXYCODE_STREAM_COALESCE=1).  The sink submits the merged protocol
+        # notification to the SAME FIFO write queue as regular emits, so
+        # stdout order == emit order across stream and non-stream
+        # notifications; the final flush happens in stop() before the result
+        # so trailing tokens are never lost.  The sink is SYNC (a fast FIFO
+        # enqueue) so the TUI's synchronous ordering barrier can submit
+        # buffered stream content before plain emits.
+        def make_stream_sink(sid: str) -> Callable[[str, str], None]:
+            def sink(kind: str, text: str) -> None:
+                if kind == "token":
+                    message = model_to_notification(
+                        MessageDelta(session_id=sid, text=str(text))
+                    )
+                elif kind == "reasoning":
+                    message = model_to_notification(
+                        ReasoningSnapshot(
+                            session_id=sid, text=str(text), snapshot=False
+                        )
+                    )
+                else:
+                    message = model_to_notification(
+                        ProgressUpdate(session_id=sid, text=str(text))
+                    )
+                self._schedule_write(message)
+
+            return sink
+
+        coalescer: StreamCoalescer | None = None
         try:
-            result = await session.prompt(
-                self._agent, text, mode=str(params.get("mode", "build")), run_id=run_id
+            if stream_coalesce_enabled():
+                coalescer = StreamCoalescer(make_stream_sink(session_id))
+                tui.set_coalescer(coalescer)
+                await coalescer.start()
+
+            session = Session(
+                session_id=session_id,
+                workspace_root=self._workspace_root,
+                emit=emit,
             )
+            try:
+                result = await session.prompt(
+                    self._agent,
+                    text,
+                    mode=str(params.get("mode", "build")),
+                    run_id=run_id,
+                )
+            except asyncio.CancelledError:
+                # Interrupt RPC cancelled this prompt task (C1): report the
+                # cancellation to the host so the pending request resolves
+                # instead of hanging until timeout.  The stream teardown runs
+                # first (trailing flush) so the interrupted response never
+                # overtakes already-emitted stream events.  The response
+                # write is shielded so an interrupt in the write window
+                # cannot leave the parent hanging.
+                await self._wind_down_stream(tui, coalescer)
+                await self._write_interrupted_response(request_id)
+                raise
+            except Exception as exc:
+                await self._wind_down_stream(tui, coalescer)
+                # Order the error response after all already-queued
+                # notifications (same contract as the success path); a
+                # failing flush is logged but never blocks the terminal
+                # response.
+                await self._write_ordered_error(request_id, exc)
+                self._mark_answered(request_id)
+                return
         except asyncio.CancelledError:
-            # Interrupt RPC cancelled this prompt task (C1): report the
-            # cancellation to the host so the pending request resolves instead
-            # of hanging until timeout.  Flush queued notifications first so
-            # the failed result never overtakes already-emitted stream events.
-            # The response write is shielded so an interrupt in the write
-            # window cannot leave the parent hanging.
-            await self._write_interrupted_response(request_id)
             raise
         except Exception as exc:
-            await asyncio.shield(
-                write_message(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {"code": -32000, "message": str(exc)},
-                    }
-                )
-            )
+            # Unified exit for Session-construction / coalescer-start failures
+            # that occurred before the prompt body: tear the stream down first
+            # (trailing flush), then order the terminal error response after
+            # all queued notifications.
+            await self._wind_down_stream(tui, coalescer)
+            await self._write_ordered_error(request_id, exc)
             self._mark_answered(request_id)
             return
         finally:
+            # Unified teardown: covers Session construction failures and any
+            # error between coalescer.start() and the prompt body.  Idempotent
+            # when the except branches already wound down.
+            await self._wind_down_stream(tui, coalescer)
             reset_prompt_context(tokens)
             self._active_tui = None
 
@@ -295,9 +396,8 @@ class AgentWorker:
         # The terminal response write is shielded so an interrupt arriving in
         # the write window cannot cancel it mid-flight; we mark answered only
         # after it has been handed off to the transport.
-        await self._flush_pending_writes()
         await asyncio.shield(
-            write_message(
+            self._write_ordered(
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -313,6 +413,88 @@ class AgentWorker:
             )
         )
         self._mark_answered(request_id)
+
+    async def _write_ordered_error(self, request_id: int, exc: BaseException) -> None:
+        """Terminal error response strictly after all queued notifications
+        (unified exit for prompt-body, Session-construction and start
+        failures); a failing flush is logged but never blocks the response."""
+        try:
+            await self._flush_pending_writes()
+        except Exception as flush_exc:
+            _logger.error("flush failed before error response: %r", flush_exc)
+        await asyncio.shield(
+            self._write_ordered(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32000, "message": str(exc)},
+                }
+            )
+        )
+
+    async def _wind_down_stream(self, tui: ProtocolTui, coalescer: Any) -> None:
+        """C3 teardown for every prompt exit path (success / cancel / error).
+
+        The drain->stop sequence runs in an INDEPENDENT teardown task.
+        ``_teardown_stream_inner`` consumes the first CancelledError it
+        receives (a cancellation of the caller may be observed by tasks it
+        created) and keeps executing, so BOTH drain and stop always run; it
+        re-raises at the end so the cancellation still propagates.  The
+        teardown's sink puts land in the FIFO writer queue, so a terminal
+        response that follows can never overtake them.  Failures inside the
+        teardown are logged and never prevent the caller from sending its
+        terminal response.
+        """
+        if coalescer is None:
+            return
+        teardown = asyncio.create_task(self._teardown_stream_inner(tui, coalescer))
+        try:
+            await asyncio.shield(teardown)
+        except asyncio.CancelledError:
+            # External cancellation: WAIT for the teardown task to finish
+            # (drain -> stop) before propagating.  The wait is
+            # cancellation-proof: asyncio.wait does not propagate a repeated
+            # cancellation into the teardown task, it only aborts the wait,
+            # which we retry until the teardown is done.
+            while not teardown.done():
+                try:
+                    await asyncio.wait({teardown}, timeout=10.0)
+                    break
+                except asyncio.CancelledError:
+                    continue
+            if teardown.cancelled():
+                pass
+            elif teardown.exception() is not None:
+                _logger.error("stream teardown failed: %r", teardown.exception())
+            raise
+        except Exception as exc:
+            _logger.error("stream teardown failed: %r", exc)
+
+    async def _teardown_stream_inner(
+        self, tui: ProtocolTui, coalescer: Any
+    ) -> None:
+        """drain -> stop, completing BOTH steps even when the teardown task
+        itself receives a cancellation: the first CancelledError is consumed
+        (the task keeps running), the remaining steps still execute, and the
+        cancellation is re-raised at the end so it propagates to the caller.
+        """
+        cancelled = False
+        try:
+            await tui.drain_push_tasks()
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception as exc:
+            _logger.error("coalescer drain failed: %r", exc)
+        for exc in tui.push_failures:
+            _logger.error("coalescer push failed: %r", exc)
+        try:
+            await coalescer.stop()
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception as exc:
+            _logger.error("coalescer stop failed: %r", exc)
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _handle_interrupt(self, request_id: int) -> None:
         """Cancel the running prompt task (C1: run_task.cancel()).
@@ -341,7 +523,7 @@ class AgentWorker:
                 emit=lambda _n: None,
             )
             cancelled = session.interrupt(self._agent)
-        await write_message(
+        await self._write_ordered(
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -357,7 +539,7 @@ class AgentWorker:
         tui = self._active_tui or get_bound_tui()
         if tui is not None and hasattr(tui, "set_thinking_expanded"):
             tui.set_thinking_expanded(expanded)
-        await write_message(
+        await self._write_ordered(
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -389,12 +571,12 @@ class AgentWorker:
         elif method == "thinking/set_expanded":
             await self._handle_set_thinking_expanded(params, int(request_id))
         elif method == "shutdown":
-            await write_message(
+            await self._write_ordered(
                 {"jsonrpc": "2.0", "id": request_id, "result": {"ok": True}}
             )
             raise SystemExit(0)
         else:
-            await write_message(
+            await self._write_ordered(
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -434,7 +616,7 @@ class AgentWorker:
             if isinstance(request_id, int) and not (
                 "result" in message or "error" in message
             ):
-                await write_message(
+                await self._write_ordered(
                     {
                         "jsonrpc": "2.0",
                         "id": request_id,
@@ -445,6 +627,7 @@ class AgentWorker:
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
         pending: set[asyncio.Task[Any]] = set()
+        self._ensure_writer()
         try:
             while True:
                 line = await loop.run_in_executor(None, sys.stdin.readline)
@@ -460,8 +643,12 @@ class AgentWorker:
                     if self._resolve_parent_response(message):
                         continue
                 if message.get("method") == "shutdown":
-                    await write_message(
-                        {"jsonrpc": "2.0", "id": message.get("id"), "result": {"ok": True}}
+                    await self._write_ordered(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message.get("id"),
+                            "result": {"ok": True},
+                        }
                     )
                     break
                 if message.get("method") == "prompt":
@@ -480,14 +667,11 @@ class AgentWorker:
                             # The prompt task was cancelled before it could
                             # answer (e.g. interrupt before first step): send
                             # the interrupted result from a fresh task so the
-                            # parent's pending request does not hang.  Track it
-                            # in _pending_writes so shutdown waits for it.  The
+                            # parent's pending request does not hang.  The
                             # answered marker is set inside the write.
-                            reply = loop.create_task(
+                            loop.create_task(
                                 self._write_interrupted_response(_rid)
                             )
-                            self._pending_writes.add(reply)
-                            reply.add_done_callback(self._on_write_done)
 
                     task.add_done_callback(_clear_run)
                 else:
@@ -500,27 +684,32 @@ class AgentWorker:
             for task in list(pending):
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
-            # Wind down scheduled notification writes so they do not race the
-            # process exit or the shutdown response, surfacing any failures.
-            # Cancel them with a bounded wait so a blocked stdout to_thread can
-            # never drag the shutdown out indefinitely.
-            for task in list(self._pending_writes):
-                task.cancel()
-            if self._pending_writes:
+            # Wind down the single serialized writer: try a bounded drain FIRST
+            # so queued notifications (e.g. an interrupted response) are still
+            # delivered; only on timeout cancel the writer and record what was
+            # left behind.
+            writer = self._write_task
+            drained = True
+            try:
+                await asyncio.wait_for(self._write_queue.join(), timeout=2.0)
+            except asyncio.TimeoutError:
+                drained = False
+                remaining = self._write_queue.qsize()
+                _logger.warning(
+                    "worker shutdown: %d queued write(s) not delivered within "
+                    "the bounded drain",
+                    remaining,
+                )
+            # Always stop the writer explicitly (also after a successful
+            # drain) so no background task outlives the worker.
+            if writer is not None and not writer.done():
+                writer.cancel()
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(
-                        asyncio.gather(
-                            *list(self._pending_writes), return_exceptions=True
-                        ),
-                        timeout=2.0,
+                        asyncio.gather(writer, return_exceptions=True), timeout=2.0
                     )
-            unfinished = len(self._pending_writes)
-            if unfinished:
-                _logger.warning(
-                    "worker shutdown: %d notification write task(s) did not "
-                    "finish within the bounded wait",
-                    unfinished,
-                )
+            if not drained:
+                _logger.warning("worker shutdown: writer cancelled with undelivered writes")
             for exc in self._write_failures:
                 _logger.error("notification write failed during shutdown: %r", exc)
             # Worker is going down: fail any outstanding parent-request
