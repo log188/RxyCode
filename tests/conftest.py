@@ -174,12 +174,14 @@ def _isolate_process_singletons():
     from RxyCode.RxyCode1_1_0.core import session_runtime
     from RxyCode.RxyCode1_1_0.core.safety import approval, audit
     from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
+    from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as _circuit_breaker
     from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 
     previous_broker = approval.get_approval_broker()
     previous_question_broker = question.get_question_broker()
     previous_tracer = tracing._tracer
     previous_audit_logger = audit._default_logger
+    previous_breaker = _circuit_breaker._default_breaker
     api_locks = []
     seen_modules: set[int] = set()
     for module_name in ("RxyCode.RxyCode1_1_0.api_server", "api_server"):
@@ -233,6 +235,7 @@ def _isolate_process_singletons():
     approval.set_approval_broker(None)
     question.set_question_broker(None)
     audit._default_logger = None
+    _circuit_breaker.reset_breakers()
     token_stats.reset()
     token_stats.set_model(None)
     run_monitor.reset()
@@ -247,6 +250,7 @@ def _isolate_process_singletons():
         session_runtime.reset_session_binding(session_token)
         tracing._tracer = previous_tracer
         audit._default_logger = previous_audit_logger
+        _circuit_breaker._default_breaker = previous_breaker
         for module, lock in api_locks:
             module._chat_lock = lock
         with token_stats._application_cache_lock:
