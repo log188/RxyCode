@@ -292,15 +292,56 @@ class AgentRuntime:
 # ============================================================================
 
 class ChildRuntime:
-    """Stable facade over AgentRuntime.
+    """Stable facade over AgentRuntime with a single real execution bridge.
 
-    Phase C (expert orchestration), Phase D (Desktop), and Phase E
-    (multi-model) MUST only depend on this facade, never on the
-    internal AgentRuntime implementation.
+    Each invocation owns a fresh AgentV2 and child session binding.  The facade
+    never receives a Primary AgentV2 instance or its conversation history.
     """
 
     def __init__(self, runtime: AgentRuntime):
         self._runtime = runtime
+        self._agent_factory: Callable[[str | None], Any] | None = None
+        self._active_agent: Any = None
+
+    def set_agent_factory(self, factory: Callable[[str | None], Any]) -> None:
+        """Inject a child-local AgentV2 factory (tests/bootstrap only)."""
+        self._agent_factory = factory
+
+    def cancel(self) -> bool:
+        """Propagate parent cancellation into token and active AgentV2."""
+        self._runtime.cancel_token.cancel()
+        active = self._active_agent
+        cancel = getattr(active, "cancel", None)
+        if callable(cancel):
+            try:
+                return bool(cancel())
+            except Exception:
+                return False
+        return True
+
+    def _build_agent(self) -> Any:
+        if self._agent_factory is not None:
+            return self._agent_factory(self.definition.model)
+        from ..agent_v2 import AgentV2
+        return AgentV2(model_name=self.definition.model)
+
+    def check_tool(self, name: str, args: dict[str, Any] | None = None) -> bool:
+        """Apply the child policy before a tool reaches AgentV2's gate."""
+        from .permissions import DecisionKind, PermissionPolicy
+
+        value = ""
+        args = args or {}
+        if name in {"read", "edit", "open_file", "write", "patch"}:
+            value = str(args.get("filePath") or args.get("path") or "")
+        elif name == "bash":
+            value = str(args.get("command") or "")
+        elif name in {"websearch", "webfetch"}:
+            value = str(args.get("url") or args.get("query") or "")
+        policy = PermissionPolicy.from_definition(self.definition.permission)
+        category = "edit" if name in {"write", "edit", "patch", "open_file"} else name
+        decision = policy.evaluate(category, value)
+        self.audit.permission_decision(name, decision.kind.value, decision.matched_rule)
+        return decision.kind == DecisionKind.ALLOW
 
     # -- read-only accessors --------------------------------------------------
 
@@ -339,52 +380,121 @@ class ChildRuntime:
     # -- lifecycle -----------------------------------------------------------
 
     async def execute(self, task_prompt: str) -> TaskResult:
-        """Execute a task within this child runtime.
+        """Run the child through a fresh AgentV2 under child policy/context."""
+        try:
+            from RxyCode.RxyCode1_1_0.core.session_runtime import bind_session, reset_session_binding
+        except ImportError:
+            from ..session_runtime import bind_session, reset_session_binding
+        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+        from protocol.subagents import ChildStatus, ErrorRecord, TaskResult, UsageRecord
 
-        This is a placeholder for the full agentic loop which will be
-        implemented when the Provider integration is wired in B7.
-        """
         self._runtime.cancel_token.throw_if_cancelled()
-
+        started = __import__("time").monotonic()
+        token_start = (token_stats.input_tokens, token_stats.output_tokens)
         try:
             self._runtime.budget.consume_step()
-            self._runtime.audit.record("execute", prompt=task_prompt)
+            self.audit.record("execute", prompt=task_prompt)
+            agent = self._build_agent()
+            self._active_agent = agent
+            if callable(getattr(agent, "set_session", None)):
+                agent.set_session(self.session_id)
 
-            # Placeholder: real execution happens when Provider is wired
-            summary = f"[ChildRuntime {self.agent_id}] Task received: {task_prompt[:100]}"
+            # Keep the AgentV2 instance child-local and deny disallowed calls
+            # before its own safety gate.  Existing AgentV2 remains the sole
+            # provider/tool loop; this bridge adds child policy, not a second loop.
+            original_execute = getattr(agent, "_execute_tool", None)
+            if callable(original_execute):
+                async def guarded_execute(name: str, args: dict, **kwargs: Any) -> str:
+                    if not self.check_tool(name, args):
+                        return f"[blocked: child permission denied {name}]"
+                    self.audit.tool_call(name, str(args)[:500])
+                    return await original_execute(name, args, **kwargs)
+                agent._execute_tool = guarded_execute
 
-            from protocol.subagents import (
-                ChildStatus,
-                TaskResult,
-                UsageRecord,
-            )
+            binding = bind_session(self.session_id)
+            try:
+                answer = await agent.run(task_prompt, mode="build")
+            finally:
+                reset_session_binding(binding)
 
+            self._runtime.cancel_token.throw_if_cancelled()
+            input_tokens = max(0, token_stats.input_tokens - token_start[0])
+            output_tokens = max(0, token_stats.output_tokens - token_start[1])
+            wall_time_ms = int((__import__("time").monotonic() - started) * 1000)
+            evidence = list(getattr(agent, "_last_evidence", []) or [])
+            tool_calls = []
+            artifacts = []
+            for item in evidence:
+                if not isinstance(item, dict):
+                    continue
+                tool = str(item.get("tool") or "")
+                if tool and tool not in tool_calls:
+                    tool_calls.append(tool)
+                for artifact in item.get("artifacts", []) or []:
+                    if isinstance(artifact, dict) and artifact.get("exists"):
+                        path = str(artifact.get("path") or "")
+                        if path and path not in artifacts:
+                            artifacts.append(path)
+            mcp_calls = [t for t in tool_calls if "mcp" in t.lower()]
+            skill_calls = [t for t in tool_calls if "skill" in t.lower()]
+            telemetry = {
+                "tool_calls": tool_calls,
+                "evidence": evidence,
+                "artifacts": artifacts,
+                "mcp_calls": mcp_calls,
+                "skill_calls": skill_calls,
+                "cache_usage": {"source": "not_reported", "reason": "global token stats cannot be split safely under concurrency"},
+            }
+            self.audit.terminal("completed")
             return TaskResult(
                 request_id="",
                 child_session_id=self.session_id,
                 status=ChildStatus.COMPLETED,
-                summary=summary,
+                summary=str(answer),
                 usage=UsageRecord(
                     steps=self._runtime.budget.steps_used,
-                    input_tokens=0,
-                    output_tokens=0,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    wall_time_ms=wall_time_ms,
                 ),
+                telemetry=telemetry,
             )
-
         except ChildCancelledError:
-            from protocol.subagents import ChildStatus, TaskResult, UsageRecord
+            self.audit.terminal("cancelled")
             return TaskResult(
-                request_id="",
-                child_session_id=self.session_id,
-                status=ChildStatus.CANCELLED,
-                summary="Cancelled",
+                request_id="", child_session_id=self.session_id,
+                status=ChildStatus.CANCELLED, summary="Cancelled",
                 usage=UsageRecord(steps=self._runtime.budget.steps_used),
             )
+        except __import__("asyncio").CancelledError:
+            self.audit.terminal("cancelled")
+            return TaskResult(
+                request_id="", child_session_id=self.session_id,
+                status=ChildStatus.CANCELLED, summary="Cancelled during execution",
+                usage=UsageRecord(steps=self._runtime.budget.steps_used),
+            )
+        except Exception as exc:
+            self.audit.terminal("failed", type(exc).__name__)
+            return TaskResult(
+                request_id="", child_session_id=self.session_id,
+                status=ChildStatus.FAILED, summary="Child execution failed",
+                error=ErrorRecord(code="child_execution_failed", message=str(exc)),
+                usage=UsageRecord(steps=self._runtime.budget.steps_used),
+            )
+        finally:
+            self._active_agent = None
 
     def shutdown(self) -> None:
-        """Release resources held by this runtime."""
-        self._runtime.namespace.clear()
+        """Cancel active child execution and release child-local state."""
         self._runtime.cancel_token.cancel()
+        active = self._active_agent
+        cancel = getattr(active, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                pass
+        self._runtime.namespace.clear()
 
 
 # ============================================================================
@@ -403,4 +513,6 @@ def create_runtime(definition: AgentDefinition, session: ChildSession) -> AgentR
 def create_child_runtime(definition: AgentDefinition, session: ChildSession) -> ChildRuntime:
     """Create a ChildRuntime facade for a child session."""
     runtime = create_runtime(definition, session)
-    return ChildRuntime(runtime)
+    child = ChildRuntime(runtime)
+    session._cancel_callback = child.cancel
+    return child
