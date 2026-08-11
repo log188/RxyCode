@@ -140,7 +140,8 @@ _SENSITIVE_KEYS = re.compile(
     r"(?:authorization|api[_-]?key|access[_-]?token|bearer|password|secret|token)",
     re.IGNORECASE,
 )
-from .core.run_lifecycle import RunLifecycle
+from .core.run_lifecycle import RunLifecycle, SessionSlots
+from .config.settings import concurrent_api_slots
 from .memory.chat_storage import CHAT_MESSAGE_VERSION, CHAT_SCHEMA_VERSION
 _BEARER_VALUE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 _COMMON_API_KEY = re.compile(r"(?i)\b(?:sk|key|token)-[A-Za-z0-9._-]{6,}")
@@ -315,11 +316,57 @@ _state = {
     "init_task": None,
 }
 
-# 请求级锁，防止并发状态串扰
-_chat_lock = _asyncio.Lock()
+# 请求级并发控制（C4）：SessionSlots 提供 全局配额 + 每会话槽，
+# RunLifecycle 提供 会话级串行门闩 + busy/cancel。见 PHASE-C §4.4。
 _api_run_lifecycle = RunLifecycle()
+_api_session_slots: SessionSlots | None = None
+_api_slots_loop: _asyncio.AbstractEventLoop | None = None
 # FIX-B1: Thread lock for agent initialization (prevents double-init)
 _init_lock = threading.Lock()
+
+
+def _get_api_session_slots() -> SessionSlots:
+    """Return the SessionSlots bound to the current loop and switch value.
+
+    SessionSlots holds asyncio primitives, which are event-loop bound; the API
+    is intentionally exercised from multiple loops (lifespan / TestClient).
+    Rebuild lazily when the running loop or the RXYCODE_CONCURRENT_API cap
+    changes; production runs keep a single loop, so this is a startup-only
+    cost there.
+    """
+    global _api_session_slots, _api_slots_loop
+
+    loop = _asyncio.get_running_loop()
+    max_concurrent = max(1, concurrent_api_slots())
+    slots = _api_session_slots
+    if (
+        slots is None
+        or _api_slots_loop is not loop
+        or slots.max_concurrent != max_concurrent
+    ):
+        slots = SessionSlots(max_concurrent=max_concurrent)
+        _api_session_slots = slots
+        _api_slots_loop = loop
+    return slots
+
+
+BUSY_MESSAGE = (
+    "Agent is busy: please wait for the current response to finish "
+    "before sending another message."
+)
+
+
+def _busy_stream_response() -> StreamingResponse:
+    """Legacy-compatible busy rejection for /chat/stream (C4 switch=0).
+
+    The message text is identical to the pre-C4 behaviour so existing
+    clients keep recognising it.
+    """
+    async def busy_gen():
+        yield f"data: {_json.dumps({'type': 'error', 'message': BUSY_MESSAGE})}\n\n"
+        yield 'data: {"type": "done"}\n\n'
+
+    return StreamingResponse(busy_gen(), media_type="text/event-stream")
 
 
 def _activate_session(agent, session_id: str) -> list[dict]:
@@ -424,14 +471,17 @@ def _do_init():
 async def startup(_app: FastAPI | None = None):
     """Create one queue and scheduler service for this application lifespan."""
     # The app can be started more than once in tests or embedded runtimes.
-    # Bind request serialization to the current lifespan's event loop and do
-    # not reuse a lock left behind by an earlier loop.
-    global _chat_lock
-    _chat_lock = _asyncio.Lock()
+    # C4: concurrency slots are rebuilt per event loop by
+    # _get_api_session_slots() on first use, so no lock is re-bound here.
     service_loop = _asyncio.get_running_loop()
 
     from .config.settings import get_data_dir, get_scheduler_config, load_config
-    from .utils.queue import QueueManager
+    from .utils.queue import QueueManager, register_shared_loop
+
+    # C6: this lifespan's loop becomes the process-wide shared loop so
+    # synchronous callers (queue.run_task) submit to it instead of creating
+    # a fresh loop per task.
+    register_shared_loop(service_loop)
 
     cfg = load_config()
     scheduler_cfg = get_scheduler_config(cfg)
@@ -513,6 +563,7 @@ async def startup(_app: FastAPI | None = None):
 async def shutdown(_app: FastAPI | None = None) -> None:
     """Stop lifespan services and join every submitted background operation."""
     scheduler = _state.get("scheduler")
+    own_service_loop = _state.get("service_loop")
     with _service_futures_lock:
         futures = list(_state.get("service_futures") or ())
     for future in futures:
@@ -563,6 +614,19 @@ async def shutdown(_app: FastAPI | None = None) -> None:
             "init_task": None,
         }
     )
+
+    # C6: this lifespan's loop is going away; drop the shared-loop
+    # registration ONLY if this lifespan still owns it (a later overlapping
+    # lifespan may have registered its own loop, which must survive), so
+    # synchronous callers fall back to the process-wide queue loop instead
+    # of submitting to a dead loop.
+    try:
+        from .utils.queue import get_shared_loop, register_shared_loop
+
+        if get_shared_loop() is own_service_loop:
+            register_shared_loop(None)
+    except Exception:
+        pass
     target_app = _app or app
     target_app.state.queue_manager = None
     target_app.state.scheduler = None
@@ -625,8 +689,12 @@ async def _run_service_prompt(
             _state["busy"] = False
 
     if acquire_lock:
-        async with _chat_lock:
+        slots = _get_api_session_slots()
+        await slots.acquire("scheduled")
+        try:
             return await execute_owned()
+        finally:
+            slots.release("scheduled")
     return await execute_owned()
 
 
@@ -786,115 +854,121 @@ async def chat(req: ChatRequest):
         return ChatResponse(response=f"Invalid mode: {req.mode}. Valid modes: {valid_modes}", error=f"Invalid mode: {req.mode}")
 
     async def run_chat() -> ChatResponse:
-        async with _chat_lock:
-            _state["mode"] = req.mode
-            proxy = _state["tui_proxy"]
-            proxy._last_output.clear()
-            proxy._tool_calls.clear()
-            from .utils.tui import set_tui, get_tui
-            _prev_tui = get_tui()
-            set_tui(proxy)
-            agent = _state["agent"]
-            history = _activate_session(agent, req.session_id)
-            run_id = _uuid.uuid4().hex
-            from .core.tracing import Tracer
-            from .log.logger import run_id_context
-            from .log.monitor import run_monitor
-            previous_tracer = getattr(agent, "_tool_tracer", None)
-            started_at = _time.monotonic()
-            terminal_status = "failed"
-            user_record = _session_message("user", req.message, run_id=run_id)
-            history.append(user_record)
+        _state["mode"] = req.mode
+        proxy = _state["tui_proxy"]
+        proxy._last_output.clear()
+        proxy._tool_calls.clear()
+        from .utils.tui import set_tui, get_tui
+        _prev_tui = get_tui()
+        set_tui(proxy)
+        agent = _state["agent"]
+        history = _activate_session(agent, req.session_id)
+        run_id = _uuid.uuid4().hex
+        from .core.tracing import Tracer
+        from .log.logger import run_id_context
+        from .log.monitor import run_monitor
+        previous_tracer = getattr(agent, "_tool_tracer", None)
+        started_at = _time.monotonic()
+        terminal_status = "failed"
+        user_record = _session_message("user", req.message, run_id=run_id)
+        history.append(user_record)
 
-            with run_id_context(run_id):
-                try:
-                    agent._tool_tracer = Tracer(run_id=run_id)
-                    thinking_cursor = _thinking_cursor(agent)
-                    from .core.session import Session
+        with run_id_context(run_id):
+            try:
+                agent._tool_tracer = Tracer(run_id=run_id)
+                thinking_cursor = _thinking_cursor(agent)
+                from .core.session import Session
 
-                    session_notifications: list = []
-                    session = Session(
-                        session_id=req.session_id,
-                        workspace_root=Path.cwd(),
-                        emit=session_notifications.append,
-                    )
-                    prompt_result = await session.prompt(
-                        agent,
-                        req.message,
-                        mode=req.mode,
-                        run_id=run_id,
-                    )
-                    terminal_status = prompt_result.status
-                    _detail = prompt_result.detail
-                    result = prompt_result.answer
-                    _output, tool_calls = proxy.get_and_clear()
+                session_notifications: list = []
+                session = Session(
+                    session_id=req.session_id,
+                    workspace_root=Path.cwd(),
+                    emit=session_notifications.append,
+                )
+                prompt_result = await session.prompt(
+                    agent,
+                    req.message,
+                    mode=req.mode,
+                    run_id=run_id,
+                )
+                terminal_status = prompt_result.status
+                _detail = prompt_result.detail
+                result = prompt_result.answer
+                _output, tool_calls = proxy.get_and_clear()
 
-                    thinking = prompt_result.thinking or _thinking_since(agent, thinking_cursor)
-                    if thinking:
-                        history.append(
-                            _session_message(
-                                "thinking", thinking, run_id=run_id, done=True, live=False
-                            )
-                        )
-                    for tool_call in tool_calls:
-                        tool_result = str(tool_call.get("result", ""))
-                        history.append(
-                            _session_message(
-                                "tool",
-                                tool_result,
-                                run_id=run_id,
-                                toolName=str(tool_call.get("name", "unknown")),
-                                toolArgs=str(tool_call.get("args", "")),
-                                toolStatus=str(tool_call.get("status", "success")),
-                                toolStdout=tool_result,
-                            )
-                        )
+                thinking = prompt_result.thinking or _thinking_since(agent, thinking_cursor)
+                if thinking:
                     history.append(
-                        _session_message("assistant", result, run_id=run_id)
-                    )
-
-                    from .utils.user_facing_errors import to_user_facing_error
-
-                    visible = str(result or "")
-                    if terminal_status != "succeeded" or any(
-                        m in visible.lower()
-                        for m in (
-                            "evidence failed",
-                            "build incomplete",
-                            "grounded claim",
-                            "synthesizer",
+                        _session_message(
+                            "thinking", thinking, run_id=run_id, done=True, live=False
                         )
-                    ):
-                        visible = to_user_facing_error(visible)
-
-                    return ChatResponse(
-                        response=visible,
-                        tool_calls=tool_calls if tool_calls else None,
-                        thinking=thinking if thinking else None,
                     )
-                except _asyncio.CancelledError:
-                    terminal_status = "cancelled"
+                for tool_call in tool_calls:
+                    tool_result = str(tool_call.get("result", ""))
                     history.append(
-                        _session_message("system", "Cancelled", run_id=run_id)
+                        _session_message(
+                            "tool",
+                            tool_result,
+                            run_id=run_id,
+                            toolName=str(tool_call.get("name", "unknown")),
+                            toolArgs=str(tool_call.get("args", "")),
+                            toolStatus=str(tool_call.get("status", "success")),
+                            toolStdout=tool_result,
+                        )
                     )
-                    raise
-                except Exception as e:
-                    terminal_status = "failed"
-                    history.append(
-                        _session_message("system", f"Error: {e}", run_id=run_id)
-                    )
-                    return ChatResponse(response="", error=str(e))
-                finally:
-                    agent._tool_tracer = previous_tracer
-                    set_tui(_prev_tui)
-                    run_monitor.record(
-                        run_id, terminal_status, _time.monotonic() - started_at
-                    )
+                history.append(
+                    _session_message("assistant", result, run_id=run_id)
+                )
 
+                from .utils.user_facing_errors import to_user_facing_error
+
+                visible = str(result or "")
+                if terminal_status != "succeeded" or any(
+                    m in visible.lower()
+                    for m in (
+                        "evidence failed",
+                        "build incomplete",
+                        "grounded claim",
+                        "synthesizer",
+                    )
+                ):
+                    visible = to_user_facing_error(visible)
+
+                return ChatResponse(
+                    response=visible,
+                    tool_calls=tool_calls if tool_calls else None,
+                    thinking=thinking if thinking else None,
+                )
+            except _asyncio.CancelledError:
+                terminal_status = "cancelled"
+                history.append(
+                    _session_message("system", "Cancelled", run_id=run_id)
+                )
+                raise
+            except Exception as e:
+                terminal_status = "failed"
+                history.append(
+                    _session_message("system", f"Error: {e}", run_id=run_id)
+                )
+                return ChatResponse(response="", error=str(e))
+            finally:
+                agent._tool_tracer = previous_tracer
+                set_tui(_prev_tui)
+                run_monitor.record(
+                    run_id, terminal_status, _time.monotonic() - started_at
+                )
+
+    slots = _get_api_session_slots()
+    await slots.acquire(req.session_id)
     try:
-        return await _api_run_lifecycle.run(run_chat, kind="chat")
-    except _asyncio.CancelledError:
-        return ChatResponse(response="", error="Cancelled")
+        try:
+            return await _api_run_lifecycle.run(
+                run_chat, session_id=req.session_id, kind="chat"
+            )
+        except _asyncio.CancelledError:
+            return ChatResponse(response="", error="Cancelled")
+    finally:
+        slots.release(req.session_id)
 
 
 async def _execute_explicit_command_tool(name: str, args: dict) -> tuple[str, bool]:
@@ -1704,45 +1778,51 @@ async def command(req: CommandRequest):
         return await cancel_active_run()
 
     async def run_command():
-        async with _chat_lock:
-            run_id = _uuid.uuid4().hex
-            from .core.tracing import Tracer
-            from .log.logger import run_id_context
-            from .log.monitor import run_monitor
+        run_id = _uuid.uuid4().hex
+        from .core.tracing import Tracer
+        from .log.logger import run_id_context
+        from .log.monitor import run_monitor
 
-            agent = _state.get("agent")
-            previous_tracer = getattr(agent, "_tool_tracer", None) if agent else None
-            started_at = _time.monotonic()
-            terminal_status = "failed"
-            with run_id_context(run_id):
-                try:
-                    if agent is not None:
-                        agent._tool_tracer = Tracer(run_id=run_id)
-                    result = await _execute_command(req)
-                    if result.get("action") == "error":
-                        classified, _detail = classify_agent_result(
-                            str(result.get("message", ""))
-                        )
-                        terminal_status = (
-                            classified if classified != "succeeded" else "failed"
-                        )
-                    else:
-                        terminal_status = "succeeded"
-                    return result
-                except _asyncio.CancelledError:
-                    terminal_status = "cancelled"
-                    raise
-                finally:
-                    if agent is not None:
-                        agent._tool_tracer = previous_tracer
-                    run_monitor.record(
-                        run_id, terminal_status, _time.monotonic() - started_at
+        agent = _state.get("agent")
+        previous_tracer = getattr(agent, "_tool_tracer", None) if agent else None
+        started_at = _time.monotonic()
+        terminal_status = "failed"
+        with run_id_context(run_id):
+            try:
+                if agent is not None:
+                    agent._tool_tracer = Tracer(run_id=run_id)
+                result = await _execute_command(req)
+                if result.get("action") == "error":
+                    classified, _detail = classify_agent_result(
+                        str(result.get("message", ""))
                     )
+                    terminal_status = (
+                        classified if classified != "succeeded" else "failed"
+                    )
+                else:
+                    terminal_status = "succeeded"
+                return result
+            except _asyncio.CancelledError:
+                terminal_status = "cancelled"
+                raise
+            finally:
+                if agent is not None:
+                    agent._tool_tracer = previous_tracer
+                run_monitor.record(
+                    run_id, terminal_status, _time.monotonic() - started_at
+                )
 
+    slots = _get_api_session_slots()
+    await slots.acquire(req.session_id)
     try:
-        return await _api_run_lifecycle.run(run_command, kind="command")
-    except _asyncio.CancelledError:
-        return {"action": "cancelled", "message": "Command cancelled"}
+        try:
+            return await _api_run_lifecycle.run(
+                run_command, session_id=req.session_id, kind="command"
+            )
+        except _asyncio.CancelledError:
+            return {"action": "cancelled", "message": "Command cancelled"}
+    finally:
+        slots.release(req.session_id)
 
 
 
@@ -1769,15 +1849,13 @@ async def chat_stream(req: ChatRequest):
             yield "data: {\"type\": \"done\"}\n\n"
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
-    # Bug A (defense-in-depth): refuse a new turn while one is already
-    # streaming.  The frontend already blocks duplicate sends, but this
-    # guarantees the backend never runs N parallel agent calls (which
-    # previously meant three "你好" each burning 26-38s and looking like a hang).
-    if _state.get("busy"):
-        async def busy_gen():
-            yield f"data: {_json.dumps({'type': 'error', 'message': 'Agent is busy: please wait for the current response to finish before sending another message.'})}\n\n"
-            yield "data: {\"type\": \"done\"}\n\n"
-        return StreamingResponse(busy_gen(), media_type="text/event-stream")
+    # C4: session-slot admission replaces the legacy global busy flag.
+    # try_acquire never blocks: global-cap-full or same-session-busy both get
+    # the legacy busy rejection message (switch=0 reproduces the old
+    # behaviour exactly because the global cap is 1).
+    slots = _get_api_session_slots()
+    if not await slots.try_acquire(req.session_id):
+        return _busy_stream_response()
 
     queue: "_asyncio.Queue" = _asyncio.Queue()
     stream_tui = StreamTUI(queue)
@@ -1799,124 +1877,125 @@ async def chat_stream(req: ChatRequest):
 
         async def run_serialized():
             nonlocal status, recorder
-            async with _chat_lock:
-                from .core.safety.approval import get_approval_broker, SseApproval
-                from .core.question import get_question_broker, SseQuestionBroker
-                from .utils.tui import set_tui, get_tui
+            from .core.safety.approval import get_approval_broker, SseApproval
+            from .core.question import get_question_broker, SseQuestionBroker
+            from .utils.tui import set_tui, get_tui
 
-                broker = get_approval_broker()
-                previous_sink = broker._sink if isinstance(broker, SseApproval) else None
-                question_broker = get_question_broker()
-                previous_question_sink = (
-                    question_broker._sink
-                    if isinstance(question_broker, SseQuestionBroker)
-                    else None
-                )
-                stream_loop = _asyncio.get_running_loop()
-                stream_question_ids: set[str] = set()
+            broker = get_approval_broker()
+            previous_sink = broker._sink if isinstance(broker, SseApproval) else None
+            question_broker = get_question_broker()
+            previous_question_sink = (
+                question_broker._sink
+                if isinstance(question_broker, SseQuestionBroker)
+                else None
+            )
+            stream_loop = _asyncio.get_running_loop()
+            stream_question_ids: set[str] = set()
 
-                def _publish_to_stream(event: dict) -> None:
-                    """Thread-safe enqueue + flush coalesced TUI buffers first.
+            def _publish_to_stream(event: dict) -> None:
+                """Thread-safe enqueue + flush coalesced TUI buffers first.
 
-                    Approval/question events must leave the process promptly: if
-                    they sit behind an unflushed SSE write buffer, the client
-                    cannot POST /approve before SseApproval's fail-closed timeout.
-                    """
-                    try:
-                        stream_tui.flush_stream_buffers()
-                    except Exception:
-                        pass
-                    try:
-                        current_loop = _asyncio.get_running_loop()
-                    except RuntimeError:
-                        current_loop = None
-                    if current_loop is stream_loop:
-                        queue.put_nowait(event)
-                    elif stream_loop.is_running():
-                        stream_loop.call_soon_threadsafe(queue.put_nowait, event)
-                    else:
-                        queue.put_nowait(event)
-
-                def publish_question(event: dict) -> None:
-                    question_id = str(event.get("question_id", ""))
-                    if question_id:
-                        stream_question_ids.add(question_id)
-                    _publish_to_stream(event)
-
-                previous_tui = get_tui()
-                previous_tracer = getattr(agent, "_tool_tracer", None)
-                history = _activate_session(agent, req.session_id)
-                recorder = StreamSessionRecorder(
-                    history, run_id=run_id, user_message=req.message
-                )
-                stream_tui.recorder = recorder
-                _state["mode"] = req.mode
-                set_tui(stream_tui)
-                if isinstance(broker, SseApproval):
-                    broker.set_event_sink(_publish_to_stream)
-                if isinstance(question_broker, SseQuestionBroker):
-                    question_broker.set_event_sink(publish_question)
+                Approval/question events must leave the process promptly: if
+                they sit behind an unflushed SSE write buffer, the client
+                cannot POST /approve before SseApproval's fail-closed timeout.
+                """
                 try:
-                    agent._stream_mode = True
-                    agent._tool_tracer = tracer
-                    from .core.session import Session, notification_to_sse_event
-
-                    def _emit_protocol(notification) -> None:
-                        event = notification_to_sse_event(notification)
-                        if event is not None:
-                            _publish_to_stream(event)
-
-                    session = Session(
-                        session_id=req.session_id,
-                        workspace_root=Path.cwd(),
-                        emit=_emit_protocol,
-                        session_schema_version=CHAT_SCHEMA_VERSION,
-                    )
-                    log_chat_request(_logger, req.mode, req.message, run_id=run_id)
-                    result = await session.prompt(
-                        agent,
-                        req.message,
-                        mode=req.mode,
-                        run_id=run_id,
-                    )
                     stream_tui.flush_stream_buffers()
-                    status = result.status
-                    detail = result.detail
-                    thinking = recorder.thinking_content or result.thinking
-                    if status == "succeeded":
-                        recorder.finish_success(result.answer, thinking)
-                        log_chat_completed(
-                            _logger, req.mode, result.answer, run_id=run_id, status=status
-                        )
-                    else:
-                        recorder.finish_error(detail)
-                        log_chat_error(
-                            _logger, req.mode, detail, run_id=run_id, status=status
-                        )
-                except _asyncio.CancelledError:
-                    status = "cancelled"
-                    recorder.finish_cancelled()
-                    log_chat_error(_logger, req.mode, "stream cancelled", run_id=run_id, status=status)
-                    raise
-                except Exception as exc:
-                    status = "failed"
-                    stream_tui.flush_stream_buffers()
-                    recorder.finish_error(str(exc))
-                    log_chat_error(_logger, req.mode, exc, run_id=run_id, status=status)
-                    queue.put_nowait({"type": "error", "run_id": run_id, "status": status, "message": str(exc)})
-                finally:
-                    agent._tool_tracer = previous_tracer
-                    agent._stream_mode = False
-                    set_tui(previous_tui)
-                    if isinstance(broker, SseApproval):
-                        broker.set_event_sink(previous_sink)
-                    if isinstance(question_broker, SseQuestionBroker):
-                        for question_id in stream_question_ids:
-                            question_broker.cancel(question_id)
-                        question_broker.set_event_sink(previous_question_sink)
+                except Exception:
+                    pass
+                try:
+                    current_loop = _asyncio.get_running_loop()
+                except RuntimeError:
+                    current_loop = None
+                if current_loop is stream_loop:
+                    queue.put_nowait(event)
+                elif stream_loop.is_running():
+                    stream_loop.call_soon_threadsafe(queue.put_nowait, event)
+                else:
+                    queue.put_nowait(event)
+
+            def publish_question(event: dict) -> None:
+                question_id = str(event.get("question_id", ""))
+                if question_id:
+                    stream_question_ids.add(question_id)
+                _publish_to_stream(event)
+
+            previous_tui = get_tui()
+            previous_tracer = getattr(agent, "_tool_tracer", None)
+            history = _activate_session(agent, req.session_id)
+            recorder = StreamSessionRecorder(
+                history, run_id=run_id, user_message=req.message
+            )
+            stream_tui.recorder = recorder
+            _state["mode"] = req.mode
+            set_tui(stream_tui)
+            if isinstance(broker, SseApproval):
+                broker.set_event_sink(_publish_to_stream)
+            if isinstance(question_broker, SseQuestionBroker):
+                question_broker.set_event_sink(publish_question)
+            try:
+                agent._stream_mode = True
+                agent._tool_tracer = tracer
+                from .core.session import Session, notification_to_sse_event
+
+                def _emit_protocol(notification) -> None:
+                    event = notification_to_sse_event(notification)
+                    if event is not None:
+                        _publish_to_stream(event)
+
+                session = Session(
+                    session_id=req.session_id,
+                    workspace_root=Path.cwd(),
+                    emit=_emit_protocol,
+                    session_schema_version=CHAT_SCHEMA_VERSION,
+                )
+                log_chat_request(_logger, req.mode, req.message, run_id=run_id)
+                result = await session.prompt(
+                    agent,
+                    req.message,
+                    mode=req.mode,
+                    run_id=run_id,
+                )
+                stream_tui.flush_stream_buffers()
+                status = result.status
+                detail = result.detail
+                thinking = recorder.thinking_content or result.thinking
+                if status == "succeeded":
+                    recorder.finish_success(result.answer, thinking)
+                    log_chat_completed(
+                        _logger, req.mode, result.answer, run_id=run_id, status=status
+                    )
+                else:
+                    recorder.finish_error(detail)
+                    log_chat_error(
+                        _logger, req.mode, detail, run_id=run_id, status=status
+                    )
+            except _asyncio.CancelledError:
+                status = "cancelled"
+                recorder.finish_cancelled()
+                log_chat_error(_logger, req.mode, "stream cancelled", run_id=run_id, status=status)
+                raise
+            except Exception as exc:
+                status = "failed"
+                stream_tui.flush_stream_buffers()
+                recorder.finish_error(str(exc))
+                log_chat_error(_logger, req.mode, exc, run_id=run_id, status=status)
+                queue.put_nowait({"type": "error", "run_id": run_id, "status": status, "message": str(exc)})
+            finally:
+                agent._tool_tracer = previous_tracer
+                agent._stream_mode = False
+                set_tui(previous_tui)
+                if isinstance(broker, SseApproval):
+                    broker.set_event_sink(previous_sink)
+                if isinstance(question_broker, SseQuestionBroker):
+                    for question_id in stream_question_ids:
+                        question_broker.cancel(question_id)
+                    question_broker.set_event_sink(previous_question_sink)
 
         try:
-            await _api_run_lifecycle.run(run_serialized, kind="chat_stream")
+            await _api_run_lifecycle.run(
+                run_serialized, session_id=req.session_id, kind="chat_stream"
+            )
         except _asyncio.CancelledError:
             status = "cancelled"
         except Exception as exc:
@@ -1943,8 +2022,32 @@ async def chat_stream(req: ChatRequest):
 
     _state["busy"] = True
     from .log.logger import run_id_context
-    with run_id_context(run_id):
-        task = _asyncio.create_task(runner())
+    try:
+        with run_id_context(run_id):
+            task = _asyncio.create_task(runner())
+    except BaseException:
+        slots.release(req.session_id)   # admission succeeded but no runner
+        raise
+
+    slot_released = False
+
+    def _release_slot() -> None:
+        """Idempotent slot release: once by the consumer teardown, once at
+        most by the task callback (whichever runs first)."""
+        nonlocal slot_released
+        if slot_released:
+            return
+        slot_released = True
+        slots.release(req.session_id)
+
+    def _release_slot_on_done(_t: _asyncio.Task) -> None:
+        # Fallback for a runner that finished without the stream being
+        # consumed (e.g. disconnect before the body iterator started).
+        _release_slot()
+
+    # Release the session slot when the runner task finishes by ANY exit
+    # path (completion, exception, or cancellation before first execution).
+    task.add_done_callback(_release_slot_on_done)
 
     async def event_gen():
         try:
@@ -1965,9 +2068,12 @@ async def chat_stream(req: ChatRequest):
             if not task.done():
                 task.cancel()
             # A cancelled/disconnected stream must not return until runner()
-            # has released _chat_lock and restored its process-wide state.
+            # has restored its process-wide state; the session slot is then
+            # released synchronously so a follow-up request in the same loop
+            # (direct handler calls, TestClient reuse) is never falsely busy.
             with suppress(_asyncio.CancelledError):
                 await task
+            _release_slot()
 
     return StreamingResponse(event_gen(), media_type="text/event-stream; charset=utf-8", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
 

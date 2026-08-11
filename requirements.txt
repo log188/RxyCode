@@ -18,3 +18,4 @@ tenacity>=8.0
 pybreaker>=1.0
 numpy>=1.26
 keyring>=25.0
+uvloop>=0.21.0; platform_system != 'Windows'

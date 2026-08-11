@@ -7,6 +7,7 @@ portable stdlib keyring, so values live in a separate owner-only file.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import csv
 import ctypes
@@ -46,6 +47,14 @@ def _windows_current_sid() -> str:
     return sid
 
 
+async def _windows_current_sid_async() -> str:
+    """Async variant (C2): the short ``whoami`` command is not a process-class
+    tool; it delegates to the sync impl via ``asyncio.to_thread``.  Per
+    PHASE-C §4.3 a timeout here only stops waiting — it does not terminate a
+    subprocess (there is none to kill)."""
+    return await asyncio.to_thread(_windows_current_sid)
+
+
 def restrict_file_permissions(path: Path) -> None:
     """Restrict a configuration or secret file to trusted local principals."""
     if not path.exists():
@@ -72,6 +81,12 @@ def restrict_file_permissions(path: Path) -> None:
     )
     if result.returncode != 0:
         raise OSError("Unable to restrict local configuration file permissions")
+
+
+async def restrict_file_permissions_async(path: Path) -> None:
+    """Async variant (C2): short ``icacls`` call delegates via to_thread
+    (stop-waiting boundary, PHASE-C §4.3)."""
+    await asyncio.to_thread(restrict_file_permissions, path)
 
 
 def _fsync_directory(path: Path) -> None:

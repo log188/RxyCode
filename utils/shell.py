@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
 import locale
+import math
 import os
 from pathlib import Path
 import re
@@ -572,7 +573,7 @@ class ShellExecutor:
         self,
         command: str,
         workdir: str = "",
-        timeout: int = 60,
+        timeout: float = 60,
     ) -> dict:
         return await self._execute_controlled(
             self._build_command(command),
@@ -585,7 +586,7 @@ class ShellExecutor:
         self,
         argv: list[str],
         workdir: str = "",
-        timeout: int = 60,
+        timeout: float = 60,
     ) -> dict:
         """Run an argv command without ever enabling subprocess shell mode."""
         if not isinstance(argv, list) or not argv or not all(
@@ -607,7 +608,7 @@ class ShellExecutor:
         argv: list[str],
         *,
         workdir: str,
-        timeout: int,
+        timeout: float,
         shell_command: str | None,
     ) -> dict[str, Any]:
         try:
@@ -615,6 +616,11 @@ class ShellExecutor:
         except Exception as exc:
             return _failure(
                 f"[sandbox_error] {exc}", error_type="sandbox_error"
+            )
+        if not math.isfinite(timeout) or timeout < 0:
+            return _failure(
+                "[sandbox_error] timeout must be a finite non-negative number",
+                error_type="sandbox_error",
             )
 
         cidfile: Path | None = None
@@ -654,13 +660,11 @@ class ShellExecutor:
                 timeout=max(0, timeout),
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if not done:
-                await self._cleanup_process(process, cidfile)
-                await self._cancel_task(communicate_task)
-                return _failure(
-                    f"[timeout after {timeout}s]", error_type="timeout"
-                )
-
+            # A completed monitor_task does NOT mean the command finished: it
+            # may have returned early (root exited, orphaned children still
+            # hold the pipes).  Only communicate_task completing counts as
+            # normal completion; anything else after the deadline is a timeout
+            # (or a resource violation).
             if monitor_task is not None and monitor_task in done:
                 violation = monitor_task.result()
                 if violation is not None:
@@ -671,6 +675,12 @@ class ShellExecutor:
                         error_type="resource_limit",
                         resource_limit=violation.resource,
                     )
+            if communicate_task not in done:
+                await self._cleanup_process(process, cidfile)
+                await self._cancel_task(communicate_task)
+                return _failure(
+                    f"[timeout after {timeout}s]", error_type="timeout"
+                )
 
             stdout, stderr = await communicate_task
             # Decode subprocess output as UTF-8 first. Python 3.6+ on Windows
@@ -690,11 +700,15 @@ class ShellExecutor:
 
             stdout_text = _decode_output(stdout)
             stderr_text = _decode_output(stderr)
+            # Stable result schema: every outcome carries ``error_type``
+            # (None on normal success/exit), so callers can use
+            # result["error_type"] without KeyError on success paths.
             result: dict[str, Any] = {
                 "stdout": stdout_text,
                 "stderr": stderr_text,
                 "exit_code": process.returncode,
                 "success": process.returncode == 0,
+                "error_type": None,
             }
             if policy.mode == "docker" and process.returncode != 0:
                 detail = stderr_text.strip() or "docker run returned a non-zero exit code"
@@ -822,30 +836,30 @@ class ShellExecutor:
     async def _terminate_process_tree(
         self, process: asyncio.subprocess.Process
     ) -> None:
-        """Best-effort, bounded cleanup for a command and all descendants."""
-        if process.returncode is not None:
-            return
+        """Best-effort, bounded cleanup for a command and all descendants.
 
+        Works even when the root process has already exited while its children
+        survive (they may be holding the stdout/stderr pipes open, which is
+        exactly what keeps ``communicate()`` blocked): POSIX kills the process
+        group (the child was spawned with ``start_new_session=True``, so the
+        group outlives the leader), Windows walks the parent chain from the
+        recorded pid and kills every descendant.
+
+        POSIX: after SIGTERM the whole process group is polled; if any member
+        survives the grace period (e.g. it ignores SIGTERM or the root exited
+        early), the group escalates to SIGKILL.
+        """
+        pid = process.pid
         if self.os_name == "win32":
-            try:
-                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                killer = await asyncio.create_subprocess_exec(
-                    "taskkill",
-                    "/PID",
-                    str(process.pid),
-                    "/T",
-                    "/F",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    creationflags=flags,
-                )
-                await asyncio.wait_for(killer.wait(), timeout=5)
-            except Exception:
-                if process.returncode is None:
-                    process.kill()
+            await self._win_terminate_tree(pid)
+            if process.returncode is None:
+                process.kill()
         else:
             try:
-                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                # start_new_session=True makes the child a group leader whose
+                # group id == its pid; the group persists while any child in
+                # it is alive, so this reaches orphaned descendants too.
+                os.killpg(pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError, OSError):
                 if process.returncode is None:
                     process.terminate()
@@ -855,12 +869,193 @@ class ShellExecutor:
         except asyncio.TimeoutError:
             if self.os_name != "win32":
                 try:
-                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    os.killpg(pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             if process.returncode is None:
                 process.kill()
             await process.wait()
+
+        if self.os_name != "win32":
+            await self._posix_ensure_group_gone(pid)
+
+    async def _posix_ensure_group_gone(self, group_id: int) -> None:
+        """Poll the process group until empty; escalate to SIGKILL when any
+        member ignores SIGTERM (or the root exited before the group drained).
+
+        ``psutil`` enumerates actual group members, so a group whose leader
+        already exited is still detected through its surviving members.  Each
+        pid is guarded individually (a process may exit between enumeration
+        and the getpgid probe); an enumeration failure is treated as
+        "cannot confirm empty" and escalates conservatively rather than
+        returning as if the group were gone.  After SIGKILL the group is
+        polled again until it is actually empty.
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        def _members() -> list[int]:
+            """Group member pids; None-like sentinel is not used — a probe
+            failure yields a full-process scan retry inside the loop."""
+            pids: list[int] = []
+            for p in psutil.process_iter():
+                try:
+                    if os.getpgid(p.pid) == group_id:
+                        pids.append(p.pid)
+                except (psutil.NoSuchProcess, ProcessLookupError, OSError):
+                    # Exited between iteration and probe; it is not a member
+                    # anymore.  A failure to probe the WHOLE scan is handled
+                    # by the outer loop's conservative escalation instead.
+                    continue
+            return pids
+
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while True:
+            try:
+                members = _members()
+            except Exception as exc:
+                logger.warning(
+                    "process group %s enumeration failed (%s); escalating "
+                    "conservatively",
+                    group_id,
+                    type(exc).__name__,
+                )
+                members = None
+            if members == []:
+                return
+            if members is None or asyncio.get_running_loop().time() >= deadline:
+                if members is not None:
+                    logger.warning(
+                        "process group %s still has members %s after SIGTERM; "
+                        "escalating to SIGKILL",
+                        group_id,
+                        sorted(members),
+                    )
+                try:
+                    os.killpg(group_id, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                # Confirm the group actually drained after SIGKILL.
+                kill_deadline = asyncio.get_running_loop().time() + 1.0
+                while True:
+                    try:
+                        remaining = _members()
+                    except Exception as exc:
+                        logger.warning(
+                            "process group %s re-enumeration failed after "
+                            "SIGKILL (%s); cannot confirm cleanup",
+                            group_id,
+                            type(exc).__name__,
+                        )
+                        remaining = None
+                    if remaining == []:
+                        return
+                    if asyncio.get_running_loop().time() >= kill_deadline:
+                        logger.warning(
+                            "process group %s still visible %s after SIGKILL",
+                            group_id,
+                            sorted(remaining) if remaining else "?",
+                        )
+                        return
+                    await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)
+
+    async def _win_terminate_tree(self, pid: int) -> None:
+        """Terminate every descendant of ``pid`` (and the root if alive).
+
+        The PowerShell walk re-enumerates survivors after killing and the
+        whole sequence is retried (WMI is best-effort); if a target is still
+        alive after the retries, the failure is recorded for diagnostics.
+        """
+        import logging
+
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        async def _run(argv: list[str]) -> set[int] | None:
+            """Run the killer; return the surviving PID set (empty = clean),
+            or None when the command itself failed."""
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    creationflags=flags,
+                )
+                stdout, _ = await asyncio.wait_for(killer.communicate(), timeout=6)
+                for line in stdout.decode("utf-8", errors="replace").splitlines():
+                    if line.startswith("ALIVE="):
+                        raw = line.split("=", 1)[1].strip()
+                        if not raw:
+                            return set()
+                        try:
+                            return {
+                                int(part)
+                                for part in raw.split(",")
+                                if part.strip().isdigit()
+                            }
+                        except ValueError:
+                            return None
+                return None
+            except Exception:
+                return None
+
+        walk_script = (
+            f"$root = {int(pid)}; "
+            "$all = @(Get-CimInstance Win32_Process); "
+            "$queue = @($root); $targets = @(); "
+            "while ($queue.Count -gt 0) { "
+            "$p = $queue[0]; $queue = @($queue | Select-Object -Skip 1); "
+            "foreach ($c in @($all | Where-Object { $_.ParentProcessId -eq $p })) { "
+            "$targets += $c.ProcessId; $queue += $c.ProcessId } }; "
+            "$targets = @($targets | Sort-Object -Unique); "
+            "$targets | ForEach-Object { "
+            "Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; "
+            "Stop-Process -Id $root -Force -ErrorAction SilentlyContinue; "
+            "Start-Sleep -Milliseconds 300; "
+            "$alive = @(); "
+            "foreach ($t in $targets) { "
+            "if (Get-Process -Id $t -ErrorAction SilentlyContinue) "
+            "{ $alive += $t } }; "
+            "if (Get-Process -Id $root -ErrorAction SilentlyContinue) "
+            "{ $alive += $root }; "
+            'Write-Output ("ALIVE=" + ($alive -join ","))'
+        )
+        # Walk + kill, then re-enumerate surviving PIDs; retry up to 3 times.
+        surviving: set[int] | None = None
+        for _ in range(3):
+            surviving = await _run(["powershell", "-NoProfile", "-Command", walk_script])
+            if surviving is not None and not surviving:
+                break
+            await asyncio.sleep(0.3)
+        if surviving:
+            logging.getLogger(__name__).warning(
+                "process tree cleanup incomplete on Windows: pid(s) %s under "
+                "root %s still alive after retries",
+                sorted(surviving),
+                int(pid),
+            )
+        # Fallback for the live-root case ONLY when the walk itself failed
+        # (surviving is None): taskkill on an already-reaped PID is a no-op at
+        # best and a PID-reuse kill at worst, so it must never run against a
+        # possibly-dead pid — confirm the root is still alive first.
+        if surviving is None:
+            root_alive = await _run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    (
+                        "$root = " f"{int(pid)}; "
+                        "if (Get-Process -Id $root "
+                        "-ErrorAction SilentlyContinue) { "
+                        'Write-Output ("ALIVE=" + $root) } '
+                        'else { Write-Output "ALIVE=" }'
+                    ),
+                ]
+            )
+            if root_alive:
+                await _run(["taskkill", "/PID", str(int(pid)), "/T", "/F"])
 
 
 shell_executor = ShellExecutor()

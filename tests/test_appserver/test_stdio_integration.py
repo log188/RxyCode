@@ -140,6 +140,16 @@ def appserver_proc():
         encoding="utf-8",
         bufsize=1,
     )
+    import threading as _t
+
+    def _drain():
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            text = line.rstrip()
+            if text:
+                print(f"[appserver-fixture-stderr] {text}", flush=True)
+
+    _t.Thread(target=_drain, daemon=True).start()
     try:
         yield proc
     finally:

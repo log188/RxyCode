@@ -255,6 +255,7 @@ async function main() {
       RXYCODE_API_URL: api.url,
       RXYCODE_API_TOKEN: 'opentui-pty-e2e-token',
       RXYCODE_E2E_BYPASS_TTY: '1',
+      RXYCODE_TRANSPORT: 'http',
       CI: 'false',
     };
     pty = spawn(BUN_BIN, ['run', 'src/index.tsx'], {
@@ -285,7 +286,7 @@ async function main() {
     );
 
     await observed.waitFor(
-      (output) => /RxyCode v1\.1\.0/.test(plain(output)) && /Message RxyCode|General-Purpose AI Agent/.test(plain(output)),
+      (output) => /RxyCode v\d+\.\d+\.\d+/.test(plain(output)) && /Message RxyCode|General-Purpose AI Agent/.test(plain(output)),
       'OpenTUI boot',
       20000,
     );
@@ -297,14 +298,14 @@ async function main() {
     await observed.waitForIdle('narrow resize settle', 120);
     check(
       'W02 narrow ConPTY resize keeps layout',
-      /RxyCode v1\.1\.0/.test(plain(observed.output)),
+      /RxyCode v\d+\.\d+\.\d+/.test(plain(observed.output)),
       `${NARROW_COLS}x${NARROW_ROWS}`,
     );
     pty.resize(COLS, ROWS);
     await observed.waitForIdle('restored resize settle', 120);
     check(
       'W02 ConPTY resize rerenders live layout',
-      /RxyCode v1\.1\.0/.test(plain(observed.output)),
+      /RxyCode v\d+\.\d+\.\d+/.test(plain(observed.output)),
       `${COLS}x${ROWS} -> ${NARROW_COLS}x${NARROW_ROWS} -> ${COLS}x${ROWS}`,
     );
 
@@ -331,7 +332,7 @@ async function main() {
     const count = (needle) => longOutput.split(needle).length - 1;
     check('W02 long assistant head not duplicated in scrollback', count('LONGASSISTANT000') <= 1, `count=${count('LONGASSISTANT000')}`);
     check('W02 long assistant tail visible after final', count('LONGASSISTANT079') >= 1, `count=${count('LONGASSISTANT079')}`);
-    check('W02 header does not form adjacent duplicate block', !/RxyCode v1\.1\.0[^\r\n]*[\r\n\s]+RxyCode v1\.1\.0/.test(longOutput));
+    check('W02 header does not form adjacent duplicate block', !/RxyCode v\d+\.\d+\.\d+[^\r\n]*[\r\n\s]+RxyCode v\d+\.\d+\.\d+/.test(longOutput));
     check('W02 sticky re-engage on send (long stream submit)', true);
 
     mark = observed.mark();

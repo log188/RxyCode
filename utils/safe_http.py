@@ -1,10 +1,12 @@
-"""Pinned public HTTP(S) client shared by fetch and download tools."""
+﻿"""Pinned public HTTP(S) client shared by fetch and download tools."""
 
 from __future__ import annotations
 
 import asyncio
+import atexit
 import ipaddress
 import socket
+import threading
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -13,6 +15,80 @@ import httpx
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 MAX_REDIRECTS = 5
 DEFAULT_USER_AGENT = "RxyCode-SafeHTTP/1.1"
+
+#: Connection-pool limits for the process-wide client (C5).  The agent's
+#: fetch/download tools are low-frequency, but a shared pool avoids
+#: re-doing TCP+TLS handshakes and keeps keep-alive connections warm.
+_POOL_LIMITS = httpx.Limits(
+    max_connections=20,
+    max_keepalive_connections=10,
+    keepalive_expiry=30.0,
+)
+
+_client: httpx.AsyncClient | None = None
+_client_loop: asyncio.AbstractEventLoop | None = None
+_client_lock = threading.Lock()
+
+
+def get_shared_client() -> httpx.AsyncClient:
+    """Return the process-wide AsyncClient singleton (lazy, thread-safe, C5).
+
+    Every fetch/download call shares this client so connection pooling and
+    keep-alive are effective.  httpx transports are event-loop bound, so the
+    singleton is keyed by the running loop: production keeps one loop (one
+    pool, as intended); tests/embedders that switch loops get a fresh client
+    for the new loop and the previous one is dropped (its loop is gone).
+    Never closed by ``async with`` on the caller side; shut down explicitly
+    via :func:`close_shared_client` (registered with atexit).
+    """
+    global _client, _client_loop
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    with _client_lock:
+        if _client is None or _client_loop is not loop:
+            _client = httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0),
+                follow_redirects=False,
+                trust_env=False,
+                limits=_POOL_LIMITS,
+            )
+            _client_loop = loop
+        return _client
+
+
+def close_shared_client() -> None:
+    """Close the singleton and drop the reference (idempotent, C5).
+
+    Registered with atexit so the process exits without leaking sockets.
+    When called from an event-loop-free context the async close is driven
+    with a private loop; when called from a running loop (tests/embedders)
+    the close is scheduled on that loop as a task, so the client is still
+    closed (the scheduling loop must run to completion for the task to
+    execute; if the loop shuts down first, the process/embedder teardown
+    owns the remaining cleanup).
+    """
+    global _client, _client_loop
+    with _client_lock:
+        client, _client = _client, None
+        _client_loop = None
+    if client is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            asyncio.run(client.aclose())
+        except Exception:
+            pass
+    else:
+        loop.create_task(client.aclose())
+
+
+atexit.register(close_shared_client)
 
 
 class UnsafeUrlError(ValueError):
@@ -161,60 +237,60 @@ async def fetch_public_response(
     request_headers = {"User-Agent": DEFAULT_USER_AGENT, **(headers or {})}
     current_url = str(url or "")
 
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout),
-        follow_redirects=False,
-        trust_env=False,
-    ) as client:
-        for redirect_count in range(MAX_REDIRECTS + 1):
-            normalized, hostname, port, scheme = validate_public_url(current_url)
-            addresses = await resolve_public_addresses(hostname, port)
-            pinned, host_header = _pinned_url(normalized, addresses[0], port)
-            hop_headers = {**request_headers, "Host": host_header}
-            extensions = {"sni_hostname": hostname} if scheme == "https" else None
+    # C5: one process-wide pooled client, never a fresh client per request.
+    # The caller owns the client; ``stream()``'s async-with only closes the
+    # stream, never the shared client.
+    client = get_shared_client()
+    for redirect_count in range(MAX_REDIRECTS + 1):
+        normalized, hostname, port, scheme = validate_public_url(current_url)
+        addresses = await resolve_public_addresses(hostname, port)
+        pinned, host_header = _pinned_url(normalized, addresses[0], port)
+        hop_headers = {**request_headers, "Host": host_header}
+        extensions = {"sni_hostname": hostname} if scheme == "https" else None
 
-            async with client.stream(
-                "GET",
-                pinned,
-                headers=hop_headers,
-                extensions=extensions,
-            ) as response:
-                peer = _connected_address(response)
-                if peer is not None and (
-                    not is_public_address(peer) or peer not in addresses
-                ):
-                    raise UnsafeUrlError(
-                        "connected peer did not match validated DNS"
-                    )
-
-                if response.status_code in REDIRECT_STATUSES:
-                    location = response.headers.get("location")
-                    if not location:
-                        raise UnsafeUrlError("redirect response omitted Location")
-                    if redirect_count >= MAX_REDIRECTS:
-                        raise UnsafeUrlError("too many redirects")
-                    current_url = urljoin(normalized, location)
-                    continue
-
-                raw = await _read_limited(response, max_bytes)
-                request = httpx.Request("GET", normalized, headers=request_headers)
-                # aiter_bytes() already yields decoded content, but httpx keeps
-                # the Content-Encoding header on the stream. Re-constructing a
-                # Response with decoded bytes while keeping that header makes
-                # .text/.content try to decompress plaintext a second time and
-                # fail (brotli: decoder failed). Drop the header so the
-                # re-constructed response treats the bytes as final.
-                final_headers = {
-                    key: value
-                    for key, value in response.headers.items()
-                    if key.lower() not in {"content-encoding", "content-length"}
-                }
-                return httpx.Response(
-                    response.status_code,
-                    headers=final_headers,
-                    content=raw,
-                    request=request,
+        async with client.stream(
+            "GET",
+            pinned,
+            headers=hop_headers,
+            extensions=extensions,
+            timeout=httpx.Timeout(timeout),
+        ) as response:
+            peer = _connected_address(response)
+            if peer is not None and (
+                not is_public_address(peer) or peer not in addresses
+            ):
+                raise UnsafeUrlError(
+                    "connected peer did not match validated DNS"
                 )
+
+            if response.status_code in REDIRECT_STATUSES:
+                location = response.headers.get("location")
+                if not location:
+                    raise UnsafeUrlError("redirect response omitted Location")
+                if redirect_count >= MAX_REDIRECTS:
+                    raise UnsafeUrlError("too many redirects")
+                current_url = urljoin(normalized, location)
+                continue
+
+            raw = await _read_limited(response, max_bytes)
+            request = httpx.Request("GET", normalized, headers=request_headers)
+            # aiter_bytes() already yields decoded content, but httpx keeps
+            # the Content-Encoding header on the stream. Re-constructing a
+            # Response with decoded bytes while keeping that header makes
+            # .text/.content try to decompress plaintext a second time and
+            # fail (brotli: decoder failed). Drop the header so the
+            # re-constructed response treats the bytes as final.
+            final_headers = {
+                key: value
+                for key, value in response.headers.items()
+                if key.lower() not in {"content-encoding", "content-length"}
+            }
+            return httpx.Response(
+                response.status_code,
+                headers=final_headers,
+                content=raw,
+                request=request,
+            )
     raise UnsafeUrlError("too many redirects")
 
 

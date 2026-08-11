@@ -5,6 +5,7 @@ screenshot capture, and image metadata. Uses PIL/Pillow for image
 processing and pytesseract for OCR when available.
 """
 
+import asyncio
 import os
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -77,6 +78,28 @@ def run_vision(operation: str = "describe", filePath: str = "", prompt: str = ""
             return _ocr_image(str(p))
         else:
             return f"[error: unknown operation '{operation}']"
+    except ImportError as e:
+        return f"[error: missing dependency - {e}. Install with: pip install Pillow]"
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+async def run_vision_async(
+    operation: str = "describe", filePath: str = "", prompt: str = ""
+) -> str:
+    """Cancellable vision operations (C2).
+
+    The screenshot subprocess runs via the controlled shell executor so a
+    timeout terminates the capture worker's process tree.  describe/OCR are
+    CPU/IO-heavy PIL + pytesseract calls that must not block the event loop,
+    so they run on a worker thread via ``asyncio.to_thread``.
+    """
+    try:
+        if operation == "screenshot":
+            return await _capture_screenshot_async()
+        return await asyncio.to_thread(
+            run_vision, operation=operation, filePath=filePath, prompt=prompt
+        )
     except ImportError as e:
         return f"[error: missing dependency - {e}. Install with: pip install Pillow]"
     except Exception as e:
@@ -266,11 +289,61 @@ def _capture_screenshot() -> str:
     return proc.stdout.strip()
 
 
+def _capture_candidates() -> tuple[list[str], list[str]]:
+    """Candidate capture-worker argv lists (installed-package, repo-root)."""
+    import sys
+
+    output_dir = current_working_directory()
+    return (
+        [sys.executable, "-m", "RxyCode.RxyCode1_1_0.tools.vision_capture",
+         str(output_dir)],
+        [sys.executable, "-m", "tools.vision_capture", str(output_dir)],
+    )
+
+
+async def _capture_screenshot_async() -> str:
+    """Capture a screenshot via the controlled shell executor so the capture
+    worker's process tree is terminated on timeout (C2)."""
+    if os.environ.get("RXYCODE_DISABLE_SCREEN_CAPTURE"):
+        return (
+            "[error: screen capture disabled via "
+            "RXYCODE_DISABLE_SCREEN_CAPTURE]"
+        )
+    if not _interactive_desktop_available():
+        return (
+            "[error: no interactive desktop available (locked screen or "
+            "disconnected session) - screen capture would block]"
+        )
+
+    from ..utils.shell import shell_executor
+
+    timeout_s = float(os.environ.get("RXYCODE_SCREEN_CAPTURE_TIMEOUT", "5"))
+    first, second = _capture_candidates()
+    result = await shell_executor.execute_argv_async(first, timeout=timeout_s)
+    if not result["success"] and "No module named" in (result["stderr"] or ""):
+        result = await shell_executor.execute_argv_async(
+            second, timeout=timeout_s
+        )
+    if result.get("error_type") == "timeout":
+        return (
+            f"[error: screen capture timed out after {timeout_s:.0f}s "
+            "(session locked or display unavailable)]"
+        )
+    if not result["success"]:
+        detail = (result["stderr"] or "unknown error").strip()[:300]
+        return (
+            f"[error: screen capture failed "
+            f"(exit {result['exit_code']}): {detail}]"
+        )
+    return (result["stdout"] or "").strip()
+
+
 vision_tool = StructuredTool(
     name="vision",
     description="Read/analyze images, extract text (OCR), and capture screenshots. "
                 "Use 'describe' for image metadata, 'ocr' for text extraction, "
                 "'screenshot' to capture the screen.",
     func=run_vision,
+    coroutine=run_vision_async,
     args_schema=VisionInput,
 )

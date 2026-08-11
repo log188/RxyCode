@@ -63,9 +63,20 @@ class AppServer:
         set_approval_broker(self._approval)
         self._active_session_id = "latest"
         self._prompt_tasks: set[asyncio.Task[Any]] = set()
+        self._pending_emit_writes: set[asyncio.Task[Any]] = set()
+        self._emit_write_failures: list[BaseException] = []
         self._job_tasks: dict[str, asyncio.Task[Any]] = {}
         self._resolved_jobs: set[str] = set()
         self._thinking_expanded = False
+
+    def _on_emit_write_done(self, task: asyncio.Task[Any]) -> None:
+        """Record any emit-write failure persistently (survives set removal)."""
+        self._pending_emit_writes.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._emit_write_failures.append(exc)
 
     def _session_lock(self, session_id: str) -> asyncio.Lock:
         lock = self._session_locks.get(session_id)
@@ -98,6 +109,7 @@ class AppServer:
             forward_server_request=self._send_server_request,
             main_loop=asyncio.get_running_loop(),
         )
+        await host.start()
         self._session_hosts[session_id] = host
         return host
 
@@ -109,10 +121,42 @@ class AppServer:
     async def _emit_model(self, model: BaseModel) -> None:
         await write_message(model_to_notification(model))
 
+    async def _drain_emit_writes(self) -> list[BaseException]:
+        """Wait for all in-flight async emit writes, surfacing any failures.
+
+        Failures are recorded persistently in ``_emit_write_failures`` by the
+        done callback, so a write that completed (and was removed from the
+        pending set) before the drain still surfaces.  Called before every
+        terminal response (success, error, timeout, cancel) so the result never
+        overtakes already-emitted notifications; the caller should degrade the
+        watchdog when the returned list is non-empty.
+        """
+        if self._pending_emit_writes:
+            await asyncio.gather(
+                *list(self._pending_emit_writes), return_exceptions=True
+            )
+        failures = list(self._emit_write_failures)
+        self._emit_write_failures.clear()
+        if failures:
+            _logger.error(
+                "lost %d emit write(s): %s", len(failures), failures[0]
+            )
+        return failures
+
     async def _emit_job_state(self, session_id: str, job_id: str, state: str) -> None:
         await self._emit_model(
             JobStatusUpdate(session_id=session_id, job_id=job_id, state=state)
         )
+
+    async def _drain_emit_and_degrades(self, job_id: str) -> None:
+        """Drain pending emit writes and degrade the watchdog on failure.
+
+        Used by every terminal job path so a lost stream event is reflected in
+        /status regardless of how the job ends.
+        """
+        write_failures = await self._drain_emit_writes()
+        if write_failures:
+            self._watchdog.degrade(f"emit write failure during job {job_id}")
 
     async def _respond(self, request_id: Any, result: Any) -> None:
         await write_message({"jsonrpc": "2.0", "id": request_id, "result": result})
@@ -133,13 +177,18 @@ class AppServer:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending_server[request_id] = future
-        await write_message(
-            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-        )
         try:
+            await write_message(
+                {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+            )
             return await future
         finally:
+            # Always drop the pending future, even if write_message raises
+            # before the response arrives — otherwise it would leak.  Cancel an
+            # unfinished future so no dangling await remains.
             self._pending_server.pop(request_id, None)
+            if not future.done():
+                future.cancel()
 
     def _resolve_server_response(self, message: dict[str, Any]) -> bool:
         request_id = message.get("id")
@@ -149,10 +198,12 @@ class AppServer:
         if future is None or future.done():
             return False
         if "error" in message:
-            error = message.get("error") or {}
-            future.set_exception(
-                RuntimeError(str(error.get("message", "server request failed")))
-            )
+            error = message.get("error")
+            if isinstance(error, dict):
+                detail = str(error.get("message", "server request failed"))
+            else:
+                detail = str(error or "server request failed")
+            future.set_exception(RuntimeError(detail))
             return True
         result = message.get("result")
         if not isinstance(result, dict):
@@ -173,6 +224,9 @@ class AppServer:
     ) -> None:
         if job_id in self._resolved_jobs:
             return
+        # Drain any in-flight emit writes so a lost stream event surfaces in
+        # /status regardless of how the job ends (stall, error, cancel, ...).
+        await self._drain_emit_and_degrades(job_id)
         self._resolved_jobs.add(job_id)
         self._watchdog.finish_job(job_id)
         self._job_tasks.pop(job_id, None)
@@ -188,6 +242,8 @@ class AppServer:
         reason = (
             f"job stalled >{stall_timeout_seconds()}s (session {stalled.session_id})"
         )
+        # Save the task *before* _fail_job (which pops it from _job_tasks).
+        task = self._job_tasks.get(stalled.job_id)
         await self._fail_job(
             session_id=stalled.session_id,
             job_id=stalled.job_id,
@@ -197,7 +253,6 @@ class AppServer:
             kill_host=True,
             degrade_reason=reason,
         )
-        task = self._job_tasks.get(stalled.job_id)
         if task is not None and not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -283,7 +338,20 @@ class AppServer:
 
                 def emit_message(message: dict[str, Any]) -> None:
                     self._watchdog.touch_job(job_id)
-                    write_message_sync(message)
+                    try:
+                        asyncio.get_running_loop()
+                    except RuntimeError:
+                        # Legacy path: called from the host's reader thread.
+                        write_message_sync(message)
+                    else:
+                        # Async path: called from the AsyncRpcPipe reader task
+                        # on the event loop — schedule the write via to_thread
+                        # so stdout backpressure never blocks the loop.  Track
+                        # the task so the result can be ordered after all
+                        # already-emitted notifications.
+                        task = asyncio.create_task(write_message(message))
+                        self._pending_emit_writes.add(task)
+                        task.add_done_callback(self._on_emit_write_done)
 
                 async def _execute_prompt() -> dict[str, Any]:
                     host = await self._host_for_session(session_id)
@@ -316,6 +384,12 @@ class AppServer:
                     )
                     return
                 except asyncio.CancelledError:
+                    # Stop the worker-side prompt so it cannot keep running
+                    # (and emitting) after the job was cancelled.
+                    host = self._session_hosts.get(session_id)
+                    if host is not None and host.alive():
+                        with contextlib.suppress(Exception):
+                            await host.interrupt(timeout=2.0)
                     if job_id not in self._resolved_jobs:
                         await self._fail_job(
                             session_id=session_id,
@@ -345,6 +419,11 @@ class AppServer:
                 status = str(payload.get("status", "failed"))
                 if status != "succeeded":
                     await self._emit_job_state(session_id, job_id, "failed")
+
+                # Order the result after all already-emitted notifications so
+                # the client never observes the result arrive before them, and
+                # degrade the watchdog if any stream event was lost.
+                await self._drain_emit_and_degrades(job_id)
 
                 await self._respond(
                     request_id,
@@ -468,16 +547,21 @@ class AppServer:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
         host = self._session_hosts.get(session_id)
-        cancelled = False
+        outcome = {"cancelled": False, "failed": False, "killed": False}
         if host is not None and host.alive():
             try:
-                result = await asyncio.to_thread(
-                    host._request, "interrupt", {}, timeout=5.0
-                )
-                cancelled = bool(result.get("cancelled"))
-            except Exception:
+                result = await host.interrupt(timeout=5.0)
+                outcome = {
+                    "cancelled": bool(result.get("cancelled")),
+                    "failed": bool(result.get("failed")),
+                    "killed": bool(result.get("killed")),
+                }
+            except Exception as exc:
+                _logger.warning("session/interrupt failed for %s: %s", session_id, exc)
                 await self._kill_session_host(session_id)
-        await self._respond(request_id, {"cancelled": cancelled, "session_id": session_id})
+                outcome = {"cancelled": False, "failed": True, "killed": True}
+        outcome["session_id"] = session_id
+        await self._respond(request_id, outcome)
 
     async def _heartbeat_loop(self) -> None:
         interval = heartbeat_interval_seconds()
@@ -485,6 +569,11 @@ class AppServer:
             await asyncio.sleep(interval)
             for stalled in list(self._watchdog.stalled_jobs()):
                 await self._handle_stalled_job(stalled)
+            for session_id, host in list(self._session_hosts.items()):
+                if host.degraded and not self._watchdog.degraded:
+                    self._watchdog.degrade(
+                        f"transport degraded (session {session_id})"
+                    )
             await self._emit_model(
                 ServerHeartbeat(
                     uptime_seconds=time.monotonic() - self._started_at,
@@ -646,5 +735,20 @@ class AppServer:
                 self._heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._heartbeat_task
+            # Cancel in-flight emit writes with a bounded wait so blocked
+            # to_thread writes cannot drag the server shutdown out.
+            for task in list(self._pending_emit_writes):
+                task.cancel()
+            if self._pending_emit_writes:
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *list(self._pending_emit_writes),
+                            return_exceptions=True,
+                        ),
+                        timeout=2.0,
+                    )
+            for exc in self._emit_write_failures:
+                _logger.error("emit write failed during shutdown: %r", exc)
             for session_id in list(self._session_hosts):
                 await self._kill_session_host(session_id)
