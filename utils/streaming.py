@@ -65,6 +65,17 @@ class TokenStats:
         self.application_cache_misses = {"precise": 0, "semantic": 0}
         self.application_cache_bypasses = {"precise": 0, "semantic": 0}
         self._model_name: Optional[str] = None
+        # B8: 首 token 时耗（TTFT，毫秒）。首个内容 chunk 到达时记录；
+        # 命中缓存应显著低于冷写（同前缀、同模型、同后端采样）。
+        self.ttft_ms: Optional[float] = None
+
+    def record_ttft(self, ttft_ms: float) -> None:
+        """B8: 记录一次请求的首 token 时耗（毫秒）。"""
+        self.ttft_ms = float(ttft_ms)
+
+    def reset_ttft(self) -> None:
+        """B8: 重置 TTFT（新请求开始 / 测试隔离）。"""
+        self.ttft_ms = None
 
     def set_model(self, model_name: Optional[str]) -> None:
         """Set the active model name used for pricing lookups."""

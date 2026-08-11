@@ -2300,21 +2300,41 @@ class AgentV2:
                     if isinstance(tool_def, dict):
                         tool_def["cache_control"] = {"type": "ephemeral"}
 
+        last_chunk = None
+        partial_output_tokens = 0
+        usage: tuple[int, int] | None = None
+        _ttft_start: float | None = None
+        _ttft_recorded = False
+
         async def _open_provider_stream():
+            # B8/luna R1-4/R2-1: TTFT 起点 = 请求实际发出前（不含 client 初始化/
+            # 缓存控制/消息转换）。局部计时 + 局部已记录标志，每请求独立，
+            # 不依赖全局 is None（避免多请求/并发污染）。
+            nonlocal _ttft_start
+            _ttft_start = time.monotonic()
             resp = client.create(**payload)
             # Some openai SDK versions declare create() as `async def`
             # (resolving to AsyncStream); others return the stream directly.
             return resp if hasattr(resp, "__aiter__") else await resp
 
-        last_chunk = None
-        partial_output_tokens = 0
-        usage: tuple[int, int] | None = None
         try:
             if _circuit_breaker.circuit_breaker_enabled():
                 agen = await _circuit_breaker.get_default_breaker().call(_open_provider_stream)
             else:
                 agen = await _open_provider_stream()
             async for chunk in agen:
+                # B8/luna R1-4/R2-1: 首个**含内容**的 chunk 到达即记录 TTFT
+                # （空 chunk/keepalive 不计数）；局部标志，每请求独立。
+                if _ttft_start is not None and not _ttft_recorded:
+                    choices = getattr(chunk, "choices", None) or []
+                    if choices:
+                        delta = getattr(choices[0], "delta", None)
+                        content = getattr(delta, "content", "") or ""
+                        if content:
+                            _ttft_recorded = True
+                            token_stats.record_ttft(
+                                (time.monotonic() - _ttft_start) * 1000
+                            )
                 last_chunk = chunk
                 choices = getattr(chunk, "choices", None) or []
                 if choices:
@@ -3124,17 +3144,28 @@ class AgentV2:
                     tool_calls=tool_calls,
                     additional_kwargs=ai_kwargs,
                 ))
-                for tc in tool_calls:
-                    tool_name = tc.get("name", "") if isinstance(tc, dict) else tc.name
-                    tool_args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
-                    tool_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
-
-                    result = await self._execute_tool(
-                        tool_name,
-                        tool_args,
-                        mode=mode,
-                        call_id=tool_id or None,
+                # B8: 只读工具并发执行（写串行），结果按原序；
+                # 失败时结果含 [error...]，后续 B7 逻辑照常处理。
+                try:
+                    executed = await self._execute_tools_parallel(
+                        tool_calls, mode=mode
                     )
+                except Exception as exc:  # pragma: no cover - 并行兜底
+                    _logger.warning("B8 parallel tool execution failed: %s", exc)
+                    executed = []
+                    for tc in tool_calls:
+                        name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+                        args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+                        cid = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                        executed.append({
+                            "name": name, "args": args, "id": cid,
+                            "result": f"[error: {exc}]",
+                        })
+                for item in executed:
+                    tool_name = item["name"]
+                    tool_args = item["args"]
+                    tool_id = item["id"]
+                    result = item["result"]
 
                     if (
                         research_policy.requires_web
@@ -3545,6 +3576,138 @@ class AgentV2:
                 await self._memory.compress_if_needed(self._session_id)
             except Exception:
                 pass
+
+    def _tool_is_read_only(self, tool_name: str, tool_args) -> bool:
+        """B8: 工具是否只读（读/搜索类可并行；写/危险类串行）。
+
+        复用 classify_tool_risk（含 bash 动态危险升级、memory/task
+        operation 降级）；风险 < WRITE 即只读。
+        """
+        try:
+            from RxyCode.RxyCode1_1_0.core.safety.policy import (
+                RiskLevel,
+                classify_tool_risk,
+            )
+
+            return classify_tool_risk(tool_name, tool_args) < RiskLevel.WRITE
+        except Exception:
+            return False  # 分类失败保守串行
+
+    def _parallel_tool_config(self) -> tuple[bool, int]:
+        """B8: 读取 execution.parallel_enabled / max_parallel（默认关/3，CB8）。"""
+        exec_cfg = (getattr(self, "_cfg", {}) or {}).get("execution", {})
+        enabled = bool(exec_cfg.get("parallel_enabled", False))
+        try:
+            max_parallel = max(1, int(exec_cfg.get("max_parallel", 3) or 3))
+        except (TypeError, ValueError):
+            max_parallel = 3
+        return enabled, max_parallel
+
+    async def _execute_tools_parallel(self, tool_calls, *, mode: str | None = None) -> list[dict]:
+        """B8: 只读工具并发执行（写工具串行），结果按原序返回。
+
+        - 连续只读段用 asyncio.gather + Semaphore 并发（luna R1-3：
+          只对连续读段并行，写工具保持**原始相对位置**执行，
+          不改变读写交叉的观察顺序）；
+        - 写工具串行（并行写副作用需治理，调研报告 P1-9 风险提示）；
+        - 返回列表保持 tool_calls 原顺序（tool_pair_integrity 安全，
+          与 B2 排序纪律同源）；索引按**位置**而非 call_id（luna R1-2：
+          空/重复 call_id 不覆盖）。
+        """
+        enabled, max_parallel = self._parallel_tool_config()
+        n = len(tool_calls)
+        results: list[str | None] = [None] * n
+        semaphore = asyncio.Semaphore(max_parallel)
+
+        async def run_at(index: int) -> None:
+            tc = tool_calls[index]
+            name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+            args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+            call_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+            try:
+                async with semaphore:
+                    results[index] = await self._execute_tool(
+                        name, args, mode=mode, call_id=call_id or None
+                    )
+            except asyncio.CancelledError:
+                # luna R2-2: 取消必须放行，不能被吞成工具错误。
+                raise
+            except Exception as exc:
+                results[index] = f"[error: {exc}]"
+
+        async def run_parallel_segment(segment: list[int]) -> None:
+            await asyncio.gather(*(run_at(i) for i in segment))
+
+        if enabled:
+            # 按原序分组：连续只读段并行，写工具单独串行（保持相对顺序）。
+            i = 0
+            while i < n:
+                tc = tool_calls[i]
+                name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+                args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+                if self._tool_is_read_only(name, args):
+                    segment = [i]
+                    j = i + 1
+                    while j < n:
+                        tc2 = tool_calls[j]
+                        n2 = tc2.get("name", "") if isinstance(tc2, dict) else tc2.name
+                        a2 = tc2.get("args", {}) if isinstance(tc2, dict) else tc2.args
+                        if not self._tool_is_read_only(n2, a2):
+                            break
+                        segment.append(j)
+                        j += 1
+                    await run_parallel_segment(segment)
+                    i = j
+                else:
+                    await run_at(i)
+                    i += 1
+        else:
+            for i in range(n):
+                await run_at(i)
+
+        # 按原序组装（含名称/参数/id）。
+        ordered: list[dict] = []
+        for i, tc in enumerate(tool_calls):
+            name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+            args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+            call_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+            ordered.append({
+                "name": name,
+                "args": args,
+                "id": call_id,
+                "result": results[i] or "",
+            })
+        return ordered
+
+    def _fork_background_summary(self, messages) -> asyncio.Task:
+        """B8: 后台 fork 摘要压缩（goose 语义：不阻塞主循环）。
+
+        返回 asyncio.Task；调用方可选择 await（获取压缩结果）或忽略
+        （后台执行）。压缩只计算新列表，**不原位改写传入 messages**
+        （G2 防线：后台摘要不污染已发送消息）。
+
+        luna R1-1: ``compact_messages`` 是同步 CPU 工作，直接
+        ``asyncio.create_task`` 仍会阻塞事件循环——用 ``asyncio.to_thread``
+        移到线程执行，主循环真正不阻塞。
+        """
+        import copy
+
+        snapshot = copy.deepcopy(messages)
+
+        async def _run() -> list | None:
+            try:
+                from .compaction import compact_messages
+
+                compacted, telemetry = await asyncio.to_thread(
+                    compact_messages, snapshot, tail_turns=2, return_telemetry=True
+                )
+                if telemetry.get("compacted"):
+                    return compacted
+                return None
+            except Exception:
+                return None
+
+        return asyncio.create_task(_run())
 
     async def _run_plan_only(self, user_input: str) -> str:
         """Produce a plan with an explicit read-only tool allowlist."""

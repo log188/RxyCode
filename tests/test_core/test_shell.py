@@ -188,6 +188,23 @@ class TestShellExecutor:
         assert "if (-not $?)" in cmd
         assert "Get-Location" in cmd
 
+    def test_powershell_translate_grep_after_cd_chain(self):
+        """cd && grep 链中 grep 也转换（B8：; 后位置）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, _ = executor.translate_command(
+            r'cd "D:\x" && grep -n "class UsageTrackingLLM" core/agent_v2.py'
+        )
+        assert "Select-String" in cmd
+        assert "grep" not in cmd
+
+    def test_powershell_translate_grep_after_semicolon(self):
+        """echo x; grep 链中 grep 也转换（B8）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, _ = executor.translate_command('echo hi; grep -n "x" f.py')
+        assert "Select-String" in cmd
+
     def test_powershell_translate_grep_pattern_safe_quoting(self):
         """grep pattern 用 PS 单引号包裹，$ 不展开、引号/反引号保留（luna R4-1）。"""
         executor = self._make_executor()

@@ -208,6 +208,7 @@ def _isolate_process_singletons():
         "application_cache_misses",
         "application_cache_bypasses",
         "_model_name",
+        "ttft_ms",
     )
     with token_stats._application_cache_lock:
         previous_token_state = {
@@ -237,6 +238,7 @@ def _isolate_process_singletons():
     audit._default_logger = None
     _circuit_breaker.reset_breakers()
     token_stats.reset()
+    token_stats.reset_ttft()
     token_stats.set_model(None)
     run_monitor.reset()
     test_id = _safe_path_segment(os.environ.get("PYTEST_CURRENT_TEST"), "test")

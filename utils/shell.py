@@ -366,51 +366,54 @@ class ShellExecutor:
 
     def _translate_grep_find(self, command: str) -> str:
         """B7: POSIX grep/find → PowerShell（pattern 参数在引号内，
-        必须早于引号保护解析）。"""
+        必须早于引号保护解析）。
+
+        B8: 支持 ``;`` 分隔链中的 grep（如 ``cd X ; grep ...``）——
+        用 re.sub 匹配任意命令位置，不限于开头。
+        """
         # POSIX `grep -n "pat" file` / `grep 'pat' file` → Select-String
-        # （支持多文件参数 file1 file2，luna R3-4；DOTALL 支持真实换行 pattern，R5）。
-        grep_match = re.match(
+        # （支持多文件参数 file1 file2；DOTALL 支持真实换行 pattern）。
+        def _grep_repl(m):
+            return (
+                "Select-String -Pattern "
+                + self._ps_single_quote(m.group(2))
+                + " "
+                + m.group(3)
+            )
+
+        command = re.sub(
             r"(?<![\w-])\bgrep\b(?:\s+-n)?\s+"
             r"([\"'])(.*?)\1\s+(\S.*)$",
+            _grep_repl,
             command,
             flags=re.IGNORECASE | re.DOTALL,
         )
-        if grep_match and grep_match.group(2):
-            return (
-                "Select-String -Pattern "
-                + self._ps_single_quote(grep_match.group(2))
-                + " "
-                + grep_match.group(3)
-            )
         # POSIX `grep -rl "pat" dir` → Select-String 递归目录搜索
-        grep_rl = re.match(
+        command = re.sub(
             r"(?<![\w-])\bgrep\b(?:\s+-rl|\s+-r\s+-l)?\s+"
-            r"([\"'])(.*?)\1\s+(\S+)",
+            r"([\"'])(.*?)\1\s+(\S+)(\s+\S+)*",
+            lambda m: (
+                "Get-ChildItem "
+                + m.group(3)
+                + " -Recurse -File | Select-String -Pattern "
+                + self._ps_single_quote(m.group(2))
+            ),
             command,
             flags=re.IGNORECASE,
         )
-        if grep_rl and grep_rl.group(2):
-            return (
-                "Get-ChildItem "
-                + grep_rl.group(3)
-                + " -Recurse -File | Select-String -Pattern "
-                + self._ps_single_quote(grep_rl.group(2))
-            )
         # POSIX `find <path> -name "pat"` → Get-ChildItem -Recurse -Filter
-        find_match = re.match(
+        command = re.sub(
             r"(?<![\w-])\bfind\s+(\S+)(?:\s+[^|;]*?)?\s+-name\s+"
             r"([\"'])(.*?)\2",
+            lambda m: (
+                "Get-ChildItem -Path "
+                + m.group(1)
+                + " -Recurse -Filter "
+                + self._ps_single_quote(m.group(3))
+            ),
             command,
             flags=re.IGNORECASE,
         )
-        if find_match and find_match.group(3):
-            return (
-                "Get-ChildItem -Path "
-                + find_match.group(1)
-                + " -Recurse -Filter "
-                + self._ps_single_quote(find_match.group(3))
-                + command[find_match.end():]
-            )
         return command
 
     def _translate_powershell_outside_quotes(self, command: str) -> str:
