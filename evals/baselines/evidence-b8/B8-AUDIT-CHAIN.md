@@ -32,12 +32,17 @@ B8 卡（并行与延迟）审计产物。审查角色：zen/gpt-5.6-luna（`htt
 - 验收方式：并行 4 组 + 失败重试 3 轮（本地工具 C:\Windows\TEMP\opencode\b8_par.py，
   **不提交**主代码；Phase C 将做内核异步化）
 
-## 审计轮次（待 luna 复审填充）
+## 审计轮次（4 轮）
 
-| 轮次 | 结论 | 阻断项 |
+| 轮次 | 结论 | 核心阻断项 |
 |---|---|---|
-| R1 | ... | ... |
+| R1 | FAIL | 后台压缩 create_task 仍阻塞事件循环（需 to_thread）；call_id 索引覆盖风险；读写混合顺序变化；TTFT 起点含初始化/空 chunk 计数；行为测试不足 |
+| R2 | FAIL | TTFT 全局 is None 污染多请求（需请求局部标志）；run_at 捕获 BaseException 吞 CancelledError |
+| R3 | FAIL | B8 独立 commit 未提交（流程）；CB1-CB8 逐项证据未提供（流程） |
+| R4 | **PASS** | 无阻断项，判据 1-6 + CB1-CB8 全过；commit f5f19a8 |
 
-## 最终结论（待 luna PASS 后填写）
+## 最终结论
 
-zen/gpt-5.6-luna 审计 **PASS** 后，B8 卡可在开发文档验收处打钩。
+zen/gpt-5.6-luna 第 4 轮审计 **PASS**：B8 完成判据 1-6 全过，八条硬约束 CB1-CB8 无违反。
+B8 卡可在开发文档验收处打钩（2026-08-11）。
+
