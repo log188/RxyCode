@@ -676,19 +676,45 @@ class UsageTrackingLLM:
                 additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
             )
             return [cached] + list(messages[1:])
-        # B3: 只有 Anthropic 系（provider 或 caps 声明 anthropic）才允许注入
-        # cache_control（CB3 白名单，luna 审计）：OpenAI/DeepSeek/未知即使
-        # 配置错误 cache_breakpoints 也绝不注入——不依赖 capabilities 配置正确。
+        # B3 (luna B9-R1): 显式断点由契约 cache_mode 裁决（explicit_breakpoints
+        # 才分派），不再硬编码 anthropic 白名单——Qwen 等显式断点厂商同样生效。
+        # 未识别模型回退 caps（CB8，保持 anthropic 白名单语义）。
         provider_name = ""
         if has_provider:
             provider_name = str(getattr(self._provider, "name", "") or "")
         caps_provider = str(getattr(caps, "provider", "") or "")
-        if (
-            provider_name != "anthropic"
-            and caps_provider != "anthropic"
-        ):
-            return messages
+        contract_mode = None
+        try:
+            from .catalog import get_contract
+
+            contract = get_contract(
+                caps_provider or provider_name,
+                str(self.model_config.get("model_name") or ""),
+            )
+            if contract is not None:
+                contract_mode = contract.get("cache_mode")
+        except Exception:  # pragma: no cover - 契约异常回退现状
+            pass
+        if contract_mode is not None:
+            # 契约明确：仅 explicit_breakpoints 注入显式断点。
+            if contract_mode != "explicit_breakpoints":
+                return messages
+        else:
+            # CB8：未识别模型保持 anthropic 白名单现状。
+            if (
+                provider_name != "anthropic"
+                and caps_provider != "anthropic"
+            ):
+                return messages
         # 统一走断点预算入口（allocate_breakpoints 分配序 + ≤4 上限 + TTL 解析）。
+        # B9: 契约显式断点厂商（Qwen 等）caps.cache_breakpoints 可能为空——
+        # 契约声明 explicit_breakpoints 时按 breakpoints_max 注入标准断点序。
+        if not breakpoints and contract_mode == "explicit_breakpoints":
+            try:
+                if (contract.get("breakpoints_max") or 0) > 0:
+                    breakpoints = ("tools", "system", "messages", "tail")
+            except Exception:  # pragma: no cover
+                pass
         if not breakpoints:
             return messages
         from .cache_policy import apply_breakpoint_budget
@@ -2068,6 +2094,38 @@ class AgentV2:
             "已经做过的事，换一种完全不同的思路，或直接给出当前可交付的答案。"
         )
 
+    def _prompt_cache_key_value(self) -> str:
+        """B2/B9: prompt_cache_key 派生。
+
+        - B2（OpenAI caps 路径，现状）：session_id 恒定（codex/kimi 式会话复用）；
+        - B9（契约路径，Kimi auto_and_key）：provider:model:session 前缀——
+          换模型/换 provider → key 变化 → 缓存全失效（规范 7）；
+          同 provider/model/session → 恒定（规范 5）。
+        """
+        caps = getattr(self, "_capabilities", None)
+        contract_prefixed = False
+        try:
+            from .catalog import get_contract
+
+            contract = get_contract(
+                str(getattr(caps, "provider", "") or ""),
+                str(self.model_config.get("model_name") or ""),
+            )
+            # 前缀只用于 auto_and_key 契约（Kimi 系）——换模型失效语义；
+            # OpenAI cache_key 契约保持 session_id（B2 已验收现状）。
+            contract_prefixed = bool(
+                contract is not None
+                and contract.get("cache_mode") == "auto_and_key"
+                and contract.get("prompt_cache_key_required")
+            )
+        except Exception:  # pragma: no cover
+            pass
+        if contract_prefixed:
+            pk_provider = str(getattr(caps, "provider", "") or "").strip().lower()
+            pk_model = str(self.model_config.get("model_name") or "").strip().lower()
+            return f"{pk_provider}:{pk_model}:{str(self._session_id or 'latest')}"
+        return str(self._session_id or "latest")
+
     def _capture_git_snapshot(self) -> bool:
         """B7: LLM 调用前捕获 Git 快照（opencode snapshot 语义）。
 
@@ -2262,15 +2320,29 @@ class AgentV2:
                 payload.pop("temperature", None)
         # B2 (CB3): OpenAI 系按能力注入请求级 prompt_cache_key=session_id，
         # 会话期恒定（跨 turn 前缀复用）；DeepSeek/Anthropic 不注入。
-        # 双条件：provider 必须是 openai 且能力声明要求——防止配置 override
-        # 把 prompt_cache_key_required 误置 True 时向其他 provider 注入（CB3）。
-        if (
+        # B9 (luna R1-2): 注入与否由契约 requires_prompt_cache_key 裁决——
+        # Kimi 等 auto_and_key 厂商同样注入（不再硬编码 openai provider）。
+        # CB3 保持：向不要求 key 的 provider（DeepSeek/Anthropic）绝不注入。
+        contract_pk_key = False
+        try:
+            from .catalog import requires_prompt_cache_key
+
+            contract_pk_key = requires_prompt_cache_key(
+                str(getattr(caps, "provider", "") or ""),
+                str(self.model_config.get("model_name") or ""),
+            )
+        except Exception:  # pragma: no cover - 契约异常回退现状
+            pass
+        caps_pk_key = bool(
             caps is not None
             and getattr(caps, "provider", "") == "openai"
             and getattr(caps, "prompt_cache_key_required", False)
-        ):
+        )
+        if contract_pk_key or caps_pk_key:
+            # luna R2-2: key 派生含 provider:model（规范 7：换模型 = 缓存全失效）。
+            # session_id 会话期恒定（规范 5：Kimi 恢复/退出不得变更）。
             payload.setdefault("extra_body", {})["prompt_cache_key"] = (
-                str(self._session_id or "latest")
+                self._prompt_cache_key_value()
             )
         if tools:
             caps = getattr(self, "_capabilities", None)

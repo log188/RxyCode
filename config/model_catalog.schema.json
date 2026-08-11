@@ -29,7 +29,47 @@
           },
           "source": { "type": "string", "minLength": 1 },
           "source_url": { "type": ["string", "null"] },
-          "as_of": { "type": ["string", "null"] }
+          "as_of": { "type": ["string", "null"] },
+          "cache_contract": {
+            "type": "object",
+            "required": [
+              "cache_mode",
+              "cache_hit_discount",
+              "usage_fields",
+              "reasoning_contract",
+              "breakpoints_max",
+              "prompt_cache_key_required"
+            ],
+            "properties": {
+              "cache_mode": {
+                "type": "string",
+                "enum": ["auto", "explicit_breakpoints", "cache_key", "auto_and_key"]
+              },
+              "cache_hit_discount": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+              "cache_ttl_hours": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+              "min_cache_tokens": { "type": ["integer", "null"], "exclusiveMinimum": 0 },
+              "breakpoints_max": { "type": ["integer", "null"], "minimum": 0 },
+              "breakpoint_lookback": { "type": ["integer", "null"], "minimum": 0 },
+              "usage_fields": {
+                "type": "object",
+                "required": ["cached"],
+                "properties": {
+                  "cached": { "type": ["string", "null"] },
+                  "cache_read": { "type": ["string", "null"] },
+                  "cache_creation": { "type": ["string", "null"] },
+                  "cost_ticks": { "type": ["string", "null"] },
+                  "reasoning": { "type": ["string", "null"] }
+                }
+              },
+              "reasoning_contract": {
+                "type": "string",
+                "enum": ["mandatory_echo", "thinking_blocks_echo", "none", "no_thinking"]
+              },
+              "thinking_param": { "type": ["object", "null"] },
+              "temperature_override": { "type": ["object", "null"] },
+              "prompt_cache_key_required": { "type": "boolean" }
+            }
+          }
         }
       }
     },

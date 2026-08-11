@@ -240,6 +240,9 @@ def _isolate_process_singletons():
     token_stats.reset()
     token_stats.reset_ttft()
     token_stats.set_model(None)
+    from RxyCode.RxyCode1_1_0.core.catalog import reset_contract_cache
+
+    reset_contract_cache()
     run_monitor.reset()
     test_id = _safe_path_segment(os.environ.get("PYTEST_CURRENT_TEST"), "test")
     tracing.reset_tracer(test_id[:120])

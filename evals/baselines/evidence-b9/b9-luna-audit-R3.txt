@@ -1,0 +1,39 @@
+## 复审结论：PASS
+
+### R2 三项阻断项
+
+1. **Kimi 测试行为化：已闭合**
+   - 新增 `_prompt_cache_key_value()`。
+   - Kimi key 实际断言为 `kimi:kimi-k3:sess-1`。
+   - 已覆盖换模型、换 provider、同会话稳定性。
+   - `_raw_stream` 已调用该方法。
+
+2. **模型切换缓存失效：已闭合**
+   - `auto_and_key` 契约按 `provider:model:session` 派生 key。
+   - Kimi 换模型会生成不同 key。
+   - OpenAI `cache_key` 继续保持 `session_id`，B2 行为未回归。
+
+3. **`breakpoints_max: null`：已闭合**
+   - `(contract.get("breakpoints_max") or 0) > 0` 可安全处理 `null`。
+   - 显式断点路径不会因 null 触发异常。
+
+### 完成判据核对
+
+- **1：通过** — 9 家 provider 均有 `cache_contract`，schema 校验通过。
+- **2：通过** — 契约读取集中于 catalog 入口，provider 侧无散落 `cache_mode` 分支。
+- **3：通过** — 已覆盖 DeepSeek、Kimi、Claude、OpenAI、Grok、MiMo 等 usage 路径。
+- **4：通过** — 9 条模型限制规范均有对应测试和契约声明。
+- **5：通过** — 未识别模型保持现状 fallback，usage 缺失归零。
+- **6：通过** — Qwen 显式断点、Kimi cache key、DeepSeek 不注入 key 均有运行时相关验证。
+
+### CB1–CB8
+
+现有证据显示：
+- 已保持未知模型 fallback；
+- 未向不要求 key 的 provider 注入 `prompt_cache_key`；
+- OpenAI `session_id` key 行为未回归；
+- 非显式断点 provider 不注入 `cache_control`；
+- usage 缺失不误报缓存命中；
+- schema、ruff、缓存测试及全量回归均通过。
+
+**无剩余阻断项。**
