@@ -174,7 +174,24 @@ token 栏顺序固定为 `input / output / cache-hit / cache-hit-rate`。`未上
 2. 真实任务只有 `tool_begin`、缺少 `tool_end` 时，Desktop 曾将完成后的工具卡保持为“运行中”；成功 final 现在收敛为完成，失败 prompt result 收敛为错误，两个状态都有 reducer 回归测试和真实 Electron 截图验收。
 3. Desktop 真实探针现记录 final/prompt result 的 input、output、cache-hit、命中率和耗时；终态有运行中工具卡会直接判失败。
 
-仍待修复（本轮不应掩盖）：
+初轮待修复项（均已在闭环复测中解决）：
 
-1. 多个明确只读的 `glob/grep/read` 工作流仍会在结束时错误触发“requested side effect has no verified WRITE/DANGER tool execution”。DTS-11 的原始 JSONL 已证明实际工具均为 READ，需在后端增加“设置副作用尝试标志”的可观测性后再做最小修复，不能凭猜测放宽安全门禁。
-2. 已修复“installed skill”误路由到 `download_skill`（`a15b079`）：DTS-08 重跑实际调用了只读 `skill`。但随后仍命中上项只读工具的副作用证据误判；因此 Skill 路由问题已关闭，证据门禁问题仍待修复。
+1. 多个明确只读的 `glob/grep/read` 工作流曾在结束时错误触发“requested side effect has no verified WRITE/DANGER tool execution”。现已用否定工具约束、只读 Skill、只读文件检查和只读工具计划的定界规则修复；DTS-01、DTS-03、DTS-04、DTS-05、DTS-11、DTS-12 均已真实 Electron 重跑通过。
+2. “installed skill”曾误路由到 `download_skill`（历史修复 `a15b079`），且其后会命中上述证据门禁误判。DTS-08 的最终复测已实际调用 `skill → glob → read` 并成功终态化，两个问题均已关闭。
+
+## 最终哈希复测（功能代码 `9ab8f94`）
+
+为避免把早于最终策略修复的通过结果当作最终验收，以下 8 张原始任务卡在功能提交 `9ab8f94` 上再次启动真实 Electron、真实 appserver 和真实模型。每张卡要求 final answer、无错误横幅、所有工具卡为成功终态，并在 `finally` 清理 Electron 进程树。DTS-15 临时使用 `zen/gpt-5.6-luna`，随后恢复 `opencode-go/deepseek-v4-flash`；DTS-07 临时注册本机 stdio MCP 回显服务，测试后删除配置项。
+
+| 卡片 | 耗时 | input / output / cache-hit / hit-rate | 工具终态 |
+| --- | ---: | --- | --- |
+| DTS-02 | 23.234 s | 35,053 / 771 / 32,384 / 92.39% | `glob, grep, read` 成功 |
+| DTS-06 | 25.355 s | 35,878 / 653 / 32,640 / 90.97% | `glob, grep, read` 成功 |
+| DTS-07 | 23.748 s | 31,805 / 622 / 29,824 / 93.77% | `mcp_desktop_test_echo_echo, glob, read` 成功 |
+| DTS-09 | 22.615 s | 31,862 / 522 / 29,696 / 93.20% | `glob, grep, read` 成功 |
+| DTS-10 | 21.851 s | 26,537 / 782 / 23,808 / 89.72% | `glob, grep, read` 成功 |
+| DTS-13 | 21.393 s | 35,566 / 460 / 32,256 / 90.69% | `glob, grep, read` 成功 |
+| DTS-14 | 21.849 s | 34,903 / 501 / 32,256 / 92.42% | `glob, grep, read` 成功 |
+| DTS-15 | 20.318 s | 26,085 / 212 / 19,014 / 72.89% | `glob, grep, read` 成功（Zen） |
+
+与上一节列出的 DTS-01、DTS-03、DTS-04、DTS-05、DTS-08、DTS-11、DTS-12 的最终复测一起，15/15 原始任务卡现均具有真实 Electron 成功证据。新增证据目录为 `artifacts/desktop-real-suite-20260811/DTS-*-final-master/`；本轮结束后复核，没有残留 Electron 进程。
