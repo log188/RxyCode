@@ -1,0 +1,112 @@
+# B7 第 1 轮审计结论：FAIL
+
+## 完成判据
+
+| 判据 | 结论 | 说明 |
+|---|---|---|
+| 1. 错误回喂在断点后且有引导语 | PASS | `_error_feedback_wrap` 原地追加消息；前缀未修改。 |
+| 2. 死循环截断 | **FAIL** | `agent_v2.py` 中 `break` 位于工具调用内层循环，只跳出当前 `for tc`，随后仍会进入下一轮 LLM 调用，未真正截断外层工具轮。 |
+| 3. 失败结果不缓存 | PASS（有限） | `_should_cache_answer` 对空答案及 `[error...]` 不缓存。 |
+| 4. Git 快照在 LLM 前捕获 | PASS（主工具轮） | `_fast_reply_with_tools` 中 `_capture_git_snapshot()` 位于 `_raw_stream` 前；GitSnapshot 自身有容错。合成轮未再次捕获。 |
+| 5. reviewer 重试 | PASS（证据有限） | 默认关闭；`ReviewerBudget` 测试显示有预算保护。但给出的 diff 未展示 reviewer 重试实际调用路径。 |
+| 6. evals 无回归/提升 | PASS（按提供证据） | 报告为 94.7%、GATE PASS、零回归；唯一失败任务为基线已有失败。 |
+
+## CB1-CB8
+
+- **CB1 稳定前缀：基本 PASS**。错误及 stuck 消息追加在已有消息之后。
+- **CB2 断点预算：FAIL**。stuck 检测触发后没有终止外层工具轮，可能继续发起 LLM 调用。
+- **CB3 OpenAI cache_control：PASS（未见本次引入）**。
+- **CB4 压缩不毁前缀：PASS（未见本次引入）**。
+- **CB5 度量门：PASS（未见本次引入）**。
+- **CB6 失败不缓存：PASS（针对最终答案前缀）**。但工具失败后若模型生成普通答案，该普通答案仍会缓存，需确认这是否符合项目语义。
+- **CB7 动态内容不进入断点前前缀：基本 PASS**。回馈消息位于尾部；但 DSML 原文已先被流式输出，再被解析，存在用户可见工具协议泄漏。
+- **CB8 默认值不变：PASS**。reviewer retry 默认关闭，evals 报告无回归。
+
+## 阻断问题
+
+### 1. `_synthesis_with_tools` 会触发 `NameError`
+
+函数只导入了：
+
+```python
+from langchain_core.messages import AIMessage
+```
+
+但随后使用：
+
+```python
+ToolMessage(...)
+```
+
+未导入 `ToolMessage`。因此“合成轮 DSML 兜底”路径实际会失败。
+
+**修复：**
+
+```python
+from langchain_core.messages import AIMessage, ToolMessage
+```
+
+### 2. stuck 检测没有真正截断外层工具轮
+
+当前 `break` 位于：
+
+```python
+for tc in tool_calls:
+    ...
+    if stuck:
+        ...
+        break
+```
+
+该 `break` 只跳出当前工具调用循环，外层：
+
+```python
+for round_num in range(max_rounds):
+```
+
+仍会继续执行下一轮，并可能再次调用 LLM。
+
+**修复建议：**
+
+增加 `stuck_triggered` 标志，在内层循环结束后跳出外层循环，或直接使用明确的外层控制流：
+
+```python
+stuck_triggered = False
+...
+if stuck:
+    stuck_triggered = True
+    break
+
+if stuck_triggered:
+    break
+```
+
+并补充集成测试，验证触发后不会产生下一次 LLM 调用。
+
+### 3. Git 快照未覆盖合成轮 LLM 调用
+
+`_synthesis_with_tools()` 内再次调用 `_raw_stream(messages)`，但调用前没有 `_capture_git_snapshot()`。若验收标准解释为“每次 LLM 调用前捕获”，此处不满足。
+
+## DSML 解析专项
+
+- 无 DSML 返回 `None`：通过。
+- 标准 `<dsml>`、直接 `<tool_calls>`、`||DSML||`、全角竖线变体：测试覆盖充分。
+- XML 转义参数：通过。
+- 但解析依赖完整 XML；若 DSML 前后包含普通说明文本，`ET.fromstring("<root>...</root>")` 可能失败。
+- 工具调用文本在解析前已被流式发送，可能泄漏 DSML 协议文本。
+
+## PowerShell 转换专项
+
+新增测试覆盖项均通过。未发现明显破坏既有测试的证据；但全局正则替换 `pwd`、`2>/dev/null` 可能误改引号中的普通文本，建议后续增加带引号参数的回归测试。
+
+## 最终结论
+
+**FAIL，不予通过 B7。**
+
+必须先修复：
+
+1. 导入 `ToolMessage`；
+2. 使 stuck 检测真正终止外层工具轮；
+3. 明确并补测合成轮 Git 快照要求。
+
+修复后重新执行规定的两条验收命令。

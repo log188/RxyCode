@@ -1,0 +1,50 @@
+## 复审结论：FAIL
+
+仍有阻断项，主要是“接入请求链路”并未从 diff 或测试中得到证明。
+
+### 判据 1-6
+
+1. **append-only 恢复：部分通过**
+   - `append_from_dicts()` 确实不清空已有消息。
+   - 但 `MemoryManager.load_session(append_only=True)` 直接追加**完整持久化历史**。若内存已有前缀，会产生重复历史。
+   - 现有 manager 测试只覆盖空内存恢复，未覆盖“已有前缀 + manager 恢复”。
+
+2. **稳定 session/cache key：证据不足**
+   - `_session_id` 在实例内保持稳定。
+   - 但测试只是直接读取属性，没有验证真实 `_raw_stream` 请求链路中的 `prompt_cache_key`。
+
+3. **prewarm 签名与重建：策略通过，链路失败**
+   - 签名包含 model/cwd/MCP，`PrewarmState` 行为基本正确。
+   - 但 diff 中未看到 `_maybe_rebuild_prewarm()` 被请求流程调用，也没有实际发出预热请求。
+   - `test_agent_prewarm_wired` 只是直接调用该方法，不能证明已接入请求链路。
+
+4. **keep-alive 调度：策略通过，链路失败**
+   - 默认关闭、5 分钟阈值、预算限制正确。
+   - `_maybe_keep_alive()` 只返回布尔值并增加计数，没有调用 `build_keep_alive_request()`、模型客户端或实际调度点。
+   - 测试同样只是直接调用 helper，不能证明保活请求实际执行。
+
+5. **成本/预算保护：部分通过**
+   - `max_tokens=1` 和调用次数预算存在。
+   - 但实际保活请求未接入，因此成本保护尚未覆盖真实执行路径。
+
+6. **恢复后 usage/命中率：基本通过**
+   - `_record_usage()` 对真实 chunk 的测试可得到 80% 命中率。
+   - 但给出的测试仍是直接调用 `_record_usage`，不是完整的“恢复 → Agent 请求 → 流式响应 → 记录”端到端验证。
+
+### CB1-CB8
+
+无法判定全部通过：题目未给出 CB1-CB8 的具体定义；就现有证据而言，至少涉及以下约束未满足或未证实：
+
+- **prewarm 必须接入真实请求链路**
+- **keep-alive 必须接入真实调度及请求执行链路**
+- **append-only 恢复不得造成完整历史重复追加**
+- **稳定 cache key 必须通过真实请求验证**
+
+此外，报告明确存在一个 B3 遗留测试失败，因此若硬约束包含零回归/全量通过，也应判定不满足。
+
+### 阻断项
+
+1. 将 prewarm 调用接入真实 Agent 请求入口，并验证模型/cwd/MCP 变化时实际重建。
+2. 将 keep-alive 接入真实调度与 provider 请求，不能只返回布尔值。
+3. 修复 `load_session(append_only=True)` 对已有前缀追加完整历史导致的重复问题。
+4. 增加真实请求链路测试，而非仅直接调用内部 helper。

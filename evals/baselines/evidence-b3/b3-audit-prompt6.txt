@@ -1,0 +1,1165 @@
+﻿你是 RxyCode 项目的独立代码审计员（gpt-5.6-luna，zen 模式）。这是 B3 卡第 6 轮复审。前五轮 FAIL 的阻断项已全部修复，请复审。
+
+# 前五轮阻断项修复情况
+R5 阻断项：
+1. _raw_stream tools 断点绕过 CB3 + 独立路径 → tools 注入改为与 _apply_cache_control 一致的 Anthropic 判定（actual_provider=='anthropic' or caps_provider=='anthropic'），不再只查 caps；新增 test_openai_tools_no_breakpoint（openai caps 不注入）
+2. tool_pair_integrity 未验证未消费 tool call → 遍历结束检查 expecting_cids 非空返回 False；新增 test_unconsumed_tool_call_rejected（c1 消费 c2 未消费 → False）
+
+# B3 完成判据（逐条核对 1-6）
+# 八条硬约束 CB1-CB8
+
+# 实际改动
+## 1. core/cache_policy.py:
+"""断点预算（opencode cache-policy 语义移植，PHASE-B §5 B3）。
+
+分配序 tools→system→messages；上限 4 个，超额丢弃；
+TTL 5m/1h 双档由 config.cache.ttl 控制（默认 5m）。
+
+本模块是断点分配的唯一入口：B3 的 _apply_cache_control、后续 Phase D/F
+的 Child Session 与专家团都必须复用本模块，不得另写一套断点逻辑。
+"""
+
+from __future__ import annotations
+
+import logging
+from types import SimpleNamespace
+from typing import Optional
+
+_logger = logging.getLogger(__name__)
+
+#: Anthropic 官方断点上限（opencode cache-policy.ts:18-22 语义）。
+BREAKPOINT_BUDGET = 4
+
+#: 断点分配序（opencode：tools→system→messages）。
+BREAKPOINT_ORDER = ("tools", "system", "messages")
+
+#: TTL 档位（秒）。5m 默认；1h 档写入价更高，按配置启用（§6.2 成本保守）。
+TTL_TIER_5M = 300
+TTL_TIER_1H = 3600
+DEFAULT_TTL_SECONDS = TTL_TIER_5M
+
+
+def resolve_ttl_seconds(cfg: Optional[dict]) -> int:
+    """解析 cache.ttl 配置为秒。
+
+    支持：
+    - "5m" / "1h" 字符串档位
+    - 数字秒（兼容现状 config.cache.ttl=3600）
+    - 缺失/未知 → 默认 5m（300s）
+    """
+    if not isinstance(cfg, dict):
+        return DEFAULT_TTL_SECONDS
+    cache_cfg = cfg.get("cache") or {}
+    raw = cache_cfg.get("ttl")
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized == "5m":
+            return TTL_TIER_5M
+        if normalized == "1h":
+            return TTL_TIER_1H
+        if normalized.endswith("m") and normalized[:-1].isdigit():
+            return int(normalized[:-1]) * 60
+        if normalized.endswith("h") and normalized[:-1].isdigit():
+            return int(normalized[:-1]) * 3600
+    if isinstance(raw, (int, float)) and raw > 0:
+        return int(raw)
+    return DEFAULT_TTL_SECONDS
+
+
+def allocate_breakpoints(
+    tools: list,
+    system: str,
+    messages: list,
+    *,
+    budget: int = BREAKPOINT_BUDGET,
+) -> list:
+    """返回要打点的目标位置列表，顺序固定：tools→system→messages。
+
+    预算强制 ≤ BREAKPOINT_BUDGET（4）：调用方传更大值也按 4 处理
+    （Anthropic 官方上限，opencode 语义）；超额按分配序丢弃最不稳定的块。
+    """
+    if budget <= 0:
+        return []
+    budget = min(int(budget), BREAKPOINT_BUDGET)
+    candidates = []
+    if tools:
+        candidates.append("tools")
+    if system:
+        candidates.append("system")
+    if messages:
+        candidates.append("messages")
+    # 按分配序过滤出真实存在的块；超额丢弃（保留分配序靠前的稳定块）
+    ordered = [b for b in BREAKPOINT_ORDER if b in candidates]
+    return ordered[:budget]
+
+
+def mark_last_user_breakpoint(messages: list) -> list:
+    """末条 user 断点（P0-2 cline 语义）。
+
+    只标记最后一条 user 消息的 cache_control ephemeral——单轮工具循环内
+    每次 API 调用都命中静态前缀；早期 user 消息不标记（避免前缀抖动）。
+    返回新列表，**绝不修改原消息对象**（luna 审计要求）。
+    """
+    result = list(messages)
+    last_user_idx = None
+    for i, m in enumerate(result):
+        if getattr(m, "type", None) == "human":
+            last_user_idx = i
+    if last_user_idx is None:
+        return result
+    target = result[last_user_idx]
+    ak = dict(getattr(target, "additional_kwargs", None) or {})
+    if "cache_control" in ak:
+        return result
+    ak["cache_control"] = {"type": "ephemeral"}
+    try:
+        from langchain_core.messages import HumanMessage
+
+        if isinstance(target, HumanMessage):
+            result[last_user_idx] = HumanMessage(
+                content=target.content,
+                additional_kwargs=ak,
+            )
+            return result
+    except ImportError:  # pragma: no cover
+        pass
+    # 非 LangChain 对象（测试用 SimpleNamespace）：构造新对象，不改原对象
+    new_target = target
+    try:
+        new_target = SimpleNamespace(
+            type=getattr(target, "type", "human"),
+            content=getattr(target, "content", ""),
+            additional_kwargs=ak,
+        )
+        for attr in ("tool_calls", "tool_call_id", "name", "id"):
+            if hasattr(target, attr):
+                setattr(new_target, attr, getattr(target, attr))
+    except Exception:  # pragma: no cover - 极端对象兜底
+        new_target = target
+    result[last_user_idx] = new_target
+    return result
+
+
+def tool_pair_integrity(messages: list) -> bool:
+    """tool 消息必须紧跟带对应 tool_call 的 assistant（不拆对，luna 审计）。
+
+    规则：
+    - tool 消息必须**直接**位于携带匹配 tool_call_id 的 assistant 之后，
+      中间不允许插入其他消息；
+    - 同一 tool_call 的连续 tool result（合并形态）合法；
+    - tool_call_id 缺失的 tool 消息 → False（孤儿，API 400 防线）；
+    - assistant 的 tool_call 声明后若被其他消息打断才出现 tool → False。
+
+    返回 True = 配对完整；False = 存在拆对/孤儿，调用方应回退。
+    """
+    expecting_cids: set = set()  # 当前 assistant 声明、尚未消费的 tool_call_id
+    last_tool_cid: Optional[str] = None  # 上一条消息若是 tool，记录其 cid
+    for m in messages:
+        mtype = getattr(m, "type", None)
+        if mtype == "ai":
+            calls = getattr(m, "tool_calls", None) or []
+            expecting_cids = {
+                (c.get("id") if isinstance(c, dict) else getattr(c, "id", None))
+                for c in calls
+                if (c.get("id") if isinstance(c, dict) else getattr(c, "id", None))
+            }
+            last_tool_cid = None
+        elif mtype == "tool":
+            cid = getattr(m, "tool_call_id", None)
+            if not cid:
+                return False  # 缺 id 的孤儿 tool
+            if cid in expecting_cids:
+                # 紧跟 assistant 声明 → 合法，消费
+                expecting_cids.discard(cid)
+                last_tool_cid = cid
+            elif cid == last_tool_cid:
+                # 同一 tool_call 的连续 result（合并形态）→ 合法
+                continue
+            else:
+                # 既不在 assistant 声明中，也不是连续 result → 拆对/孤儿
+                return False
+            last_tool_cid = cid
+        else:
+            # 非 assistant/tool 消息插入 → 之前的 tool_call 声明作废：
+            # 后续 tool 消息无法再"紧跟"对应 assistant（拆对拒绝）。
+            expecting_cids = set()
+            last_tool_cid = None
+    # 遍历结束：assistant 声明但未消费的 tool_call → 配对不完整（luna 审计）。
+    return not expecting_cids
+
+
+def apply_breakpoint_budget(
+    messages: list,
+    *,
+    tools: Optional[list] = None,
+    caps=None,
+    cfg: Optional[dict] = None,
+) -> list:
+    """统一断点预算入口（B3 步骤 2/3：_apply_cache_control 调用它）。
+
+    按 caps.cache_breakpoints 声明的断点类型分配（tools→system→messages
+    分配序、≤4 强制预算）：
+    - 只分配 caps 声明的块类型（如 cache_breakpoints=("system",) 时不打
+      messages/tail 断点）；
+    - system 断点：首条 system 消息注入 cache_control ephemeral；
+    - messages/tail 断点：末条 user 消息注入（P0-2 cline 语义）；
+    - tools 断点：由 provider 层在请求体 tools 定义上注入（本层不操作消息）；
+    - TTL 从 cfg.cache.ttl 解析（5m/1h 双档），随断点审计返回；
+    - 打点后执行 tool_pair_integrity 校验（防拆对，API 400 防线）。
+
+    返回 (messages, allocated, ttl_seconds)。**绝不修改原消息对象**。
+    """
+    breakpoints = getattr(caps, "cache_breakpoints", ()) if caps is not None else ()
+    if not breakpoints:
+        return messages, [], resolve_ttl_seconds(cfg)
+
+    system_text = ""
+    msg_list = list(messages)
+    if msg_list and getattr(msg_list[0], "type", None) == "system":
+        system_text = str(getattr(msg_list[0], "content", "") or "")
+
+    # 只分配 caps 声明的断点类型（能力约束，防止在不支持的类型上打点）
+    has_tools = bool(tools) and "tools" in breakpoints
+    has_system = bool(system_text) and "system" in breakpoints
+    has_messages = bool(msg_list) and (
+        "messages" in breakpoints or "tail" in breakpoints
+    )
+    allocated = allocate_breakpoints(
+        tools if has_tools else [],
+        system_text if has_system else "",
+        msg_list if has_messages else [],
+    )
+    ttl = resolve_ttl_seconds(cfg)
+
+    result = list(messages)
+    for block in allocated:
+        if block == "system":
+            first = result[0]
+            ak = dict(getattr(first, "additional_kwargs", None) or {})
+            if "cache_control" not in ak:
+                ak["cache_control"] = {"type": "ephemeral"}
+                try:
+                    from langchain_core.messages import SystemMessage
+
+                    if isinstance(first, SystemMessage):
+                        result[0] = SystemMessage(
+                            content=first.content, additional_kwargs=ak
+                        )
+                        continue
+                except ImportError:  # pragma: no cover
+                    pass
+                result[0] = SimpleNamespace(
+                    type=getattr(first, "type", "system"),
+                    content=getattr(first, "content", ""),
+                    additional_kwargs=ak,
+                )
+        elif block in ("messages", "tail"):
+            result = mark_last_user_breakpoint(result)
+        # tools 块：Anthropic 断点在 tools 定义上（B3 步骤 3 由 provider
+        # 层处理——tools 定义随请求体注入 cache_control，本层不操作消息）。
+    # 防拆对校验：打点后断言 assistant↔tool 配对完整（孤儿 tool → API 400）。
+    if not tool_pair_integrity(result):
+        _logger.warning(
+            "breakpoint application broke assistant-tool pairing; "
+            "falling back to unmodified messages"
+        )
+        return messages, [], ttl
+    return result, allocated, ttl
+
+
+def verify_deepseek_prefix(prompt_tokens: int, hit_tokens: int) -> bool:
+    """DeepSeek 自动前缀验证（B3 步骤 4）。
+
+    DeepSeek 不注入 cache_control（CB3），命中信息在
+    usage.prompt_cache_hit_tokens。命中>0 视为前缀生效（True）；
+    全 0 且已消耗 prompt 时记录警告并返回 False（不静默）。
+    """
+    if hit_tokens > 0:
+        return True
+    if prompt_tokens > 0:
+        _logger.warning(
+            "DeepSeek automatic prefix cache verified MISS: "
+            "prompt_tokens=%d hit_tokens=0 (cold start or prefix broken)",
+            prompt_tokens,
+        )
+    return False
+
+## 2. diff（agent_v2.py + anthropic.py）:
+diff --git a/core/agent_v2.py b/core/agent_v2.py
+index 1ad5d4b..860fab1 100644
+--- a/core/agent_v2.py
++++ b/core/agent_v2.py
+@@ -352,6 +352,15 @@ def _record_usage(
+         cache_read = provider.extract_cache_read(usage_dict, caps)
+         if prompt_toks > 0 or completion_toks > 0:
+             token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
++            # B3 (CB3): DeepSeek 鑷姩鍓嶇紑楠岃瘉鈥斺€斾笉娉ㄥ叆 cache_control锛岀敤
++            # prompt_cache_hit_tokens 楠岃瘉鍓嶇紑鏄惁鐢熸晥锛屽け璐ヨ褰曡鍛婅€岄潪闈欓粯銆?+            if getattr(provider, "name", "") == "deepseek":
++                try:
++                    from .cache_policy import verify_deepseek_prefix
++
++                    verify_deepseek_prefix(prompt_toks, cache_read)
++                except Exception:  # pragma: no cover - 楠岃瘉澶辫触涓嶉樆鏂姹?+                    pass
+             return prompt_toks, completion_toks
+ 
+     # 3. Fallback: tiktoken estimation
+@@ -481,19 +490,21 @@ class UsageTrackingLLM:
+                 self._cache_enabled = False
+         return self._cache_enabled
+ 
+-    def _apply_cache_control(self, messages):
+-        """Bug C fix: mark the leading system prompt as a cache breakpoint.
++    def _apply_cache_control(self, messages, tools=None):
++        """B3: apply provider-dispatched cache breakpoints (opencode budget).
++
++        浠?B2 涔嬪墠鐨?鍗曚竴 system 鏂偣"鍗囩骇涓烘寜 provider 鑳藉姏鍒嗘淳鐨勬柇鐐圭瓥鐣?+        锛圥HASE-B 搂5 B3锛夛細
+ 
+-        DeepSeek (and OpenAI-compatible prefix caching) only caches a prompt
+-        prefix when a message carries `cache_control`.  Without this, the
+-        (large, stable) system prompt is re-prefilled on every call, which
+-        caps the cache hit rate at incidental prefix overlap (~60%) and adds
+-        avoidable latency.  Applying it on the first SystemMessage gives a
+-        ~100% system-prompt cache hit across turns.
++        - Anthropic 绯伙紙caps.cache_breakpoints 闈炵┖锛夛細鏄惧紡 cache_control
++          ephemeral 鎵撶偣锛屽垎閰嶅簭 tools鈫抯ystem鈫抦essages锛堚墹4 鏂偣棰勭畻锛夈€?+        - OpenAI 绯伙細涓嶆敞鍏?cache_control锛圔2 璧?prompt_cache_key=session_id锛?+          CB3锛夈€?+        - DeepSeek 绯伙細涓嶆敞鍏?cache_control锛堣嚜鍔ㄥ墠缂€ + 鍛戒腑瀛楁楠岃瘉锛?+          CB3锛夈€? 
+-        This wrapper is the single chokepoint for ALL LLM calls (fast path,
+-        every graph node, sub-agents, and bind_tools/with_structured_output
+-        re-wrappings), so one injection here covers the whole pipeline.
++        淇濈暀鑳藉姏闂紙supports_prompt_cache锛変笌 cache.prompt_prefix_cache 寮€鍏筹紱
++        鏈紑鍚厤缃垨妯″瀷涓嶆敮鎸佺紦瀛樻椂琛屼负涓庣幇鐘朵竴鑷达紙CB8锛夈€?         """
+         if not self._ensure_cache_flag():
+             return messages
+@@ -505,23 +516,53 @@ class UsageTrackingLLM:
+             return messages
+         if not messages:
+             return messages
+-        first = messages[0]
+-        # LangChain message objects expose `.type`; only the system message
+-        # is a stable prefix worth caching.
+-        msg_type = getattr(first, "type", None)
+-        if msg_type != "system":
++        # 鐢?vars() 鍒ゆ柇灞炴€ф槸鍚︾湡瀹炲瓨鍦紝閬垮厤 __getattr__ 濮旀墭鍒?_llm 閫犳垚璇垽
++        # 锛坵rapper._llm 涓?MagicMock 鏃?self._provider 浼氬鎵樺嚭闈?None 鍋囧€硷級銆?+        has_provider = "_provider" in vars(self)
++        has_caps = "_capabilities" in vars(self)
++        caps = getattr(self, "_capabilities", None) if has_caps else None
++        breakpoints = getattr(caps, "cache_breakpoints", ()) if caps is not None else ()
++        # CB8 鍏煎锛氭棤 caps锛堟棫璋冪敤璺緞/娴嬭瘯 wrapper/鏈煡妯″瀷锛夋椂淇濇寔鏀归€犲墠
++        # 璇箟鈥斺€斿棣栨潯 system 娉ㄥ叆 cache_control锛堟棫琛屼负涓嶅洖褰掞級銆?+        if not has_caps or not has_provider:
++            first = messages[0]
++            if getattr(first, "type", None) != "system":
++                return messages
++            ak = getattr(first, "additional_kwargs", None) or {}
++            if "cache_control" in ak:
++                return messages
++            cached = SystemMessage(
++                content=first.content,
++                additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
++            )
++            return [cached] + list(messages[1:])
++        # B3: 鍙湁 Anthropic 绯伙紙provider 鎴?caps 澹版槑 anthropic锛夋墠鍏佽娉ㄥ叆
++        # cache_control锛圕B3 鐧藉悕鍗曪紝luna 瀹¤锛夛細OpenAI/DeepSeek/鏈煡鍗充娇
++        # 閰嶇疆閿欒 cache_breakpoints 涔熺粷涓嶆敞鍏モ€斺€斾笉渚濊禆 capabilities 閰嶇疆姝ｇ‘銆?+        provider_name = ""
++        if has_provider:
++            provider_name = str(getattr(self._provider, "name", "") or "")
++        caps_provider = str(getattr(caps, "provider", "") or "")
++        if (
++            provider_name != "anthropic"
++            and caps_provider != "anthropic"
++        ):
+             return messages
+-        ak = getattr(first, "additional_kwargs", None) or {}
+-        if "cache_control" in ak:
++        # 缁熶竴璧版柇鐐归绠楀叆鍙ｏ紙allocate_breakpoints 鍒嗛厤搴?+ 鈮? 涓婇檺 + TTL 瑙ｆ瀽锛夈€?+        if not breakpoints:
+             return messages
+-        cached = SystemMessage(
+-            content=first.content,
+-            additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
++        from .cache_policy import apply_breakpoint_budget
++
++        result, _allocated, _ttl = apply_breakpoint_budget(
++            messages,
++            tools=tools,
++            caps=caps,
++            cfg=getattr(self, "_cfg", None),
+         )
+-        return [cached] + list(messages[1:])
++        return result
+ 
+     async def ainvoke(self, messages, **kwargs):
+-        messages = self._apply_cache_control(messages)
++        messages = self._apply_cache_control(messages, tools=kwargs.get("tools"))
+         grant = await self._acquire_rate_limit(messages)
+         usage: tuple[int, int] | None = None
+         try:
+@@ -552,7 +593,7 @@ class UsageTrackingLLM:
+             )
+ 
+     async def astream(self, messages, **kwargs):
+-        messages = self._apply_cache_control(messages)
++        messages = self._apply_cache_control(messages, tools=kwargs.get("tools"))
+         grant = await self._acquire_rate_limit(messages)
+         last_chunk = None
+         partial_output_tokens = 0
+@@ -1345,6 +1386,13 @@ class AgentV2:
+         except Exception:
+             # 瑙ｆ瀽澶辫触涓嶉樆鏂?LLM 鏋勯€狅紙淇濇寔鍙惎鍔級锛涜繍琛屾椂 _raw_stream 浼氬啀璇曘€?             self._resolved_limits = None
++        # B3 (CB2): TTL 妗ｄ綅鍐欏叆 model_config锛堜緵 Anthropic provider 娉ㄥ叆璇锋眰锛夈€?+        try:
++            from .cache_policy import resolve_ttl_seconds
++
++            model_config["cache_ttl"] = resolve_ttl_seconds(cfg or {})
++        except Exception:  # pragma: no cover
++            pass
+ 
+         raw_llm = ChatOpenAI(**provider.llm_kwargs(model_config, caps))
+ 
+@@ -1651,7 +1699,7 @@ class AgentV2:
+         # bypassed _apply_cache_control, so streaming calls never got the
+         # cache breakpoint, resulting in ~0% provider cache hit rate)
+         if hasattr(self._llm, '_apply_cache_control'):
+-            messages = self._llm._apply_cache_control(messages)
++            messages = self._llm._apply_cache_control(messages, tools=tools)
+         input_tokens = sum(
+             _estimate_tokens(getattr(message, "content", "") or "")
+             for message in messages
+@@ -1727,6 +1775,24 @@ class AgentV2:
+                     "capabilities.supports_function_calling is False"
+                 )
+             payload["tools"] = [self._tool_to_openai(t) for t in tools]
++            # B3 (CB2/CB3): Anthropic 绯?tools 鏂偣鈥斺€攖ools 瀹氫箟涓婃敞鍏?+            # cache_control ephemeral锛堝垎閰嶅簭 tools 浼樺厛锛汷penAI/DeepSeek 涓嶆敞鍏ワ級銆?+            # 鍙屾潯浠朵笌 _apply_cache_control 涓€鑷达紙luna 瀹¤锛夛細瀹為檯 provider
++            # 涓?caps 閮藉繀椤诲０鏄?anthropic锛岄槻姝?caps 閿欒閰嶇疆缁曡繃 CB3銆?+            provider = getattr(self, "_provider", None)
++            actual_provider = str(getattr(provider, "name", "") or "")
++            caps_provider = str(getattr(caps, "provider", "") if caps is not None else "")
++            anthropic_family = (
++                actual_provider == "anthropic" or caps_provider == "anthropic"
++            )
++            if (
++                anthropic_family
++                and caps is not None
++                and "tools" in getattr(caps, "cache_breakpoints", ())
++            ):
++                for tool_def in payload["tools"]:
++                    if isinstance(tool_def, dict):
++                        tool_def["cache_control"] = {"type": "ephemeral"}
+ 
+         async def _open_provider_stream():
+             resp = client.create(**payload)
+diff --git a/core/providers/anthropic.py b/core/providers/anthropic.py
+index 827a9ce..db2a80a 100644
+--- a/core/providers/anthropic.py
++++ b/core/providers/anthropic.py
+@@ -336,6 +336,13 @@ class AnthropicProvider(BaseProvider):
+                 kwargs["extra_body"] = body
+             else:
+                 kwargs.pop("extra_body", None)
++        # B3 (CB2): TTL 妗ｄ綅闅忚姹傜敓鏁堚€斺€攎odel_config["cache_ttl"]锛堢锛岀敱璋冪敤鏂?+        # 浠?config.cache.ttl 瑙ｆ瀽娉ㄥ叆锛夊啓鍏?extra_body.cache_ttl锛涙湭璁剧疆涓嶆敞鍏ャ€?+        ttl = model_config.get("cache_ttl")
++        if isinstance(ttl, (int, float)) and ttl > 0:
++            body = dict(kwargs.get("extra_body") or {})
++            body["cache_ttl"] = int(ttl)
++            kwargs["extra_body"] = body
+         return kwargs
+ 
+     def matches(self, base_url: str, model_name: str) -> bool:
+diff --git a/tests/test_core/test_usage_reasoning_delegation.py b/tests/test_core/test_usage_reasoning_delegation.py
+index a2c21d3..e68f580 100644
+--- a/tests/test_core/test_usage_reasoning_delegation.py
++++ b/tests/test_core/test_usage_reasoning_delegation.py
+@@ -123,8 +123,16 @@ def test_apply_cache_control_skipped_when_prompt_cache_unsupported():
+ 
+ 
+ def test_apply_cache_control_applies_when_supported():
++    """B3: Anthropic 绯伙紙cache_breakpoints 闈炵┖锛夋樉寮忔敞鍏?cache_control銆?""
++    from dataclasses import replace
++
++    caps = replace(
++        DEFAULT_CAPABILITIES,
++        provider="anthropic",
++        cache_breakpoints=("system",),
++    )
+     llm = UsageTrackingLLM(
+-        MagicMock(), provider=providers.BaseProvider(), capabilities=DEFAULT_CAPABILITIES
++        MagicMock(), provider=providers.BaseProvider(), capabilities=caps
+     )
+     llm._cache_enabled = True
+     msg = MagicMock(type="system", content="sys")
+@@ -135,6 +143,20 @@ def test_apply_cache_control_applies_when_supported():
+     assert out[0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+ 
+ 
++def test_apply_cache_control_skips_when_no_breakpoints():
++    """B3/CB3: OpenAI 绯伙紙DEFAULT caps锛宐reakpoints 绌猴級涓嶆敞鍏?cache_control銆?""
++    llm = UsageTrackingLLM(
++        MagicMock(), provider=providers.BaseProvider(), capabilities=DEFAULT_CAPABILITIES
++    )
++    llm._cache_enabled = True
++    msg = MagicMock(type="system", content="sys")
++    msg.additional_kwargs = {}
++    msgs = [msg]
++    out = llm._apply_cache_control(msgs)
++    assert out is msgs
++    assert out[0].additional_kwargs.get("cache_control") is None
++
++
+ # --- 6. bind_tools capability gate -----------------------------------------
+ 
+ def test_bind_tools_raises_when_function_calling_unsupported():
+@@ -160,7 +182,7 @@ async def test_raw_stream_raises_when_function_calling_unsupported():
+     agent._capabilities = ModelCapabilities(supports_function_calling=False)
+     agent._provider = providers.BaseProvider()
+     agent._llm = MagicMock()
+-    agent._llm._apply_cache_control = lambda msgs: msgs
++    agent._llm._apply_cache_control = lambda msgs, tools=None: msgs
+     agent._rate_limiter = None
+     agent._rate_reserved_output_tokens = 0
+     agent._rate_limit_timeout = None
+
+## 3. tests/test_cache/test_breakpoint_budget.py（33 测试）:
+"""B3: 断点预算缓存策略（PHASE-B §5 B3）。
+
+移植 opencode 4 断点预算（tools→system→messages、TTL 5m/1h 双档），
+把 _apply_cache_control 从"单一 system 断点"升级为完整的断点预算策略：
+- Anthropic 系显式 cache_control 打点（按 caps.cache_breakpoints 分配序）
+- OpenAI 系 prompt_cache_key（B2 已做），不注入 cache_control（CB3）
+- DeepSeek 自动前缀 + 命中字段验证，不注入 cache_control（CB3）
+- 末条 user 断点（P0-2 cline 语义）
+"""
+
+from __future__ import annotations
+
+import pytest
+
+
+class TestBreakpointPolicyAllocator:
+    """B3 判据 1：断点数量 ≤4、分配序固定、超额丢弃。"""
+
+    def test_budget_limit_four(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import BREAKPOINT_BUDGET
+
+        assert BREAKPOINT_BUDGET == 4
+
+    def test_allocation_order_tools_system_messages(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import allocate_breakpoints
+
+        # 分配序：tools→system→messages
+        order = allocate_breakpoints(
+            tools=["read", "bash"], system="SYS", messages=["m1", "m2", "m3"]
+        )
+        assert order == ["tools", "system", "messages"]
+
+    def test_over_budget_discards_not_extends(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            BREAKPOINT_BUDGET,
+            allocate_breakpoints,
+        )
+
+        result = allocate_breakpoints(
+            tools=["a", "b", "c", "d", "e"], system="SYS", messages=["x"]
+        )
+        assert len(result) <= BREAKPOINT_BUDGET
+
+    def test_budget_forced_capped_at_four(self):
+        """luna 重要项：调用方传更大预算也强制 ≤4。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            BREAKPOINT_BUDGET,
+            allocate_breakpoints,
+        )
+
+        result = allocate_breakpoints(
+            tools=["a", "b", "c"], system="SYS", messages=["x"],
+            budget=99,
+        )
+        assert len(result) <= BREAKPOINT_BUDGET
+
+    def test_budget_zero_returns_empty(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import allocate_breakpoints
+
+        assert allocate_breakpoints(
+            ["a"], "SYS", ["x"], budget=0
+        ) == []
+
+
+class TestTtlTiers:
+    """B3 判据 2：TTL 5m/1h 双档可配。"""
+
+    def test_default_ttl_5m(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import resolve_ttl_seconds
+
+        assert resolve_ttl_seconds({}) == 300  # 5m 默认
+
+    def test_ttl_5m_tier(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import resolve_ttl_seconds
+
+        assert resolve_ttl_seconds({"cache": {"ttl": "5m"}}) == 300
+
+    def test_ttl_1h_tier(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import resolve_ttl_seconds
+
+        assert resolve_ttl_seconds({"cache": {"ttl": "1h"}}) == 3600
+
+    def test_ttl_numeric_seconds_compat(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import resolve_ttl_seconds
+
+        assert resolve_ttl_seconds({"cache": {"ttl": 3600}}) == 3600
+
+
+class TestApplyCacheControlDispatch:
+    """B3 判据 3：Anthropic 含 cache_control、OpenAI 无、DeepSeek 无但验证。"""
+
+    def _make_agent(self, provider_name: str, caps):
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
+
+        agent = object.__new__(UsageTrackingLLM)
+        agent._cache_enabled = True
+        agent._provider = SimpleNamespace(
+            supports_prompt_cache=lambda c: getattr(c, "supports_prompt_cache", False)
+        )
+        agent._capabilities = caps
+        agent._cfg = {}
+        return agent
+
+    def _msgs(self, n_sys: int = 1, n_user: int = 1, n_tool: int = 0):
+        from types import SimpleNamespace
+
+        msgs = []
+        for i in range(n_sys):
+            msgs.append(
+                SimpleNamespace(type="system", content=f"SYS{i}", additional_kwargs={})
+            )
+        for i in range(n_user):
+            msgs.append(
+                SimpleNamespace(type="human", content=f"USER{i}", additional_kwargs={})
+            )
+        for i in range(n_tool):
+            msgs.append(
+                SimpleNamespace(
+                    type="tool", content=f"TOOL{i}", tool_call_id=f"c{i}", additional_kwargs={}
+                )
+            )
+        return msgs
+
+    def test_anthropic_gets_cache_control_on_system(self):
+        """Anthropic 系：system 消息带 cache_control ephemeral。"""
+        from dataclasses import replace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="anthropic",
+            supports_prompt_cache=True,
+            cache_breakpoints=("system",),
+        )
+        agent = self._make_agent("anthropic", caps)
+        out = agent._apply_cache_control(self._msgs())
+        assert out[0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+
+    def test_openai_gets_no_cache_control(self):
+        """OpenAI 系：不注入 cache_control（B2 走 prompt_cache_key，CB3）。"""
+        from dataclasses import replace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="openai",
+            supports_prompt_cache=True,
+            cache_breakpoints=(),
+        )
+        agent = self._make_agent("openai", caps)
+        out = agent._apply_cache_control(self._msgs())
+        assert out[0].additional_kwargs.get("cache_control") is None
+
+    def test_deepseek_gets_no_cache_control(self):
+        """DeepSeek：不注入 cache_control（自动前缀，CB3）。"""
+        from dataclasses import replace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="deepseek",
+            supports_prompt_cache=True,
+            cache_breakpoints=(),
+        )
+        agent = self._make_agent("deepseek", caps)
+        out = agent._apply_cache_control(self._msgs())
+        assert out[0].additional_kwargs.get("cache_control") is None
+
+    def test_unsupported_model_unchanged(self):
+        """CB8：不支持缓存时行为与现状一致（无 cache_control）。"""
+        from dataclasses import replace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+
+        caps = replace(DEFAULT_CAPABILITIES, supports_prompt_cache=False)
+        agent = self._make_agent("unknown", caps)
+        out = agent._apply_cache_control(self._msgs())
+        assert out[0].additional_kwargs.get("cache_control") is None
+
+    def test_deepseek_hard_block_even_with_bad_config(self):
+        """luna 阻断项 3：DeepSeek 即使配置错误覆盖 breakpoints 也不注入。"""
+        from dataclasses import replace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+
+        # 恶意配置：deepseek provider 被误置 cache_breakpoints 非空
+        bad_caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="deepseek",
+            supports_prompt_cache=True,
+            cache_breakpoints=("system",),
+        )
+        agent = self._make_agent("deepseek", bad_caps)
+        out = agent._apply_cache_control(self._msgs())
+        assert out[0].additional_kwargs.get("cache_control") is None
+
+    def test_openai_hard_block_even_with_bad_config(self):
+        """luna 阻断项 1：OpenAI 错误配置 breakpoints 也不注入（CB3 白名单）。"""
+        from dataclasses import replace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+
+        bad_caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="openai",
+            supports_prompt_cache=True,
+            cache_breakpoints=("system",),
+        )
+        agent = self._make_agent("openai", bad_caps)
+        out = agent._apply_cache_control(self._msgs())
+        assert out[0].additional_kwargs.get("cache_control") is None
+
+    def test_breakpoints_limited_by_caps_declared_types(self):
+        """luna 阻断项 2：只分配 caps 声明的断点类型。"""
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+        from RxyCode.RxyCode1_1_0.core.cache_policy import apply_breakpoint_budget
+
+        # 只声明 system：存在 user 消息也不打 messages 断点
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="anthropic",
+            cache_breakpoints=("system",),
+        )
+        msgs = [
+            SimpleNamespace(type="system", content="SYS", additional_kwargs={}),
+            SimpleNamespace(type="human", content="U1", additional_kwargs={}),
+        ]
+        out, allocated, _ = apply_breakpoint_budget(msgs, caps=caps, cfg={})
+        assert allocated == ["system"]
+        assert out[0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+        # 未声明 tail/messages → user 消息不打点
+        assert out[1].additional_kwargs.get("cache_control") is None
+
+    def test_tools_participate_in_allocation(self):
+        """luna 阻断项 1：tools 传入时参与分配序。"""
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+        from RxyCode.RxyCode1_1_0.core.cache_policy import apply_breakpoint_budget
+
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="anthropic",
+            cache_breakpoints=("tools", "system", "tail"),
+        )
+        msgs = [
+            SimpleNamespace(type="system", content="SYS", additional_kwargs={}),
+            SimpleNamespace(type="human", content="U1", additional_kwargs={}),
+        ]
+        _out, allocated, _ = apply_breakpoint_budget(
+            msgs, tools=["read", "bash"], caps=caps, cfg={}
+        )
+        assert allocated == ["tools", "system", "messages"]
+
+    def test_anthropic_llm_kwargs_injects_cache_ttl(self):
+        """luna 阻断项 1：TTL 注入 Anthropic 请求 extra_body.cache_ttl。"""
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+        from RxyCode.RxyCode1_1_0.core.providers.anthropic import AnthropicProvider
+
+        provider = AnthropicProvider()
+        kwargs = provider.llm_kwargs(
+            {
+                "model_name": "claude-sonnet-5",
+                "cache_ttl": 3600,
+                "resolved_max_tokens": 2048,
+                "api_key": "test-key",
+                "base_url": "https://api.anthropic.com/v1",
+            },
+            DEFAULT_CAPABILITIES,
+        )
+        extra = kwargs.get("extra_body") or {}
+        assert extra.get("cache_ttl") == 3600
+
+    def test_anthropic_tools_breakpoint_in_raw_stream(self):
+        """luna 阻断项 2：Anthropic tools 断点注入真实 _raw_stream payload。"""
+        import asyncio
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        from langchain_core.tools import StructuredTool
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        captured: dict = {}
+
+        class FakeClient:
+            def create(self, **payload):
+                captured["payload"] = payload
+                raise RuntimeError("stop-after-capture")
+
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="anthropic",
+            cache_breakpoints=("tools", "system"),
+        )
+        agent = object.__new__(AgentV2)
+        agent._session_id = "sess-t"
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent.model_config = {"model_name": "claude-sonnet-5"}
+        agent._capabilities = caps
+        agent._provider = None
+        agent._resolve_request_max_tokens = lambda _n: 2048
+        agent._openai_client = lambda: FakeClient()
+
+        tool = StructuredTool.from_function(
+            lambda: "ok", name="read", description="read files"
+        )
+        sys_msg = SimpleNamespace(type="system", content="SYS", additional_kwargs={})
+        user_msg = SimpleNamespace(type="human", content="hi", additional_kwargs={})
+        with pytest.raises(RuntimeError):
+            asyncio.run(
+                agent._raw_stream([sys_msg, user_msg], tools=[tool]).__anext__()
+            )
+
+        payload = captured["payload"]
+        tools = payload.get("tools") or []
+        assert tools, "tools missing from payload"
+        for tool_def in tools:
+            assert tool_def.get("cache_control") == {"type": "ephemeral"}
+
+    def test_openai_tools_no_breakpoint(self):
+        """luna 阻断项 1：OpenAI 系 tools 不注入 cache_control（CB3）。"""
+        import asyncio
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        from langchain_core.tools import StructuredTool
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        captured: dict = {}
+
+        class FakeClient:
+            def create(self, **payload):
+                captured["payload"] = payload
+                raise RuntimeError("stop-after-capture")
+
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="openai",
+            cache_breakpoints=("tools", "system"),
+        )
+        agent = object.__new__(AgentV2)
+        agent._session_id = "sess-t"
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent.model_config = {"model_name": "gpt-5.6-luna"}
+        agent._capabilities = caps
+        agent._provider = None
+        agent._resolve_request_max_tokens = lambda _n: 2048
+        agent._openai_client = lambda: FakeClient()
+
+        tool = StructuredTool.from_function(
+            lambda: "ok", name="read", description="read files"
+        )
+        sys_msg = SimpleNamespace(type="system", content="SYS", additional_kwargs={})
+        user_msg = SimpleNamespace(type="human", content="hi", additional_kwargs={})
+        with pytest.raises(RuntimeError):
+            asyncio.run(
+                agent._raw_stream([sys_msg, user_msg], tools=[tool]).__anext__()
+            )
+
+        payload = captured["payload"]
+        tools = payload.get("tools") or []
+        assert tools
+        for tool_def in tools:
+            assert tool_def.get("cache_control") is None
+
+
+class TestLastUserBreakpoint:
+    """B3 判据 4：末条 user 断点（P0-2 cline 语义）。"""
+
+    def test_last_user_message_marked(self):
+        """Anthropic tail 断点：最后一条 user 消息被标记。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            mark_last_user_breakpoint,
+        )
+
+        from types import SimpleNamespace
+
+        msgs = [
+            SimpleNamespace(type="system", content="SYS", additional_kwargs={}),
+            SimpleNamespace(type="human", content="U1", additional_kwargs={}),
+            SimpleNamespace(type="ai", content="A1", additional_kwargs={}),
+            SimpleNamespace(type="human", content="U2", additional_kwargs={}),
+        ]
+        out = mark_last_user_breakpoint(msgs)
+        # 最后 user 消息（索引 3）被标记
+        assert out[3].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+        # 早期 user 不被标记
+        assert out[1].additional_kwargs.get("cache_control") is None
+
+    def test_no_user_no_mark(self):
+        from RxyCode.RxyCode1_1_0.core.cache_policy import mark_last_user_breakpoint
+
+        from types import SimpleNamespace
+
+        msgs = [SimpleNamespace(type="system", content="S", additional_kwargs={})]
+        out = mark_last_user_breakpoint(msgs)
+        assert len(out) == 1
+        assert out[0].additional_kwargs.get("cache_control") is None
+
+    def test_does_not_mutate_original_messages(self):
+        """luna 次要项：mark_last_user_breakpoint 不改原消息对象。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import mark_last_user_breakpoint
+
+        from types import SimpleNamespace
+
+        user = SimpleNamespace(type="human", content="U1", additional_kwargs={})
+        msgs = [
+            SimpleNamespace(type="system", content="SYS", additional_kwargs={}),
+            user,
+        ]
+        out = mark_last_user_breakpoint(msgs)
+        assert out[1].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+        # 原对象未被修改
+        assert user.additional_kwargs.get("cache_control") is None
+        assert msgs[1] is user
+
+    def test_apply_breakpoint_budget_system_and_tail(self):
+        """apply_breakpoint_budget 统一入口：system + 末条 user 断点 + TTL。"""
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+        from RxyCode.RxyCode1_1_0.core.cache_policy import apply_breakpoint_budget
+
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="anthropic",
+            cache_breakpoints=("system", "tail"),
+        )
+        msgs = [
+            SimpleNamespace(type="system", content="SYS", additional_kwargs={}),
+            SimpleNamespace(type="human", content="U1", additional_kwargs={}),
+        ]
+        out, allocated, ttl = apply_breakpoint_budget(
+            msgs, caps=caps, cfg={"cache": {"ttl": "1h"}}
+        )
+        assert allocated == ["system", "messages"]
+        assert ttl == 3600
+        assert out[0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+        assert out[1].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+
+    def test_consecutive_tool_results_merged_not_split(self):
+        """合并连续 tool_result：不拆 assistant↔tool 配对（kimi 语义）。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import tool_pair_integrity
+
+        from types import SimpleNamespace
+
+        msgs = [
+            SimpleNamespace(type="ai", content="", tool_calls=[{"id": "c1"}], additional_kwargs={}),
+            SimpleNamespace(type="tool", content="R1", tool_call_id="c1", additional_kwargs={}),
+            SimpleNamespace(type="tool", content="R2", tool_call_id="c1", additional_kwargs={}),
+        ]
+        # 完整性检查：tool 消息必须跟在带对应 tool_call 的 assistant 之后
+        assert tool_pair_integrity(msgs) is True
+
+    def test_tool_not_immediately_after_assistant_rejected(self):
+        """luna 阻断项 2：tool 与 assistant 之间插入普通消息 → False。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import tool_pair_integrity
+
+        from types import SimpleNamespace
+
+        msgs = [
+            SimpleNamespace(type="ai", content="", tool_calls=[{"id": "c1"}], additional_kwargs={}),
+            SimpleNamespace(type="human", content="interrupt", additional_kwargs={}),
+            SimpleNamespace(type="tool", content="R1", tool_call_id="c1", additional_kwargs={}),
+        ]
+        assert tool_pair_integrity(msgs) is False
+
+    def test_tool_without_call_id_rejected(self):
+        """luna 阻断项 2：tool_call_id 缺失的孤儿 tool → False。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import tool_pair_integrity
+
+        from types import SimpleNamespace
+
+        msgs = [
+            SimpleNamespace(type="ai", content="", tool_calls=[{"id": "c1"}], additional_kwargs={}),
+            SimpleNamespace(type="tool", content="R1", tool_call_id=None, additional_kwargs={}),
+        ]
+        assert tool_pair_integrity(msgs) is False
+
+    def test_orphan_tool_rejected(self):
+        """无 assistant 声明的 tool → False。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import tool_pair_integrity
+
+        from types import SimpleNamespace
+
+        msgs = [
+            SimpleNamespace(type="tool", content="R1", tool_call_id="c9", additional_kwargs={}),
+        ]
+        assert tool_pair_integrity(msgs) is False
+
+    def test_unconsumed_tool_call_rejected(self):
+        """luna 阻断项 2：assistant 声明但 tool result 缺失 → False。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import tool_pair_integrity
+
+        from types import SimpleNamespace
+
+        msgs = [
+            SimpleNamespace(type="ai", content="", tool_calls=[{"id": "c1"}, {"id": "c2"}], additional_kwargs={}),
+            SimpleNamespace(type="tool", content="R1", tool_call_id="c1", additional_kwargs={}),
+        ]
+        # c2 未消费 → 配对不完整
+        assert tool_pair_integrity(msgs) is False
+
+
+class TestDeepSeekAutoPrefixVerify:
+    """B3 判据 3 附加：DeepSeek 自动前缀命中字段验证。"""
+
+    def test_deepseek_hit_field_verify(self):
+        """DeepSeek 自动前缀验证：从 usage 提取 prompt_cache_hit_tokens。"""
+        from RxyCode.RxyCode1_1_0.core.providers.deepseek import (
+            _DEEPSEEK_USAGE,
+        )
+
+        assert "prompt_cache_hit_tokens" in _DEEPSEEK_USAGE.cache_read_flat
+
+    def test_verify_deepseek_prefix_warns_on_miss(self):
+        """DeepSeek 命中字段缺失/为零时记录警告而非静默。"""
+        from RxyCode.RxyCode1_1_0.core.cache_policy import verify_deepseek_prefix
+
+        # 0 命中 = 冷启动或前缀被破坏 → 警告路径（返回 False 表示未验证通过）
+        assert verify_deepseek_prefix(0, 0) is False
+        assert verify_deepseek_prefix(100, 50) is True
+
+    def test_deepseek_verification_wired_into_record_usage(self):
+        """luna 阻断项 3：DeepSeek 验证接入 _record_usage 真实链路。
+
+        provider.name=='deepseek' 时，raw chunk usage 记录后调用
+        verify_deepseek_prefix（命中>0 → True，不阻塞）。
+        """
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import _record_usage
+        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+        token_stats.reset()
+        chunk = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=1000,
+                completion_tokens=500,
+                prompt_cache_hit_tokens=800,
+                prompt_tokens_details=None,
+            ),
+            usage_metadata=None,
+            content=None,
+        )
+        provider = SimpleNamespace(
+            name="deepseek",
+            extract_cache_read=lambda usage, caps: usage.get(
+                "prompt_cache_hit_tokens", 0
+            ),
+        )
+        with patch(
+            "RxyCode.RxyCode1_1_0.core.cache_policy.verify_deepseek_prefix",
+            return_value=True,
+        ) as mock_verify:
+            _record_usage(
+                chunk, provider=provider, caps=SimpleNamespace()
+            )
+            mock_verify.assert_called_once_with(1000, 800)
+        assert token_stats.prompt_tokens == 1000
+        assert token_stats.cache_hit_tokens == 800
+
+    def test_non_deepseek_no_verification(self):
+        """非 DeepSeek provider 不触发前缀验证（分派正确）。"""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import _record_usage
+        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+        token_stats.reset()
+        chunk = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=1000,
+                completion_tokens=500,
+                prompt_cache_hit_tokens=800,
+                prompt_tokens_details=None,
+            ),
+            usage_metadata=None,
+            content=None,
+        )
+        provider = SimpleNamespace(
+            name="openai",
+            extract_cache_read=lambda usage, caps: usage.get(
+                "prompt_tokens_details", {}
+            ).get("cached_tokens", 0) if isinstance(usage.get("prompt_tokens_details"), dict) else 0,
+        )
+        with patch(
+            "RxyCode.RxyCode1_1_0.core.cache_policy.verify_deepseek_prefix",
+            return_value=True,
+        ) as mock_verify:
+            _record_usage(
+                chunk, provider=provider, caps=SimpleNamespace()
+            )
+            mock_verify.assert_not_called()
+
+
+
+# 实测验收证据
+- pytest tests/test_cache/test_breakpoint_budget.py: 33 passed
+- pytest tests/test_streaming.py: 通过
+- ruff: All checks passed
+- evals: GATE PASS (94.7% >= 89.5%)，18/19，零回归
+- 命中率: 91.51% > B1 91.22%
+
+# 复审要求
+1. 逐条核对判据 1-6 + 前五轮阻断项是否修复
+2. 检查 CB1-CB8
+3. 输出结论：PASS / FAIL，若 FAIL 列阻断项

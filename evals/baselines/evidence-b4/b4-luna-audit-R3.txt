@@ -1,0 +1,35 @@
+结论：**FAIL**
+
+阻断项：
+
+1. **CB1 / R2 前缀边界仍不严谨**
+   `_fold_middle_section` 通过 `seen_first_system` 识别“首位 system”，实际上识别的是“首个 system”。当首条消息不是 system、后续才出现 system 时，该 system 会被错误提升到输出头部，改变原消息顺序。
+
+   ```python
+   if getattr(m, "type", None) == "system" and not seen_first_system:
+       head_system.append(m)
+   ```
+
+   应仅将 `messages[0]` 为 system 的消息作为头部前缀；其余 system 必须留在原序列位置。
+
+2. **CB3 配对守恒存在错误边界**
+   `_split_units` 在发现 assistant tool calls 后，会把后续所有 `tool` 消息都加入该单元，即使 `tool_call_id` 不属于该 assistant：
+
+   ```python
+   if getattr(nxt, "type", None) == "tool":
+       ...
+       unit.append(nxt)
+   ```
+
+   这会吞并其他 assistant 的 tool result 或孤儿 tool。随后可能触发整体回退，导致“孤儿 tool 不出现”无法保证，也可能破坏不同 assistant/tool 轮次边界。应只收集属于当前 assistant 的 `tool_call_id`，并对异常孤儿明确拒绝/回退。
+
+3. **25% 尾部预算没有被严格实现**
+   预算循环比较的是整个结果：
+
+   ```python
+   while tokens_after > budget_floor:
+   ```
+
+   但 system 和摘要都不可裁剪，循环可能反复生成摘要，最终仍超过 25%；此时只是因无法继续缩小而退出，并未满足预算判据。应单独计算可保留尾部预算，并避免重复折叠已生成的 summary。
+
+已有修复中，遥测 `len // 3`、摘要模板、原对象不修改、基础 assistant/tool 配对测试均通过；但上述问题仍违反 B4 的前缀顺序、配对守恒和尾部预算硬约束，因此不能 PASS。

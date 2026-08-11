@@ -257,6 +257,74 @@ class ShellExecutor:
         ]
         return any(re.search(pattern, command) for pattern in patterns)
 
+    @staticmethod
+    def _protect_quoted(command: str) -> tuple[str, list[tuple[str, int]]]:
+        """保护引号内的文本：替换为占位符，避免转换误改（luna R2/R3）。
+
+        返回 (masked, 还原表)。还原表元素为 (原文, 占位符索引)。
+        - 成对引号（' 和 "）整段保护；
+        - 转义引号（\\" 或反引号 `）不结束保护范围；
+        - 未闭合引号：从引号开始到行尾全部保护（luna R3-1）；
+        - 哨兵使用随机前缀，避免与原文碰撞（luna R3-3）。
+        """
+        import uuid
+
+        sentinel = f"\x00DSMLQ{uuid.uuid4().hex[:8]}\x00"
+        masked_chars: list[str] = []
+        restores: list[tuple[str, int]] = []
+        i = 0
+        n = len(command)
+        quote: str | None = None
+        quoted_start = -1
+        while i < n:
+            ch = command[i]
+            if quote is None:
+                if ch in ("'", '"'):
+                    quote = ch
+                    quoted_start = i
+                else:
+                    masked_chars.append(ch)
+                i += 1
+                continue
+            # 在引号内：处理转义
+            if ch == "\\" and i + 1 < n:
+                i += 2  # 跳过转义字符对
+                continue
+            if ch == "`" and i + 1 < n:
+                i += 2  # PowerShell 反引号转义
+                continue
+            if ch == quote:
+                quoted = command[quoted_start:i + 1]
+                idx = len(restores)
+                restores.append((quoted, idx))
+                masked_chars.append(f"{sentinel}{idx}{sentinel}")
+                quote = None
+                i += 1
+                continue
+            i += 1
+        if quote is not None:
+            # 未闭合引号：保护到行尾（luna R3-1）
+            quoted = command[quoted_start:]
+            idx = len(restores)
+            restores.append((quoted, idx))
+            masked_chars.append(f"{sentinel}{idx}{sentinel}")
+        return "".join(masked_chars), restores
+
+    @staticmethod
+    def _restore_quoted(masked: str, restores: list[tuple[str, int]]) -> str:
+        """把保护占位符还原为原始引号文本（单次扫描，luna R3-3）。"""
+        if not restores:
+            return masked
+        import re
+
+        pattern = re.compile(r"\x00DSMLQ[0-9a-f]{8}\x00(\d+)\x00DSMLQ[0-9a-f]{8}\x00")
+        by_idx = {idx: quoted for quoted, idx in restores}
+
+        def _repl(m):
+            return by_idx.get(int(m.group(1)), m.group(0))
+
+        return pattern.sub(_repl, masked)
+
     def translate_command(self, command: str) -> tuple[str, str]:
         needs_powershell = self._is_powershell_syntax(command)
         actual_shell = self.shell_type
@@ -271,105 +339,218 @@ class ShellExecutor:
             if heredoc is not None:
                 return heredoc, "powershell"
 
-        if actual_shell == "cmd":
+        if actual_shell == "powershell":
+            # grep/find 的 pattern 参数在引号内，必须先于引号保护解析。
+            command = self._translate_grep_find(command)
+            # luna R2: 保护引号内文本，转换只作用于引号外，避免误改
+            # echo "2>/dev/null" 之类的输出文本。
+            masked, quoted_restores = self._protect_quoted(command)
+            command = self._translate_powershell_outside_quotes(masked)
+            command = self._restore_quoted(command, quoted_restores)
+        elif actual_shell == "cmd":
             command = command.replace("$env:USERPROFILE", "%USERPROFILE%")
             command = command.replace("$env:APPDATA", "%APPDATA%")
             command = command.replace("$env:LOCALAPPDATA", "%LOCALAPPDATA%")
             command = command.replace("$env:TEMP", "%TEMP%")
             command = command.replace("powershell -Command ", "")
             command = command.replace("powershell -c ", "")
-        elif actual_shell == "powershell":
-            # Windows PowerShell 5.x rejects bash/cmd `&&`; PS 7+ accepts it.
-            # Prefer `;` so agent-written cmd-style chains run on WinPS 5.
-            if "&&" in command:
-                command = re.sub(r"\s*&&\s*", "; ", command)
-            # A bare `&` used as a command separator (bash habit:
-            # `cmd1 & cmd2 & cmd3`) is a parser error on PowerShell 5, where
-            # `&` is the call operator. Rewrite separators to `;`, while
-            # preserving the call-operator form `& 'path'` / `& $var`.
-            command = re.sub(
-                r"\s+&\s+(?=[^'\"$\s&])",
-                "; ",
-                command,
-            )
-            # cmd.exe `cd /d X` → PowerShell Set-Location
-            command = re.sub(
-                r"\bcd\s+/d\s+",
-                "Set-Location ",
-                command,
-                flags=re.IGNORECASE,
-            )
-            # POSIX `ls -la` / `ls -l` / `ls -a` → PowerShell Get-ChildItem,
-            # whose aliased `ls` rejects the GNU-style `-la` flag bundles.
-            command = re.sub(
-                r"(?<![\w-])\bls\s+(-[alA]+)\b",
-                lambda m: "Get-ChildItem -Force"
-                if "a" in m.group(1)
-                else "Get-ChildItem",
-                command,
-                flags=re.IGNORECASE,
-            )
-            # cmd.exe `dir /b <path>` (bare-name listing) → Get-ChildItem -Name.
-            # Without this, WinPS parses `/b` as a path and errors.
-            command = re.sub(
-                r"\bdir\s+/b\b(\s+\S+)?",
-                lambda m: "Get-ChildItem -Name" + (m.group(1) or ""),
-                command,
-                flags=re.IGNORECASE,
-            )
-            # cmd.exe `dir <path> /b` (flag after path) → same translation.
-            command = re.sub(
-                r"\bdir\b(\s+\S+)\s+/b\b",
-                lambda m: "Get-ChildItem -Name" + m.group(1),
-                command,
-                flags=re.IGNORECASE,
-            )
-            # cmd.exe stdout discard `2>nul` / `2>NUL` → PowerShell `2>$null`.
-            command = re.sub(
-                r"\b2>nul\b",
-                "2>$null",
-                command,
-                flags=re.IGNORECASE,
-            )
-            # bash `| head -N` / `| tail -N` → PowerShell Select-Object.
-            command = re.sub(
-                r"\|\s*head\s+-n\s+(\d+)",
-                lambda m: f"| Select-Object -First {m.group(1)}",
-                command,
-                flags=re.IGNORECASE,
-            )
-            command = re.sub(
-                r"\|\s*head\s+-(\d+)",
-                lambda m: f"| Select-Object -First {m.group(1)}",
-                command,
-                flags=re.IGNORECASE,
-            )
-            command = re.sub(
-                r"\|\s*tail\s+-n\s+(\d+)",
-                lambda m: f"| Select-Object -Last {m.group(1)}",
-                command,
-                flags=re.IGNORECASE,
-            )
-            command = re.sub(
-                r"\|\s*tail\s+-(\d+)",
-                lambda m: f"| Select-Object -Last {m.group(1)}",
-                command,
-                flags=re.IGNORECASE,
-            )
-            # cmd.exe `start cmd /k ...` is cmd.exe syntax; Start-Process is the PS form.
-            # Common agent mistake: `start cmd /k python foo.py`
-            start_cmd = re.match(
-                r"^\s*start\s+cmd\s+/k\s+(.+)$",
-                command,
-                flags=re.IGNORECASE,
-            )
-            if start_cmd:
-                inner = start_cmd.group(1).strip().replace("'", "''")
-                command = (
-                    "Start-Process -FilePath cmd.exe "
-                    f"-ArgumentList '/k','{inner}'"
-                )
         return command, actual_shell
+
+    @staticmethod
+    def _ps_single_quote(text: str) -> str:
+        """PowerShell 安全字符串字面量（luna R4-1）。
+
+        用单引号包裹，内部 ' 转义为 ''（PS 语义）。避免 json.dumps 的
+        反斜杠转义（PS 不认）与 $ 变量展开（双引号会展开）。
+        """
+        return "'" + (text or "").replace("'", "''") + "'"
+
+    def _translate_grep_find(self, command: str) -> str:
+        """B7: POSIX grep/find → PowerShell（pattern 参数在引号内，
+        必须早于引号保护解析）。
+
+        B8: 支持 ``;`` 分隔链中的 grep（如 ``cd X ; grep ...``）——
+        用 re.sub 匹配任意命令位置，不限于开头。
+        """
+        # POSIX `grep -n "pat" file` / `grep 'pat' file` → Select-String
+        # （支持多文件参数 file1 file2；DOTALL 支持真实换行 pattern）。
+        def _grep_repl(m):
+            return (
+                "Select-String -Pattern "
+                + self._ps_single_quote(m.group(2))
+                + " "
+                + m.group(3)
+            )
+
+        command = re.sub(
+            r"(?<![\w-])\bgrep\b(?:\s+-n)?\s+"
+            r"([\"'])(.*?)\1\s+(\S.*)$",
+            _grep_repl,
+            command,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        # POSIX `grep -rl "pat" dir` → Select-String 递归目录搜索
+        command = re.sub(
+            r"(?<![\w-])\bgrep\b(?:\s+-rl|\s+-r\s+-l)?\s+"
+            r"([\"'])(.*?)\1\s+(\S+)(\s+\S+)*",
+            lambda m: (
+                "Get-ChildItem "
+                + m.group(3)
+                + " -Recurse -File | Select-String -Pattern "
+                + self._ps_single_quote(m.group(2))
+            ),
+            command,
+            flags=re.IGNORECASE,
+        )
+        # POSIX `find <path> -name "pat"` → Get-ChildItem -Recurse -Filter
+        command = re.sub(
+            r"(?<![\w-])\bfind\s+(\S+)(?:\s+[^|;]*?)?\s+-name\s+"
+            r"([\"'])(.*?)\2",
+            lambda m: (
+                "Get-ChildItem -Path "
+                + m.group(1)
+                + " -Recurse -Filter "
+                + self._ps_single_quote(m.group(3))
+            ),
+            command,
+            flags=re.IGNORECASE,
+        )
+        return command
+
+    def _translate_powershell_outside_quotes(self, command: str) -> str:
+        """对 powershell 分支的引号外文本应用全部 POSIX→PS 转换。"""
+
+        # Windows PowerShell 5.x rejects bash/cmd `&&`; PS 7+ accepts it.
+        # Prefer `;` so agent-written cmd-style chains run on WinPS 5.
+        if "&&" in command:
+            command = re.sub(r"\s*&&\s*", "; ", command)
+        # A bare `&` used as a command separator (bash habit:
+        # `cmd1 & cmd2 & cmd3`) is a parser error on PowerShell 5, where
+        # `&` is the call operator. Rewrite separators to `;`, while
+        # preserving the call-operator form `& 'path'` / `& $var`.
+        command = re.sub(
+            r"\s+&\s+(?=[^'\"$\s&])",
+            "; ",
+            command,
+        )
+        # cmd.exe `cd /d X` → PowerShell Set-Location
+        command = re.sub(
+            r"\bcd\s+/d\s+",
+            "Set-Location ",
+            command,
+            flags=re.IGNORECASE,
+        )
+        # POSIX `ls -la` / `ls -l` / `ls -a` → PowerShell Get-ChildItem,
+        # whose aliased `ls` rejects the GNU-style `-la` flag bundles.
+        command = re.sub(
+            r"(?<![\w-])\bls\s+(-[alA]+)\b",
+            lambda m: "Get-ChildItem -Force"
+            if "a" in m.group(1)
+            else "Get-ChildItem",
+            command,
+            flags=re.IGNORECASE,
+        )
+        # cmd.exe `dir /b <path>` (bare-name listing) → Get-ChildItem -Name.
+        # Without this, WinPS parses `/b` as a path and errors.
+        command = re.sub(
+            r"\bdir\s+/b\b(\s+\S+)?",
+            lambda m: "Get-ChildItem -Name" + (m.group(1) or ""),
+            command,
+            flags=re.IGNORECASE,
+        )
+        # cmd.exe `dir <path> /b` (flag after path) → same translation.
+        command = re.sub(
+            r"\bdir\b(\s+\S+)\s+/b\b",
+            lambda m: "Get-ChildItem -Name" + m.group(1),
+            command,
+            flags=re.IGNORECASE,
+        )
+        # cmd.exe stdout discard `2>nul` / `2>NUL` → PowerShell `2>$null`.
+        command = re.sub(
+            r"\b2>nul\b",
+            "2>$null",
+            command,
+            flags=re.IGNORECASE,
+        )
+        # B7: POSIX stdout discard `2>/dev/null` → PowerShell `2>$null`.
+        command = re.sub(
+            r"\b2>/dev/null\b",
+            "2>$null",
+            command,
+            flags=re.IGNORECASE,
+        )
+        # B7: POSIX `pwd` → PowerShell Get-Location（PS 别名可用但显式更稳）。
+        # 只在命令位置转换（行首 / ; / 起始），避免误改引号内文本。
+        command = re.sub(
+            r"(^|;\s*)(?<![\w-])\bpwd\b",
+            r"\1Get-Location",
+            command,
+            flags=re.IGNORECASE,
+        )
+        # B7: POSIX `cat file` → PowerShell Get-Content（PS 无 cat 命令）。
+        cat_match = re.match(
+            r"(?<![\w-])\bcat\s+(\S+)",
+            command,
+            flags=re.IGNORECASE,
+        )
+        if cat_match:
+            cat_file = cat_match.group(1)
+            if not cat_file.startswith(("|", "&", ";")):
+                command = "Get-Content " + cat_file + command[cat_match.end():]
+        # B7: POSIX `cmd1 || cmd2` 失败回退 → `cmd1; if (-not $?) { cmd2 }`。
+        # 只处理单一 || 链（多段链不强制，避免误转换）。
+        if "||" in command and command.count("||") == 1:
+            left, _, right = command.partition("||")
+            left = left.strip().rstrip(";").strip()
+            right = right.strip()
+            if left and right:
+                command = f"{left}; if (-not $?) {{ {right} }}"
+                # luna R3-5: || 重写后 right 内的 pwd 处于 `{ ` 后，需再转换一次。
+                command = re.sub(
+                    r"(\{\s*)(?<![\w-])\bpwd\b",
+                    r"\1Get-Location",
+                    command,
+                    flags=re.IGNORECASE,
+                )
+        # bash `| head -N` / `| tail -N` → PowerShell Select-Object.
+        command = re.sub(
+            r"\|\s*head\s+-n\s+(\d+)",
+            lambda m: f"| Select-Object -First {m.group(1)}",
+            command,
+            flags=re.IGNORECASE,
+        )
+        command = re.sub(
+            r"\|\s*head\s+-(\d+)",
+            lambda m: f"| Select-Object -First {m.group(1)}",
+            command,
+            flags=re.IGNORECASE,
+        )
+        command = re.sub(
+            r"\|\s*tail\s+-n\s+(\d+)",
+            lambda m: f"| Select-Object -Last {m.group(1)}",
+            command,
+            flags=re.IGNORECASE,
+        )
+        command = re.sub(
+            r"\|\s*tail\s+-(\d+)",
+            lambda m: f"| Select-Object -Last {m.group(1)}",
+            command,
+            flags=re.IGNORECASE,
+        )
+        # cmd.exe `start cmd /k ...` is cmd.exe syntax; Start-Process is the PS form.
+        # Common agent mistake: `start cmd /k python foo.py`
+        start_cmd = re.match(
+            r"^\s*start\s+cmd\s+/k\s+(.+)$",
+            command,
+            flags=re.IGNORECASE,
+        )
+        if start_cmd:
+            inner = start_cmd.group(1).strip().replace("'", "''")
+            command = (
+                "Start-Process -FilePath cmd.exe "
+                f"-ArgumentList '/k','{inner}'"
+            )
+        return command
 
     def _build_command(self, command: str) -> list[str]:
         translated, actual_shell = self.translate_command(command)

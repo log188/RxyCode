@@ -1,0 +1,36 @@
+结论：**FAIL**
+
+## 判据 1-6
+
+1. **append-only 会话恢复：基本通过**  
+   已实现最长重叠匹配，完整重复和任意长度重叠测试通过。  
+   但 `append_from_dicts()` 仅处理 `user/assistant`，会静默丢弃 `system/tool` 消息，完整历史恢复仍不通用。
+
+2. **稳定 session_id / prompt cache key：通过**  
+   `_session_id` 未随 turn 变化。
+
+3. **prewarm 签名校验：通过**  
+   已纳入 model、cwd 和完整排序后的 `mcpServers` JSON。
+
+4. **可选 keep-alive：不通过**  
+   虽然调用了 `_raw_stream` 并消费首 chunk，但构造的：
+   ```python
+   req = build_keep_alive_request(...)
+   ```
+   从未传给实际请求；`_raw_stream` 调用也没有传递 `max_tokens=1`。因此无法证明真实发送的 provider 请求是 `max_tokens=1`，R4 阻断项 2 未真正闭环。
+
+5. **配置变化触发真实 prewarm 重建：不通过**  
+   `PrewarmState.rebuild()` 仅更新内存中的签名和时间戳；`token_stats.record_application_cache(...)` 只是记录指标，没有发起真实前缀重建/prewarm 请求。R4 阻断项 3 仍未实质修复。
+
+6. **恢复后真实 usage/命中率记录：通过**  
+   现有 `_record_usage` 链路可记录真实 usage，相关测试通过。
+
+## CB1-CB8
+
+无法全部判定为通过：至少以下硬约束存在阻断：
+
+- **CB：真实 keep-alive 请求必须携带 `max_tokens=1`** —— 当前未满足。
+- **CB：prewarm 必须执行真实重建，而非仅更新状态/指标** —— 当前未满足。
+- **CB：历史消息不得静默丢失** —— `append_from_dicts()` 对非 user/assistant 消息不完整。
+
+测试通过和 eval GATE PASS 不足以覆盖上述集成缺陷；当前新增测试主要验证辅助函数、源码字符串和内存状态，未验证实际 provider 请求参数及真实 prewarm 行为。

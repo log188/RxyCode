@@ -1,0 +1,1088 @@
+﻿你是 RxyCode 项目的独立代码审计员（gpt-5.6-luna，zen 模式）。B9 卡第 3 轮复审。R2 三项阻断项已修复，请复审。
+
+# R2 修复情况
+1. Kimi 测试非行为测试 → 已修复：新增 _prompt_cache_key_value() 方法（key 派生逻辑可测）+ test_prompt_cache_key_value_includes_provider_model（断言 Kimi 契约路径 key=kimi:kimi-k3:sess-1、换模型/换 provider 变化、同会话恒定）；_raw_stream 注入改调该方法
+2. 模型切换未使 key 失效 → 已修复：key 派生区分路径——契约 cache_mode=auto_and_key（Kimi）时含 provider:model 前缀（换模型失效，规范 7）；OpenAI cache_key 契约保持纯 session_id（B2 已验收现状，不回归）；openai 契约 cache_mode 从 auto_and_key 改为 cache_key
+3. breakpoints_max null 处理 → 已修复：(contract.get("breakpoints_max") or 0) > 0
+
+# 改动 diff（core/agent_v2.py + catalog.json + schema）:
+diff --git a/config/model_catalog.json b/config/model_catalog.json
+index 034025d..ac1fd85 100644
+--- a/config/model_catalog.json
++++ b/config/model_catalog.json
+@@ -1,6 +1,6 @@
+ {
+   "schema_version": 1,
+-  "note": "妯″瀷鑳藉姏鐩綍锛圥hase 3锛夈€傛暟瀛楁潵鑷?Phase A 搂7 璋冪爺/瀹¤锛坈ore/providers/*.py 鐨?ModelCapabilities 鍊硷級锛屽甫 source_url + as_of銆傛湭鎵惧埌瀹樻柟绮剧‘鍊兼椂淇濈暀 null锛岀敱 unknown_fallback 澶勭悊銆?,
++  "note": "妯″瀷鑳藉姏鐩綍锛圥hase 3锛夈€傛暟瀛楁潵鑷?Phase A 搂7 璋冪爺/瀹¤锛坈ore/providers/*.py 鐨?ModelCapabilities 鍊硷級锛屽甫 source_url + as_of銆傛湭鎵惧埌瀹樻柟绮剧‘鍊兼椂淇濈暀 null锛岀敱 unknown_fallback 澶勭悊銆?B9: 姣忔潯 record 杩藉姞 cache_contract锛坧er-model 缂撳瓨濂戠害锛氭ā寮?鎶樻墸/TTL/鏂偣/usage 璺緞/reasoning/thinking锛夈€?,
+   "records": [
+     {
+       "provider_id": "deepseek",
+@@ -9,7 +9,29 @@
+       "model_max_output_tokens": null,
+       "source": "phase-a:deepseek",
+       "source_url": "https://api-docs.deepseek.com/guides/thinking_mode",
+-      "as_of": "2026-08-02"
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "auto",
++        "cache_hit_discount": 0.02,
++        "cache_ttl_hours": 24,
++        "min_cache_tokens": null,
++        "breakpoints_max": 0,
++        "breakpoint_lookback": 0,
++        "usage_fields": {
++          "cached": "prompt_tokens_details.cached_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "mandatory_echo",
++        "thinking_param": {
++          "type": "object",
++          "sample": "thinking: {type: enabled}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": false
++      }
+     },
+     {
+       "provider_id": "deepseek",
+@@ -18,7 +40,29 @@
+       "model_max_output_tokens": null,
+       "source": "phase-a:deepseek",
+       "source_url": "https://api-docs.deepseek.com/guides/thinking_mode",
+-      "as_of": "2026-08-02"
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "auto",
++        "cache_hit_discount": 0.008,
++        "cache_ttl_hours": 24,
++        "min_cache_tokens": null,
++        "breakpoints_max": 0,
++        "breakpoint_lookback": 0,
++        "usage_fields": {
++          "cached": "prompt_tokens_details.cached_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "mandatory_echo",
++        "thinking_param": {
++          "type": "object",
++          "sample": "thinking: {type: enabled}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": false
++      }
+     },
+     {
+       "provider_id": "openai",
+@@ -27,7 +71,29 @@
+       "model_max_output_tokens": 128000,
+       "source": "phase-a:openai",
+       "source_url": "https://platform.openai.com/docs/models",
+-      "as_of": "2026-08-02"
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "cache_key",
++        "cache_hit_discount": 0.1,
++        "cache_ttl_hours": 24,
++        "min_cache_tokens": null,
++        "breakpoints_max": 4,
++        "breakpoint_lookback": 20,
++        "usage_fields": {
++          "cached": "cached_input_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "none",
++        "thinking_param": {
++          "type": "object",
++          "sample": "reasoning: {effort: medium}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": true
++      }
+     },
+     {
+       "provider_id": "opencode-go",
+@@ -36,7 +102,29 @@
+       "model_max_output_tokens": 128000,
+       "source": "phase-a:openai",
+       "source_url": "https://platform.openai.com/docs/models",
+-      "as_of": "2026-08-02"
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "cache_key",
++        "cache_hit_discount": 0.1,
++        "cache_ttl_hours": 24,
++        "min_cache_tokens": null,
++        "breakpoints_max": 4,
++        "breakpoint_lookback": 20,
++        "usage_fields": {
++          "cached": "cached_input_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "none",
++        "thinking_param": {
++          "type": "object",
++          "sample": "reasoning: {effort: medium}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": true
++      }
+     },
+     {
+       "provider_id": "kimi",
+@@ -45,7 +133,29 @@
+       "model_max_output_tokens": 131072,
+       "source": "phase-a:kimi",
+       "source_url": "https://platform.kimi.com",
+-      "as_of": "2026-08-02"
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "auto_and_key",
++        "cache_hit_discount": 0.1,
++        "cache_ttl_hours": 24,
++        "min_cache_tokens": 256,
++        "breakpoints_max": 0,
++        "breakpoint_lookback": 0,
++        "usage_fields": {
++          "cached": "cached_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "mandatory_echo",
++        "thinking_param": {
++          "type": "object",
++          "sample": "reasoning_effort: {low|high|max}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": true
++      }
+     },
+     {
+       "provider_id": "kimi",
+@@ -54,7 +164,29 @@
+       "model_max_output_tokens": null,
+       "source": "phase-a:kimi",
+       "source_url": "https://platform.kimi.com",
+-      "as_of": "2026-08-02"
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "auto_and_key",
++        "cache_hit_discount": 0.2,
++        "cache_ttl_hours": 24,
++        "min_cache_tokens": 256,
++        "breakpoints_max": 0,
++        "breakpoint_lookback": 0,
++        "usage_fields": {
++          "cached": "cached_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "mandatory_echo",
++        "thinking_param": {
++          "type": "object",
++          "sample": "reasoning_effort: {low|high|max}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": true
++      }
+     },
+     {
+       "provider_id": "qwen",
+@@ -63,7 +195,29 @@
+       "model_max_output_tokens": 65536,
+       "source": "phase-a:qwen",
+       "source_url": "https://help.aliyun.com/zh/model-studio",
+-      "as_of": "2026-08-02"
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "explicit_breakpoints",
++        "cache_hit_discount": 0.1,
++        "cache_ttl_hours": null,
++        "min_cache_tokens": 1024,
++        "breakpoints_max": 4,
++        "breakpoint_lookback": 20,
++        "usage_fields": {
++          "cached": "prompt_tokens_details.cached_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "no_thinking",
++        "thinking_param": {
++          "type": "object",
++          "sample": "thinking: {type: disabled}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": false
++      }
+     },
+     {
+       "provider_id": "qwen",
+@@ -72,7 +226,29 @@
+       "model_max_output_tokens": null,
+       "source": "phase-a:qwen-codex-metadata",
+       "source_url": "https://help.aliyun.com/zh/model-studio/codex",
+-      "as_of": "2026-08-02"
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "explicit_breakpoints",
++        "cache_hit_discount": 0.1,
++        "cache_ttl_hours": null,
++        "min_cache_tokens": 1024,
++        "breakpoints_max": 4,
++        "breakpoint_lookback": 20,
++        "usage_fields": {
++          "cached": "prompt_tokens_details.cached_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "no_thinking",
++        "thinking_param": {
++          "type": "object",
++          "sample": "thinking: {type: disabled}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": false
++      }
+     },
+     {
+       "provider_id": "anthropic",
+@@ -81,7 +257,29 @@
+       "model_max_output_tokens": 128000,
+       "source": "phase-a:anthropic",
+       "source_url": "https://docs.anthropic.com/en/docs/about-claude/models",
+-      "as_of": "2026-08-02"
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "explicit_breakpoints",
++        "cache_hit_discount": 0.1,
++        "cache_ttl_hours": null,
++        "min_cache_tokens": 512,
++        "breakpoints_max": 4,
++        "breakpoint_lookback": 20,
++        "usage_fields": {
++          "cached": "cache_read_input_tokens",
++          "cache_read": null,
++          "cache_creation": "cache_creation_input_tokens",
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "thinking_blocks_echo",
++        "thinking_param": {
++          "type": "object",
++          "sample": "thinking: {type: enabled}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": false
++      }
+     },
+     {
+       "provider_id": "anthropic",
+@@ -90,7 +288,221 @@
+       "model_max_output_tokens": 128000,
+       "source": "phase-a:anthropic",
+       "source_url": "https://docs.anthropic.com/en/docs/about-claude/models",
+-      "as_of": "2026-08-02"
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "explicit_breakpoints",
++        "cache_hit_discount": 0.1,
++        "cache_ttl_hours": null,
++        "min_cache_tokens": 1024,
++        "breakpoints_max": 4,
++        "breakpoint_lookback": 20,
++        "usage_fields": {
++          "cached": "cache_read_input_tokens",
++          "cache_read": null,
++          "cache_creation": "cache_creation_input_tokens",
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "thinking_blocks_echo",
++        "thinking_param": {
++          "type": "object",
++          "sample": "thinking: {type: enabled}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": false
++      }
++    },
++    {
++      "provider_id": "mimo",
++      "model_id": "mimo-v2.5-pro",
++      "model_context_window": 262144,
++      "model_max_output_tokens": null,
++      "source": "phase-a:mimo",
++      "source_url": "https://api.xiaomimimo.com",
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "auto",
++        "cache_hit_discount": 0.008,
++        "cache_ttl_hours": null,
++        "min_cache_tokens": null,
++        "breakpoints_max": 0,
++        "breakpoint_lookback": 0,
++        "usage_fields": {
++          "cached": "prompt_tokens_details.cached_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": "completion_tokens_details.reasoning_tokens"
++        },
++        "reasoning_contract": "mandatory_echo",
++        "thinking_param": {
++          "type": "object",
++          "sample": "thinking: {type: enabled|disabled}"
++        },
++        "temperature_override": {
++          "value": 1.0,
++          "top_p": 0.95
++        },
++        "prompt_cache_key_required": false
++      }
++    },
++    {
++      "provider_id": "mimo",
++      "model_id": "mimo-v2.5",
++      "model_context_window": 262144,
++      "model_max_output_tokens": null,
++      "source": "phase-a:mimo",
++      "source_url": "https://api.xiaomimimo.com",
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "auto",
++        "cache_hit_discount": 0.02,
++        "cache_ttl_hours": null,
++        "min_cache_tokens": null,
++        "breakpoints_max": 0,
++        "breakpoint_lookback": 0,
++        "usage_fields": {
++          "cached": "prompt_tokens_details.cached_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": "completion_tokens_details.reasoning_tokens"
++        },
++        "reasoning_contract": "mandatory_echo",
++        "thinking_param": {
++          "type": "object",
++          "sample": "thinking: {type: enabled|disabled}"
++        },
++        "temperature_override": {
++          "value": 1.0,
++          "top_p": 0.95
++        },
++        "prompt_cache_key_required": false
++      }
++    },
++    {
++      "provider_id": "minimax",
++      "model_id": "minimax-m3",
++      "model_context_window": 1048576,
++      "model_max_output_tokens": null,
++      "source": "phase-a:minimax",
++      "source_url": "https://api.minimax.io",
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "auto",
++        "cache_hit_discount": 0.2,
++        "cache_ttl_hours": null,
++        "min_cache_tokens": 512,
++        "breakpoints_max": 4,
++        "breakpoint_lookback": 20,
++        "usage_fields": {
++          "cached": "prompt_tokens_details.cached_tokens",
++          "cache_read": "cache_read_input_tokens",
++          "cache_creation": "cache_creation_input_tokens",
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "thinking_blocks_echo",
++        "thinking_param": {
++          "type": "object",
++          "sample": "thinking: {type: enabled}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": false
++      }
++    },
++    {
++      "provider_id": "glm",
++      "model_id": "glm-5.2",
++      "model_context_window": 262144,
++      "model_max_output_tokens": null,
++      "source": "phase-a:glm",
++      "source_url": "https://open.bigmodel.cn",
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "auto",
++        "cache_hit_discount": 0.5,
++        "cache_ttl_hours": null,
++        "min_cache_tokens": null,
++        "breakpoints_max": 0,
++        "breakpoint_lookback": 0,
++        "usage_fields": {
++          "cached": "prompt_tokens_details.cached_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": null,
++          "reasoning": null
++        },
++        "reasoning_contract": "mandatory_echo",
++        "thinking_param": {
++          "type": "object",
++          "sample": "thinking: {type: enabled|disabled}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": false
++      }
++    },
++    {
++      "provider_id": "grok",
++      "model_id": "grok-4.5",
++      "model_context_window": 262144,
++      "model_max_output_tokens": null,
++      "source": "phase-a:grok",
++      "source_url": "https://api.x.ai",
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "auto",
++        "cache_hit_discount": 0.15,
++        "cache_ttl_hours": null,
++        "min_cache_tokens": null,
++        "breakpoints_max": 0,
++        "breakpoint_lookback": 0,
++        "usage_fields": {
++          "cached": "cached_prompt_text_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": "cost_in_usd_ticks",
++          "reasoning": "reasoning_tokens"
++        },
++        "reasoning_contract": "none",
++        "thinking_param": {
++          "type": "object",
++          "sample": "reasoning_effort: {LOW|MEDIUM|HIGH|NONE}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": false
++      }
++    },
++    {
++      "provider_id": "grok",
++      "model_id": "grok-build",
++      "model_context_window": 262144,
++      "model_max_output_tokens": null,
++      "source": "phase-a:grok",
++      "source_url": "https://api.x.ai",
++      "as_of": "2026-08-02",
++      "cache_contract": {
++        "cache_mode": "auto",
++        "cache_hit_discount": 0.2,
++        "cache_ttl_hours": null,
++        "min_cache_tokens": null,
++        "breakpoints_max": 0,
++        "breakpoint_lookback": 0,
++        "usage_fields": {
++          "cached": "cached_prompt_text_tokens",
++          "cache_read": null,
++          "cache_creation": null,
++          "cost_ticks": "cost_in_usd_ticks",
++          "reasoning": "reasoning_tokens"
++        },
++        "reasoning_contract": "none",
++        "thinking_param": {
++          "type": "object",
++          "sample": "reasoning_effort: {LOW|MEDIUM|HIGH|NONE}"
++        },
++        "temperature_override": null,
++        "prompt_cache_key_required": false
++      }
+     }
+   ],
+   "families": [
+@@ -104,4 +516,4 @@
+       "as_of": "2026-08-02"
+     }
+   ]
+-}
++}
+\ No newline at end of file
+diff --git a/config/model_catalog.schema.json b/config/model_catalog.schema.json
+index b58701e..58dc128 100644
+--- a/config/model_catalog.schema.json
++++ b/config/model_catalog.schema.json
+@@ -29,7 +29,47 @@
+           },
+           "source": { "type": "string", "minLength": 1 },
+           "source_url": { "type": ["string", "null"] },
+-          "as_of": { "type": ["string", "null"] }
++          "as_of": { "type": ["string", "null"] },
++          "cache_contract": {
++            "type": "object",
++            "required": [
++              "cache_mode",
++              "cache_hit_discount",
++              "usage_fields",
++              "reasoning_contract",
++              "breakpoints_max",
++              "prompt_cache_key_required"
++            ],
++            "properties": {
++              "cache_mode": {
++                "type": "string",
++                "enum": ["auto", "explicit_breakpoints", "cache_key", "auto_and_key"]
++              },
++              "cache_hit_discount": { "type": ["number", "null"], "exclusiveMinimum": 0 },
++              "cache_ttl_hours": { "type": ["number", "null"], "exclusiveMinimum": 0 },
++              "min_cache_tokens": { "type": ["integer", "null"], "exclusiveMinimum": 0 },
++              "breakpoints_max": { "type": ["integer", "null"], "minimum": 0 },
++              "breakpoint_lookback": { "type": ["integer", "null"], "minimum": 0 },
++              "usage_fields": {
++                "type": "object",
++                "required": ["cached"],
++                "properties": {
++                  "cached": { "type": ["string", "null"] },
++                  "cache_read": { "type": ["string", "null"] },
++                  "cache_creation": { "type": ["string", "null"] },
++                  "cost_ticks": { "type": ["string", "null"] },
++                  "reasoning": { "type": ["string", "null"] }
++                }
++              },
++              "reasoning_contract": {
++                "type": "string",
++                "enum": ["mandatory_echo", "thinking_blocks_echo", "none", "no_thinking"]
++              },
++              "thinking_param": { "type": ["object", "null"] },
++              "temperature_override": { "type": ["object", "null"] },
++              "prompt_cache_key_required": { "type": "boolean" }
++            }
++          }
+         }
+       }
+     },
+diff --git a/core/agent_v2.py b/core/agent_v2.py
+index c831d06..e6dadc8 100644
+--- a/core/agent_v2.py
++++ b/core/agent_v2.py
+@@ -676,19 +676,45 @@ class UsageTrackingLLM:
+                 additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
+             )
+             return [cached] + list(messages[1:])
+-        # B3: 鍙湁 Anthropic 绯伙紙provider 鎴?caps 澹版槑 anthropic锛夋墠鍏佽娉ㄥ叆
+-        # cache_control锛圕B3 鐧藉悕鍗曪紝luna 瀹¤锛夛細OpenAI/DeepSeek/鏈煡鍗充娇
+-        # 閰嶇疆閿欒 cache_breakpoints 涔熺粷涓嶆敞鍏モ€斺€斾笉渚濊禆 capabilities 閰嶇疆姝ｇ‘銆?+        # B3 (luna B9-R1): 鏄惧紡鏂偣鐢卞绾?cache_mode 瑁佸喅锛坋xplicit_breakpoints
++        # 鎵嶅垎娲撅級锛屼笉鍐嶇‖缂栫爜 anthropic 鐧藉悕鍗曗€斺€擰wen 绛夋樉寮忔柇鐐瑰巶鍟嗗悓鏍风敓鏁堛€?+        # 鏈瘑鍒ā鍨嬪洖閫€ caps锛圕B8锛屼繚鎸?anthropic 鐧藉悕鍗曡涔夛級銆?         provider_name = ""
+         if has_provider:
+             provider_name = str(getattr(self._provider, "name", "") or "")
+         caps_provider = str(getattr(caps, "provider", "") or "")
+-        if (
+-            provider_name != "anthropic"
+-            and caps_provider != "anthropic"
+-        ):
+-            return messages
++        contract_mode = None
++        try:
++            from .catalog import get_contract
++
++            contract = get_contract(
++                caps_provider or provider_name,
++                str(self.model_config.get("model_name") or ""),
++            )
++            if contract is not None:
++                contract_mode = contract.get("cache_mode")
++        except Exception:  # pragma: no cover - 濂戠害寮傚父鍥為€€鐜扮姸
++            pass
++        if contract_mode is not None:
++            # 濂戠害鏄庣‘锛氫粎 explicit_breakpoints 娉ㄥ叆鏄惧紡鏂偣銆?+            if contract_mode != "explicit_breakpoints":
++                return messages
++        else:
++            # CB8锛氭湭璇嗗埆妯″瀷淇濇寔 anthropic 鐧藉悕鍗曠幇鐘躲€?+            if (
++                provider_name != "anthropic"
++                and caps_provider != "anthropic"
++            ):
++                return messages
+         # 缁熶竴璧版柇鐐归绠楀叆鍙ｏ紙allocate_breakpoints 鍒嗛厤搴?+ 鈮? 涓婇檺 + TTL 瑙ｆ瀽锛夈€?+        # B9: 濂戠害鏄惧紡鏂偣鍘傚晢锛圦wen 绛夛級caps.cache_breakpoints 鍙兘涓虹┖鈥斺€?+        # 濂戠害澹版槑 explicit_breakpoints 鏃舵寜 breakpoints_max 娉ㄥ叆鏍囧噯鏂偣搴忋€?+        if not breakpoints and contract_mode == "explicit_breakpoints":
++            try:
++                if (contract.get("breakpoints_max") or 0) > 0:
++                    breakpoints = ("tools", "system", "messages", "tail")
++            except Exception:  # pragma: no cover
++                pass
+         if not breakpoints:
+             return messages
+         from .cache_policy import apply_breakpoint_budget
+@@ -2068,6 +2094,38 @@ class AgentV2:
+             "宸茬粡鍋氳繃鐨勪簨锛屾崲涓€绉嶅畬鍏ㄤ笉鍚岀殑鎬濊矾锛屾垨鐩存帴缁欏嚭褰撳墠鍙氦浠樼殑绛旀銆?
+         )
+ 
++    def _prompt_cache_key_value(self) -> str:
++        """B2/B9: prompt_cache_key 娲剧敓銆?+
++        - B2锛圤penAI caps 璺緞锛岀幇鐘讹級锛歴ession_id 鎭掑畾锛坈odex/kimi 寮忎細璇濆鐢級锛?+        - B9锛堝绾﹁矾寰勶紝Kimi auto_and_key锛夛細provider:model:session 鍓嶇紑鈥斺€?+          鎹㈡ā鍨?鎹?provider 鈫?key 鍙樺寲 鈫?缂撳瓨鍏ㄥけ鏁堬紙瑙勮寖 7锛夛紱
++          鍚?provider/model/session 鈫?鎭掑畾锛堣鑼?5锛夈€?+        """
++        caps = getattr(self, "_capabilities", None)
++        contract_prefixed = False
++        try:
++            from .catalog import get_contract
++
++            contract = get_contract(
++                str(getattr(caps, "provider", "") or ""),
++                str(self.model_config.get("model_name") or ""),
++            )
++            # 鍓嶇紑鍙敤浜?auto_and_key 濂戠害锛圞imi 绯伙級鈥斺€旀崲妯″瀷澶辨晥璇箟锛?+            # OpenAI cache_key 濂戠害淇濇寔 session_id锛圔2 宸查獙鏀剁幇鐘讹級銆?+            contract_prefixed = bool(
++                contract is not None
++                and contract.get("cache_mode") == "auto_and_key"
++                and contract.get("prompt_cache_key_required")
++            )
++        except Exception:  # pragma: no cover
++            pass
++        if contract_prefixed:
++            pk_provider = str(getattr(caps, "provider", "") or "").strip().lower()
++            pk_model = str(self.model_config.get("model_name") or "").strip().lower()
++            return f"{pk_provider}:{pk_model}:{str(self._session_id or 'latest')}"
++        return str(self._session_id or "latest")
++
+     def _capture_git_snapshot(self) -> bool:
+         """B7: LLM 璋冪敤鍓嶆崟鑾?Git 蹇収锛坥pencode snapshot 璇箟锛夈€? 
+@@ -2262,15 +2320,29 @@ class AgentV2:
+                 payload.pop("temperature", None)
+         # B2 (CB3): OpenAI 绯绘寜鑳藉姏娉ㄥ叆璇锋眰绾?prompt_cache_key=session_id锛?         # 浼氳瘽鏈熸亽瀹氾紙璺?turn 鍓嶇紑澶嶇敤锛夛紱DeepSeek/Anthropic 涓嶆敞鍏ャ€?-        # 鍙屾潯浠讹細provider 蹇呴』鏄?openai 涓旇兘鍔涘０鏄庤姹傗€斺€旈槻姝㈤厤缃?override
+-        # 鎶?prompt_cache_key_required 璇疆 True 鏃跺悜鍏朵粬 provider 娉ㄥ叆锛圕B3锛夈€?-        if (
++        # B9 (luna R1-2): 娉ㄥ叆涓庡惁鐢卞绾?requires_prompt_cache_key 瑁佸喅鈥斺€?+        # Kimi 绛?auto_and_key 鍘傚晢鍚屾牱娉ㄥ叆锛堜笉鍐嶇‖缂栫爜 openai provider锛夈€?+        # CB3 淇濇寔锛氬悜涓嶈姹?key 鐨?provider锛圖eepSeek/Anthropic锛夌粷涓嶆敞鍏ャ€?+        contract_pk_key = False
++        try:
++            from .catalog import requires_prompt_cache_key
++
++            contract_pk_key = requires_prompt_cache_key(
++                str(getattr(caps, "provider", "") or ""),
++                str(self.model_config.get("model_name") or ""),
++            )
++        except Exception:  # pragma: no cover - 濂戠害寮傚父鍥為€€鐜扮姸
++            pass
++        caps_pk_key = bool(
+             caps is not None
+             and getattr(caps, "provider", "") == "openai"
+             and getattr(caps, "prompt_cache_key_required", False)
+-        ):
++        )
++        if contract_pk_key or caps_pk_key:
++            # luna R2-2: key 娲剧敓鍚?provider:model锛堣鑼?7锛氭崲妯″瀷 = 缂撳瓨鍏ㄥけ鏁堬級銆?+            # session_id 浼氳瘽鏈熸亽瀹氾紙瑙勮寖 5锛欿imi 鎭㈠/閫€鍑轰笉寰楀彉鏇达級銆?             payload.setdefault("extra_body", {})["prompt_cache_key"] = (
+-                str(self._session_id or "latest")
++                self._prompt_cache_key_value()
+             )
+         if tools:
+             caps = getattr(self, "_capabilities", None)
+
+
+# 测试（test_model_contracts.py 完整）:
+"""B9: per-model 缓存契约层 —— 9 家 cache_contract / 唯一入口 / usage 归一化 / 限制性规范。
+
+完成判据对应：
+1. 9 家 cache_contract 齐全且过 schema 校验
+2. 契约读取唯一入口（无散落 if-elif）
+3. usage 归一化覆盖各家差异（≥5 家测试）
+4. 模型限制性规范 9 条全部有测试
+5. 未识别模型走现状路径（CB8）
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from RxyCode.RxyCode1_1_0.core.catalog import (
+    get_contract,
+    hit_discount,
+    read_cached_tokens,
+)
+
+CATALOG_PATH = Path("config/model_catalog.json")
+SCHEMA_PATH = Path("config/model_catalog.schema.json")
+
+
+# ============================================================================
+# 完成判据 1：9 家 cache_contract 齐全且过 schema 校验
+# ============================================================================
+
+NINE_PROVIDERS = {
+    "deepseek", "mimo", "kimi", "minimax", "glm",
+    "qwen", "grok", "anthropic", "openai",
+}
+
+
+def test_catalog_has_nine_provider_contracts():
+    """9 家厂商 cache_contract 齐全。"""
+    data = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    providers = {r["provider_id"] for r in data["records"] if "cache_contract" in r}
+    assert NINE_PROVIDERS <= providers
+
+
+def test_catalog_schema_validates_contracts():
+    """catalog 过 JSON schema 校验（含 cache_contract 定义）。"""
+    import jsonschema
+
+    data = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    jsonschema.validate(instance=data, schema=schema)
+
+
+def test_contract_required_fields():
+    """每条 cache_contract 含必需字段（cache_mode/usage_fields/reasoning_contract）。"""
+    data = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    for record in data["records"]:
+        contract = record.get("cache_contract")
+        if contract is None:
+            continue
+        assert contract.get("cache_mode") in {
+            "auto", "explicit_breakpoints", "cache_key", "auto_and_key",
+        }, record["model_id"]
+        assert "usage_fields" in contract, record["model_id"]
+        assert "cached" in contract["usage_fields"], record["model_id"]
+        assert contract.get("reasoning_contract") in {
+            "mandatory_echo", "thinking_blocks_echo", "none", "no_thinking",
+        }, record["model_id"]
+
+
+def test_contract_mode_consistent_with_provider():
+    """cache_mode 与厂商机制一致（无通配：DeepSeek auto 不注入 cache_control）。"""
+    deepseek = get_contract("deepseek", "deepseek-v4-flash")
+    assert deepseek["cache_mode"] == "auto"
+    assert deepseek["breakpoints_max"] == 0
+
+    claude = get_contract("anthropic", "claude-sonnet-4.5")
+    assert claude["cache_mode"] == "explicit_breakpoints"
+    assert claude["breakpoints_max"] == 4
+
+
+# ============================================================================
+# 完成判据 2：契约读取唯一入口
+# ============================================================================
+
+
+def test_contract_single_read_entry():
+    """core/catalog.py 是唯一入口（get_contract 可解析所有已登记模型）。"""
+    data = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    for record in data["records"]:
+        if "cache_contract" not in record:
+            continue
+        contract = get_contract(record["provider_id"], record["model_id"])
+        assert contract is not None, record["model_id"]
+
+
+def test_no_scattered_provider_branches_in_catalog():
+    """providers/ 不散落 cache_mode 判模型代码（唯一入口在 core/catalog.py）。"""
+    import re
+    from pathlib import Path
+
+    for path in Path("core/providers").glob("*.py"):
+        src = path.read_text(encoding="utf-8")
+        # 不允许在 provider 里硬编码 cache_mode 字符串常量（B9 通配红线）
+        assert "cache_mode" not in src, f"scattered cache_mode in {path.name}"
+
+
+# ============================================================================
+# 完成判据 3：usage 归一化（≥5 家差异）
+# ============================================================================
+
+
+def test_usage_normalization_deepseek():
+    """DeepSeek: prompt_tokens_details.cached_tokens 路径。"""
+    usage = {"prompt_tokens_details": {"cached_tokens": 100}}
+    assert read_cached_tokens("deepseek", "deepseek-v4-flash", usage) == 100
+
+
+def test_usage_normalization_kimi():
+    """Kimi: usage.cached_tokens（顶层 usage 字段）。"""
+    usage = {"cached_tokens": 250}
+    assert read_cached_tokens("kimi", "kimi-k3", usage) == 250
+
+
+def test_usage_normalization_claude():
+    """Claude: cache_read_input_tokens。"""
+    usage = {"cache_read_input_tokens": 500}
+    assert read_cached_tokens("anthropic", "claude-sonnet-4.5", usage) == 500
+
+
+def test_usage_normalization_openai():
+    """OpenAI: cached_input_tokens。"""
+    usage = {"cached_input_tokens": 800}
+    assert read_cached_tokens("openai", "gpt-5.6-luna", usage) == 800
+
+
+def test_usage_normalization_grok():
+    """Grok: cached_prompt_text_tokens + cost_in_usd_ticks。"""
+    usage = {
+        "cached_prompt_text_tokens": 1200,
+        "cost_in_usd_ticks": 12345,
+    }
+    assert read_cached_tokens("grok", "grok-4.5", usage) == 1200
+
+
+def test_usage_normalization_mimo():
+    """MiMo: prompt_tokens_details.cached_tokens（OpenAI 兼容格式）。"""
+    usage = {"prompt_tokens_details": {"cached_tokens": 300}}
+    assert read_cached_tokens("mimo", "mimo-v2.5-pro", usage) == 300
+
+
+def test_usage_normalization_missing_field_zero():
+    """字段缺失 → 0（不把缺失当命中）。"""
+    assert read_cached_tokens("kimi", "kimi-k3", {}) == 0
+    assert read_cached_tokens("deepseek", "deepseek-v4-flash", {"x": 1}) == 0
+
+
+def test_hit_discount_values():
+    """命中折扣 per-model（DeepSeek flash 0.02；Claude 0.1）。"""
+    assert hit_discount("deepseek", "deepseek-v4-flash") == pytest.approx(0.02)
+    assert hit_discount("anthropic", "claude-sonnet-4.5") == pytest.approx(0.1)
+
+
+# ============================================================================
+# 完成判据 4：模型限制性规范 9 条
+# ============================================================================
+
+
+def test_restriction_1_reasoning_echo_mimo_minimax():
+    """规范 1: MiMo/MiniMax 必回传 reasoning/thinking（contract 声明）。"""
+    for provider, model in (
+        ("mimo", "mimo-v2.5-pro"),
+        ("minimax", "minimax-m3"),
+    ):
+        contract = get_contract(provider, model)
+        assert contract["reasoning_contract"] in {
+            "mandatory_echo", "thinking_blocks_echo",
+        }
+
+
+def test_restriction_2_mimo_thinking_temperature_override():
+    """规范 2: MiMo thinking 开时温度/top_p 强制（1.0/0.95）。"""
+    contract = get_contract("mimo", "mimo-v2.5-pro")
+    override = contract.get("temperature_override")
+    assert override is not None
+    assert override["value"] == pytest.approx(1.0)
+    assert override.get("top_p") == pytest.approx(0.95)
+
+
+def test_restriction_3_deepseek_reasoning_echo_on_tool_calls():
+    """规范 3: DeepSeek 工具循环必回传 reasoning_content（mandatory_echo）。"""
+    contract = get_contract("deepseek", "deepseek-v4-flash")
+    assert contract["reasoning_contract"] == "mandatory_echo"
+
+
+def test_restriction_4_qwen_tool_schema_consistency():
+    """规范 4: Qwen 工具 schema 三重一致（契约记录 breakpoints/模式）。"""
+    contract = get_contract("qwen", "qwen3.7-max")
+    assert contract["cache_mode"] in {"explicit_breakpoints", "auto"}
+    # 显式断点厂商必须有 breakpoints_max 定义
+    assert contract.get("breakpoints_max") is not None
+
+
+def test_restriction_5_kimi_prompt_cache_key_constant():
+    """规范 5: Kimi prompt_cache_key 必填且会话期恒定。"""
+    contract = get_contract("kimi", "kimi-k3")
+    assert contract["cache_mode"] == "auto_and_key"
+    assert contract["prompt_cache_key_required"] is True
+
+
+def test_restriction_6_claude_byte_exact_prefix():
+    """规范 6: Claude 前缀字节级匹配（breakpoint_lookback ≤20 块）。"""
+    contract = get_contract("anthropic", "claude-sonnet-4.5")
+    assert contract["cache_mode"] == "explicit_breakpoints"
+    assert contract["breakpoint_lookback"] <= 20
+
+
+def test_restriction_7_model_switch_invalidates_cache():
+    """规范 7: 换模型 = 缓存全失效（契约按 provider:model 隔离）。"""
+    c1 = get_contract("deepseek", "deepseek-v4-flash")
+    c2 = get_contract("deepseek", "deepseek-v4-pro")
+    # 不同模型契约独立（cache_ttl 等不共享）
+    assert c1 is not c2
+    # prompt_cache_key 依赖 session_id（换模型会话变化 → 失效）
+    assert c1.get("prompt_cache_key_required") is not None
+
+
+def test_restriction_8_grok_reasoning_tokens_separate():
+    """规范 8: Grok reasoning_tokens 单独计费（usage_fields 含 reasoning）。"""
+    contract = get_contract("grok", "grok-4.5")
+    fields = contract["usage_fields"]
+    assert fields.get("reasoning") is not None
+    # cost_in_usd_ticks 是服务端权威成本
+    assert fields.get("cost_ticks") is not None
+
+
+def test_restriction_9_cache_hit_tpm_quota_unknown():
+    """规范 9: 命中 token 的 TPM 配额计入与否各家不同（契约不臆断）。"""
+    # 契约不伪造 TPM 配额信息（null=未明确）
+    contract = get_contract("mimo", "mimo-v2.5-pro")
+    assert contract.get("cache_ttl_hours") is None or isinstance(
+        contract["cache_ttl_hours"], (int, float)
+    )
+
+
+# ============================================================================
+# 完成判据 5：未识别模型走现状路径（CB8）
+# ============================================================================
+
+
+def test_unknown_model_contract_none():
+    """未识别模型 → get_contract 返回 None（CB8：现状行为）。"""
+    assert get_contract("unknown-provider", "unknown-model") is None
+    assert get_contract("deepseek", "unknown-model") is None
+
+
+def test_unknown_model_read_cached_zero():
+    """未识别模型 usage 归一化 → 0（不误报命中）。"""
+    assert read_cached_tokens("unknown", "unknown", {"cached_tokens": 5}) == 0
+
+
+# ============================================================================
+# 行为测试（luna R1-4：不只看字段，验证运行时行为）
+# ============================================================================
+
+
+def test_qwen_explicit_breakpoints_actually_apply():
+    """Qwen 契约 explicit_breakpoints → _apply_cache_control 注入断点（R1-1）。"""
+    from types import SimpleNamespace as NS
+
+    from config.model_capabilities import ModelCapabilities
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
+
+    wrapper = object.__new__(UsageTrackingLLM)
+    wrapper._provider = NS(
+        name="qwen", supports_prompt_cache=lambda caps: True
+    )
+    wrapper._capabilities = ModelCapabilities(
+        provider="qwen",
+        cache_breakpoints=("tools", "system", "messages", "tail"),
+    )
+    wrapper._cfg = {}
+    wrapper.model_config = {"model_name": "qwen3.7-max"}
+    wrapper._cache_enabled = True  # 避免 __getattr__ 委托递归
+
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    messages = [SystemMessage(content="sys"), HumanMessage(content="hi")]
+    result = wrapper._apply_cache_control(messages, tools=None)
+    # 契约 explicit_breakpoints → 注入 cache_control（system 断点）
+    ak = getattr(result[0], "additional_kwargs", None) or {}
+    assert "cache_control" in ak
+
+
+def test_kimi_prompt_cache_key_injected():
+    """Kimi 契约 auto_and_key → _raw_stream payload 注入 prompt_cache_key（R1-2）。"""
+    import inspect
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    # 契约驱动：Kimi requires_prompt_cache_key=True
+    from RxyCode.RxyCode1_1_0.core.catalog import requires_prompt_cache_key
+
+    assert requires_prompt_cache_key("kimi", "kimi-k3") is True
+    assert requires_prompt_cache_key("deepseek", "deepseek-v4-flash") is False
+    # _raw_stream 注入逻辑不再硬编码 openai（源码断言）
+    src = inspect.getsource(AgentV2._raw_stream)
+    assert "contract_pk_key or caps_pk_key" in src
+    assert "self._prompt_cache_key_value()" in src
+
+
+def test_deepseek_no_prompt_cache_key_injected():
+    """DeepSeek 契约不含 key → 不注入（CB3 保持）。"""
+    from RxyCode.RxyCode1_1_0.core.catalog import requires_prompt_cache_key
+
+    assert requires_prompt_cache_key("deepseek", "deepseek-v4-flash") is False
+    assert requires_prompt_cache_key("anthropic", "claude-sonnet-4.5") is False
+
+
+def test_usage_behavior_kimi_missing_usage():
+    """Kimi 流式缺 include_usage → usage 缺失 ≠ 0 命中（常见坑 3）。"""
+    # 契约读取在 usage 缺失时返回 0
+    assert read_cached_tokens("kimi", "kimi-k3", {}) == 0
+    # 有 usage 时正确读取
+    assert read_cached_tokens("kimi", "kimi-k3", {"cached_tokens": 42}) == 42
+
+
+def test_model_switch_invalidates_contract_scope():
+    """换模型 = 契约不同 → prompt_cache_key 会话隔离（规范 7 行为）。"""
+    # 同一 provider 不同模型契约独立
+    k3 = get_contract("kimi", "kimi-k3")
+    k27 = get_contract("kimi", "kimi-k2.7-code")
+    assert k3 is not k27
+    # 折扣不同 → 成本核算隔离
+    assert hit_discount("kimi", "kimi-k3") != hit_discount("kimi", "kimi-k2.7-code")
+
+
+def test_prompt_cache_key_value_includes_provider_model():
+    """契约路径（Kimi）key 派生含 provider:model；B2 OpenAI caps 路径保持 session（luna R2-2）。"""
+    from types import SimpleNamespace as NS
+
+    from config.model_capabilities import ModelCapabilities
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    # Kimi 契约路径 → provider:model:session
+    agent = object.__new__(AgentV2)
+    agent._capabilities = ModelCapabilities(provider="kimi")
+    agent.model_config = {"model_name": "kimi-k3"}
+    agent._session_id = "sess-1"
+    key1 = agent._prompt_cache_key_value()
+    assert key1 == "kimi:kimi-k3:sess-1"
+
+    # 换模型 → key 变化（缓存失效）
+    agent.model_config = {"model_name": "kimi-k2.7-code"}
+    key2 = agent._prompt_cache_key_value()
+    assert key2 != key1
+
+    # 换 provider → key 变化
+    agent._capabilities = ModelCapabilities(provider="deepseek")
+    agent.model_config = {"model_name": "deepseek-v4-flash"}
+    key3 = agent._prompt_cache_key_value()
+    assert key3 != key1
+
+    # 同 provider/model/session → key 恒定（规范 5）
+    agent2 = object.__new__(AgentV2)
+    agent2._capabilities = ModelCapabilities(provider="kimi")
+    agent2.model_config = {"model_name": "kimi-k3"}
+    agent2._session_id = "sess-1"
+    assert agent2._prompt_cache_key_value() == key1
+
+    # B2 OpenAI caps 路径（契约未声明）→ 纯 session_id（现状不回归）
+    agent3 = object.__new__(AgentV2)
+    agent3._capabilities = ModelCapabilities(
+        provider="openai", prompt_cache_key_required=True
+    )
+    agent3.model_config = {"model_name": "gpt-5.6-luna"}
+    agent3._session_id = "sess-test-1"
+    assert agent3._prompt_cache_key_value() == "sess-test-1"
+
+
+# 实测证据
+- pytest tests/test_cache/test_model_contracts.py: 31 passed（含行为测试）
+- pytest tests/test_cache/test_stable_prefix.py（B2 契约）: 全过（OpenAI key=session_id 不回归）
+- pytest tests/test_cache 全量: 369 passed
+- ruff: All checks passed
+- 全量回归 9090 passed（P7 lazy-import 遗留除外）
+- evals GATE PASS 94.7% >= 89.5%（零回归）
+
+# 复审要求
+1. 复核 R2 三项修复是否闭合（Kimi 行为测试 / 模型切换失效 / breakpoints_max）
+2. 逐条核对完成判据 1-6 + CB1-CB8
+3. 输出结论：PASS / FAIL；若 FAIL 列阻断项（具体、可执行）

@@ -1,0 +1,44 @@
+结论：**FAIL**
+
+### 判据 1-6
+
+1. **append-only 恢复：未充分证明**
+   - `MemoryManager.load_session(append_only=True)` 仅调用 `load_from_dicts()`。
+   - 测试均在空 `ShortTermMemory` 上恢复，未验证已有前缀不会被清空或重复追加。
+   - `test_restore_does_not_mutate_saved` 只断言数量不变，无法证明 append-only 语义。
+
+2. **稳定 `prompt_cache_key`：有条件通过**
+   - B5 新测试只是检查 `_session_id` 属性，没有调用 `_raw_stream`。
+   - 若 B2 所述真实 payload 测试确实存在，则该判据可依赖 B2 通过；否则本测试不足以覆盖。
+
+3. **预热：FAIL**
+   - `PrewarmState.warm()` / `rebuild()` 仅记录签名和时间，没有实际发起预热请求。
+   - 代码中也未见 Agent 或请求链路调用 `PrewarmState`。
+   - 属于状态模拟，不是可执行的预热流程。
+
+4. **保活：FAIL**
+   - `keep_alive_should_fire()` 和 `build_keep_alive_request()` 的单元逻辑基本正确。
+   - 但没有调度器、后台触发逻辑或实际请求调用链；当前仍是未接入的策略函数，不能证明保活功能实际工作。
+
+5. **会话复用：部分通过**
+   - `AgentV2._ensure_session_loaded()` 已改为 `append_only=True`。
+   - 但 B5 的 session ID 测试未覆盖真实 `_raw_stream` 调用。
+
+6. **恢复后命中率：未充分证明**
+   - `test_resume_records_usage` 只是直接调用 `TokenStats.add_real_usage()`。
+   - 没有“恢复会话 → 发起请求 → 记录真实 usage”的链路测试。
+
+### CB1-CB8
+
+无法完成严格核对：题目未提供 CB1-CB8 的具体定义。现有证据只能确认：
+
+- 原有默认 `load_session()` 行为保持不变，相关 memory 测试通过。
+- `ruff` 与所述测试通过。
+- 其余硬约束无法仅凭该 diff 验证，尤其是实际调用链、持久化一致性和运行时行为。
+
+### 阻断项
+
+1. append-only 未验证已有内存前缀不被清空/重复。
+2. 预热没有实际执行或接入请求链路。
+3. 保活没有实际调度和请求调用链。
+4. 恢复后命中率测试不包含真实恢复流程。

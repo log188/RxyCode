@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "version": "b8",
+  "date": "2026-08-11",
+  "backend": "agent",
+  "model": "opencode-go/deepseek-v4-flash",
+  "provider": "opencode-go",
+  "base_url": "https://opencode.ai/zen/go/v1",
+  "sample_count": 4,
+  "ttft_cold_ms": 11844.9,
+  "ttft_hit_ms": 5218.6,
+  "speedup_x": 2.27,
+  "samples": {
+    "cold1": 15627.1,
+    "hot1": 6124.1,
+    "cold2": 8062.7,
+    "hot2": 4313.1
+  },
+  "calculation": "ttft_ms = 首内容 chunk 到达 - 请求发出；cold=新前缀，hot=同 system 前缀第二条",
+  "note": "同前缀同模型同后端交替采样；cold2 用不同前缀隔离缓存"
+}

@@ -1,0 +1,96 @@
+结论：**FAIL**
+
+仍有 1 个阻断项，主要是验收测试未真正覆盖 Anthropic/DeepSeek provider 隔离。
+
+### 判据 1–6
+
+1. **system 前缀稳定：基本满足**  
+   `get_system_prompt()` 无动态字段，工具排序也已固定。
+
+2. **工具 schema 顺序稳定：满足**  
+   `ToolRegistry.get_all()`、`get_names()`、`get_descriptions()` 以及 `AgentV2._get_core_tools()` 均排序。
+
+3. **OpenAI prompt_cache_key 注入：满足**  
+   条件为：
+   ```python
+   caps.provider == "openai" and caps.prompt_cache_key_required
+   ```
+   并且真实 `_raw_stream` 测试捕获到了注入字段。
+
+4. **非 OpenAI 隔离：代码满足，但测试证据不完整**  
+   非 OpenAI override 测试覆盖了 DeepSeek provider，代码条件也正确。
+
+5. **research contract 不污染 system 前缀：满足**  
+   已改为独立 `SystemMessage`，不再覆盖 `messages[0]`。
+
+6. **未知模型默认行为保持：基本满足**  
+   `DEFAULT_CAPABILITIES.prompt_cache_key_required is False`。
+
+### CB1–CB8
+
+- **CB1：通过**，system 不再被 research contract 改写。
+- **CB2：通过**，system 模板无明显动态字段。
+- **CB3：部分通过，阻断**，provider 条件已正确加入，但真实 provider payload 测试不足。
+- **CB4：通过**，工具顺序固定。
+- **CB5：通过**，subset/full 分支均排序。
+- **CB6：通过**，描述列表排序稳定。
+- **CB7：通过**，research contract 独立追加。
+- **CB8：通过**，默认 capabilities 不注入 cache key。
+
+### 阻断项
+
+#### R4-1 / CB3：Anthropic、DeepSeek “真实 provider payload”测试不成立
+
+以下测试使用的是：
+
+```python
+agent = self._make_raw_stream_agent(
+    DEFAULT_CAPABILITIES, "claude-sonnet-5"
+)
+```
+
+以及：
+
+```python
+agent = self._make_raw_stream_agent(
+    DEFAULT_CAPABILITIES, "deepseek-v4-flash"
+)
+```
+
+仅改变了 `model_name`，没有将 capabilities 设置为：
+
+```python
+provider="anthropic"
+```
+
+或：
+
+```python
+provider="deepseek"
+```
+
+因此测试验证的只是 `DEFAULT_CAPABILITIES` 的当前默认值，并不能证明真实 Anthropic/DeepSeek provider payload 不注入。尤其当默认 provider 发生变化时，这些测试可能继续通过但结论失效。
+
+应改为使用：
+
+```python
+replace(
+    DEFAULT_CAPABILITIES,
+    provider="anthropic",
+    prompt_cache_key_required=False,
+)
+```
+
+和：
+
+```python
+replace(
+    DEFAULT_CAPABILITIES,
+    provider="deepseek",
+    prompt_cache_key_required=False,
+)
+```
+
+然后重新捕获真实 `_raw_stream` payload。
+
+在该阻断项修复并复测前，本轮不能判定 PASS。

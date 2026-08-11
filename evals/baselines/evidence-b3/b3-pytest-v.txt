@@ -1,0 +1,54 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-8.4.2, pluggy-1.5.0 -- D:\Anaconda3\python.exe
+cachedir: .pytest_cache
+rootdir: D:\agent-demo\RxyCode\RxyCode1_1_0\.worktrees\phase-b-cache2
+configfile: pytest.ini
+plugins: anyio-4.10.0, langsmith-0.9.0, asyncio-1.4.0, base-url-2.1.0, cov-7.1.0, playwright-0.8.0, timeout-2.4.0, xdist-3.8.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 180.0s
+timeout method: thread
+timeout func_only: False
+collecting ... collected 33 items
+
+tests/test_cache/test_breakpoint_budget.py::TestBreakpointPolicyAllocator::test_budget_limit_four PASSED [  3%]
+tests/test_cache/test_breakpoint_budget.py::TestBreakpointPolicyAllocator::test_allocation_order_tools_system_messages PASSED [  6%]
+tests/test_cache/test_breakpoint_budget.py::TestBreakpointPolicyAllocator::test_over_budget_discards_not_extends PASSED [  9%]
+tests/test_cache/test_breakpoint_budget.py::TestBreakpointPolicyAllocator::test_budget_forced_capped_at_four PASSED [ 12%]
+tests/test_cache/test_breakpoint_budget.py::TestBreakpointPolicyAllocator::test_budget_zero_returns_empty PASSED [ 15%]
+tests/test_cache/test_breakpoint_budget.py::TestTtlTiers::test_default_ttl_5m PASSED [ 18%]
+tests/test_cache/test_breakpoint_budget.py::TestTtlTiers::test_ttl_5m_tier PASSED [ 21%]
+tests/test_cache/test_breakpoint_budget.py::TestTtlTiers::test_ttl_1h_tier PASSED [ 24%]
+tests/test_cache/test_breakpoint_budget.py::TestTtlTiers::test_ttl_numeric_seconds_compat PASSED [ 27%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_anthropic_gets_cache_control_on_system PASSED [ 30%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_openai_gets_no_cache_control PASSED [ 33%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_deepseek_gets_no_cache_control PASSED [ 36%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_unsupported_model_unchanged PASSED [ 39%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_deepseek_hard_block_even_with_bad_config PASSED [ 42%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_openai_hard_block_even_with_bad_config PASSED [ 45%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_breakpoints_limited_by_caps_declared_types PASSED [ 48%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_tools_participate_in_allocation PASSED [ 51%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_anthropic_llm_kwargs_injects_cache_ttl PASSED [ 54%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_anthropic_tools_breakpoint_in_raw_stream PASSED [ 57%]
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_openai_tools_no_breakpoint PASSED [ 60%]
+tests/test_cache/test_breakpoint_budget.py::TestLastUserBreakpoint::test_last_user_message_marked PASSED [ 63%]
+tests/test_cache/test_breakpoint_budget.py::TestLastUserBreakpoint::test_no_user_no_mark PASSED [ 66%]
+tests/test_cache/test_breakpoint_budget.py::TestLastUserBreakpoint::test_does_not_mutate_original_messages PASSED [ 69%]
+tests/test_cache/test_breakpoint_budget.py::TestLastUserBreakpoint::test_apply_breakpoint_budget_system_and_tail PASSED [ 72%]
+tests/test_cache/test_breakpoint_budget.py::TestLastUserBreakpoint::test_consecutive_tool_results_merged_not_split PASSED [ 75%]
+tests/test_cache/test_breakpoint_budget.py::TestLastUserBreakpoint::test_tool_not_immediately_after_assistant_rejected PASSED [ 78%]
+tests/test_cache/test_breakpoint_budget.py::TestLastUserBreakpoint::test_tool_without_call_id_rejected PASSED [ 81%]
+tests/test_cache/test_breakpoint_budget.py::TestLastUserBreakpoint::test_orphan_tool_rejected PASSED [ 84%]
+tests/test_cache/test_breakpoint_budget.py::TestLastUserBreakpoint::test_unconsumed_tool_call_rejected PASSED [ 87%]
+tests/test_cache/test_breakpoint_budget.py::TestDeepSeekAutoPrefixVerify::test_deepseek_hit_field_verify PASSED [ 90%]
+tests/test_cache/test_breakpoint_budget.py::TestDeepSeekAutoPrefixVerify::test_verify_deepseek_prefix_warns_on_miss PASSED [ 93%]
+tests/test_cache/test_breakpoint_budget.py::TestDeepSeekAutoPrefixVerify::test_deepseek_verification_wired_into_record_usage PASSED [ 96%]
+tests/test_cache/test_breakpoint_budget.py::TestDeepSeekAutoPrefixVerify::test_non_deepseek_no_verification PASSED [100%]
+
+============================== warnings summary ===============================
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_anthropic_tools_breakpoint_in_raw_stream
+tests/test_cache/test_breakpoint_budget.py::TestApplyCacheControlDispatch::test_openai_tools_no_breakpoint
+  D:\agent-demo\RxyCode\RxyCode1_1_0\.worktrees\phase-b-cache2\core\agent_v2.py:1555: PydanticDeprecatedSince20: The `schema` method is deprecated; use `model_json_schema` instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    schema = tcs.schema()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 33 passed, 2 warnings in 13.79s =======================

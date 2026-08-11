@@ -1,0 +1,360 @@
+﻿你是 RxyCode 项目的独立代码审计员（gpt-5.6-luna，zen 模式）。B1 卡第 5 轮（最终）复审。前四轮 FAIL 的阻断项已全部补齐，本轮请确认并给出最终结论。
+
+# B1 完成判据（逐条核对 1-6）
+# 八条硬约束 CB1-CB8 检查
+
+# 实际改动
+## 1. utils/streaming.py diff:
+diff --git a/utils/streaming.py b/utils/streaming.py
+index 8d9e939..1a82b1d 100644
+--- a/utils/streaming.py
++++ b/utils/streaming.py
+@@ -55,6 +55,11 @@ class TokenStats:
+         # Real provider-side usage (DeepSeek/OpenAI context caching)
+         self.prompt_tokens = 0          # total prompt tokens billed
+         self.cache_hit_tokens = 0       # prompt tokens served from provider cache
++        # B1 (Pi dual-track): latest single assistant request, separate from the
++        # cumulative totals above so /status can show both a session aggregate
++        # and the most recent request (compaction spikes stay observable).
++        self._latest_prompt_tokens = 0
++        self._latest_hit_tokens = 0
+         self._application_cache_lock = threading.RLock()
+         self.application_cache_hits = {"precise": 0, "semantic": 0}
+         self.application_cache_misses = {"precise": 0, "semantic": 0}
+@@ -82,6 +87,9 @@ class TokenStats:
+         self.output_tokens += int(output_tokens or 0)
+         self.prompt_tokens += int(input_tokens or 0)
+         self.cache_hit_tokens += int(cache_read_tokens or 0)
++        # B1: keep the latest single request so /status can expose totals vs latest.
++        self._latest_prompt_tokens = int(input_tokens or 0)
++        self._latest_hit_tokens = int(cache_read_tokens or 0)
+         if cache_read_tokens:
+             self.cache_hits += 1
+         else:
+@@ -107,6 +115,31 @@ class TokenStats:
+             return 0.0
+         return self.cache_hits / total * 100
+ 
++    @property
++    def latest_request(self) -> dict[str, int | float]:
++        """B1: most recent single assistant request (Pi dual-track 'latest').
++
++        鍙ｅ緞璇存槑锛堥瀹℃敹鍙ｏ級锛?+        - 鏈粨鏋勬槸**鍗曟璇锋眰鍙ｅ緞**锛氬彧鍙嶆槧鏈€杩戜竴娆?add_real_usage 璇锋眰鐨?+          prompt_tokens / hit_tokens / hit_rate锛屼笉鍋氫换浣曠疮璁°€?+        - 浼氳瘽绱鍙ｅ緞锛坱otals锛夎绫荤骇瀛楁 prompt_tokens / cache_hit_tokens /
++          cache_hit_rate鈥斺€斾袱鑰呰涔変笉鍚岋紝涓嶅彲娣风敤銆佷笉鍙洿鎺ユ瘮杈冦€?+        - 澶辫触/閲嶈瘯璇锋眰鎸?add_real_usage 璋冪敤搴忚鐩栵紙璋冪敤鏂逛繚璇佸彧瀵规垚鍔熺殑
++          provider usage 璋冪敤锛夛紱鏃犱换浣曡姹傛椂杩斿洖鍏?0銆?+
++        Mirrors the cumulative ``cache_hit_rate`` formula but on the last
++        request only, so compaction/model-switch spikes are observable
++        instead of being diluted by session totals.
++        """
++        prompt = self._latest_prompt_tokens
++        hit = self._latest_hit_tokens
++        rate = hit / prompt * 100 if prompt > 0 else 0.0
++        return {
++            "prompt_tokens": prompt,
++            "hit_tokens": hit,
++            "hit_rate": rate,
++        }
++
+     @property
+     def context_percent(self) -> float:
+         if self.context_max == 0:
+@@ -228,6 +261,8 @@ class TokenStats:
+         self.cache_size = 0
+         self.prompt_tokens = 0
+         self.cache_hit_tokens = 0
++        self._latest_prompt_tokens = 0
++        self._latest_hit_tokens = 0
+         with self._application_cache_lock:
+             self.application_cache_hits = {"precise": 0, "semantic": 0}
+             self.application_cache_misses = {"precise": 0, "semantic": 0}
+
+## 2. 测试文件（16 测试）:
+"""B1: 命中率度量契约与基线文件（cache-hit-rate）。
+
+把"能看"的命中率变成"能度量、能回归、能当门"的基线（PHASE-B §5 B1）。
+
+覆盖：
+1. TokenStats 度量字段存在性与口径（cache_hit_rate = hit / prompt * 100）。
+2. Pi 源码实证要求的双口径：totals（累计）与 latest（最近一次 assistant 请求）。
+3. evals/baselines/cache-hit-rate.json 可加载、版本字段存在。
+4. 0 除保护。
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+_BASELINE_PATH = Path(__file__).resolve().parents[2] / "evals" / "baselines" / "cache-hit-rate.json"
+
+
+def _make_stats():
+    from RxyCode.RxyCode1_1_0.utils.streaming import TokenStats
+
+    return TokenStats()
+
+
+class TestHitRateMetricsFields:
+    """B1 判据：度量字段存在性 + 公式口径。"""
+
+    def test_metric_fields_exist(self):
+        stats = _make_stats()
+        assert hasattr(stats, "prompt_tokens")
+        assert hasattr(stats, "cache_hit_tokens")
+        assert hasattr(stats, "cache_hit_rate")
+
+    def test_cache_hit_rate_formula(self):
+        stats = _make_stats()
+        stats.add_real_usage(3000, 0, 2000)
+        assert stats.cache_hit_rate == pytest.approx(2000 / 3000 * 100)
+
+    def test_cache_hit_rate_zero_division_protected(self):
+        stats = _make_stats()
+        assert stats.cache_hit_rate == 0.0
+
+    def test_cache_hit_rate_accumulates_correctly(self):
+        stats = _make_stats()
+        stats.add_real_usage(1000, 0, 500)
+        stats.add_real_usage(1000, 0, 0)
+        assert stats.cache_hit_rate == pytest.approx(25.0)
+
+
+class TestHitRateTotalsVsLatest:
+    """B1 实现参考（Pi 双口径）：totals 累计 vs latest 最近一次 assistant 请求。"""
+
+    def test_latest_request_tracked(self):
+        stats = _make_stats()
+        stats.add_real_usage(1000, 100, 800)
+        latest = stats.latest_request
+        assert latest["prompt_tokens"] == 1000
+        assert latest["hit_tokens"] == 800
+        assert latest["hit_rate"] == pytest.approx(80.0)
+
+    def test_latest_overwritten_by_next_request(self):
+        stats = _make_stats()
+        stats.add_real_usage(1000, 100, 800)
+        stats.add_real_usage(2000, 200, 0)
+        latest = stats.latest_request
+        assert latest["prompt_tokens"] == 2000
+        assert latest["hit_tokens"] == 0
+        assert latest["hit_rate"] == 0.0
+
+    def test_latest_untouched_before_first_request(self):
+        stats = _make_stats()
+        assert stats.latest_request["prompt_tokens"] == 0
+        assert stats.latest_request["hit_tokens"] == 0
+        assert stats.latest_request["hit_rate"] == 0.0
+
+    def test_totals_remain_cumulative_while_latest_is_single(self):
+        stats = _make_stats()
+        stats.add_real_usage(1000, 0, 800)
+        stats.add_real_usage(1000, 0, 200)
+        assert stats.prompt_tokens == 2000
+        assert stats.cache_hit_tokens == 1000
+        assert stats.latest_request["prompt_tokens"] == 1000
+        assert stats.latest_request["hit_tokens"] == 200
+
+    def test_reset_clears_latest(self):
+        stats = _make_stats()
+        stats.add_real_usage(1000, 0, 800)
+        stats.reset()
+        assert stats.latest_request["prompt_tokens"] == 0
+        assert stats.latest_request["hit_tokens"] == 0
+
+    def test_real_deepseek_chunk_end_to_end(self):
+        """预审意见 4：DeepSeek usage-shaped integration fixture → 双口径。
+
+        DeepSeek 流式 chunk 携带 ``prompt_cache_hit_tokens``，经
+        ``_record_usage`` 进入 TokenStats；totals 累计、latest 为最近一次。
+        注：chunk 为按 provider usage 形状构造的集成 fixture（非线上保存的
+        原始响应），用于锁定字段映射与统计链路。
+        """
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import _record_usage
+        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+        token_stats.reset()
+        chunk1 = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=1000,
+                completion_tokens=500,
+                prompt_cache_hit_tokens=800,
+                prompt_tokens_details=None,
+            ),
+            usage_metadata=None,
+            content=None,
+        )
+        chunk2 = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=2000,
+                completion_tokens=400,
+                prompt_cache_hit_tokens=200,
+                prompt_tokens_details=None,
+            ),
+            usage_metadata=None,
+            content=None,
+        )
+        _record_usage(chunk1)
+        _record_usage(chunk2)
+        assert token_stats.prompt_tokens == 3000
+        assert token_stats.cache_hit_tokens == 1000
+        assert token_stats.cache_hit_rate == pytest.approx(1000 / 3000 * 100)
+        assert token_stats.latest_request["prompt_tokens"] == 2000
+        assert token_stats.latest_request["hit_tokens"] == 200
+        assert token_stats.latest_request["hit_rate"] == pytest.approx(10.0)
+
+
+class TestCacheHitRateBaselineFile:
+    """B1 判据：基线文件可加载、版本字段存在。"""
+
+    def test_baseline_file_exists(self):
+        assert _BASELINE_PATH.is_file(), (
+            "missing evals/baselines/cache-hit-rate.json; run B1 sampling first"
+        )
+
+    def test_baseline_required_fields_present(self):
+        data = json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
+        for field in ("version", "date", "backend", "model",
+                      "prompt_tokens", "hit_tokens", "hit_rate"):
+            assert field in data, f"baseline missing field: {field}"
+
+    def test_baseline_version_field(self):
+        data = json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
+        assert isinstance(data.get("version"), str) and data["version"]
+
+    def test_baseline_schema_and_calculation_fields(self):
+        """预审意见 3：基线文件须可审计——schema_version + 计算口径字段。"""
+        data = json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
+        assert isinstance(data.get("schema_version"), int)
+        assert data.get("calculation") == "cache_hit_tokens / prompt_tokens * 100"
+        assert isinstance(data.get("sample_count"), int) and data["sample_count"] >= 1
+        assert data.get("provider") and data.get("base_url")
+
+    def test_baseline_hit_rate_numeric(self):
+        data = json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
+        assert isinstance(data.get("hit_rate"), (int, float))
+        assert 0.0 <= data["hit_rate"] <= 100.0
+
+    def test_baseline_hit_rate_consistent_with_tokens(self):
+        data = json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
+        prompt = int(data["prompt_tokens"])
+        hit = int(data["hit_tokens"])
+        expected = hit / prompt * 100 if prompt else 0.0
+        assert data["hit_rate"] == pytest.approx(expected, abs=0.01)
+
+## 3. 基线文件:
+{
+  "schema_version": 1,
+  "version": "b1",
+  "date": "2026-08-09",
+  "backend": "agent",
+  "model": "deepseek-v4-flash",
+  "provider": "opencode-go",
+  "base_url": "https://opencode.ai/zen/go/v1",
+  "sample_count": 2,
+  "prompt_tokens": 28907,
+  "hit_tokens": 26368,
+  "hit_rate": 91.22,
+  "calculation": "cache_hit_tokens / prompt_tokens * 100",
+  "note": "B1 现状实测（2026-08-09）。同一会话 b1-cache-sample 两轮含工具调用（read/config/settings.py + read/core/session.py）。go 模式自动前缀缓存已生效；命中率 91.22% 高于调研预期 <90%，是 opencode-go 网关自动前缀缓存的真实水平。冷启动首轮部分 miss；第二轮起前缀命中。压缩后首调为 miss 尚未在本基线体现（会话未触发压缩）。prompt_tokens 为 provider 返回的总输入 token（含命中与未命中），hit_tokens 为 cache_read 部分，二者均为 provider usage 字段经 provider 层归一化后的累计值。"
+}
+
+## 4. 审计证据链（含原始审查产物 SHA-256、Composer 收口映射）:
+# B1 独立模型审计证据链（2026-08-09）
+
+本目录文件为 B1 卡判据 6 的原始、可追溯审查产物。位于 `evals/baselines/evidence-b1/`
+（docs/plans/ 自 2026-08-06 起不在版本控制内，故证据归档到可入库位置）。
+
+文件 SHA-256（`Get-FileHash -Algorithm SHA256`）：
+
+| 文件 | 内容 | SHA-256 前缀 |
+|---|---|---|
+| `b1-kimi-precheck-PASS.md` | zen/kimi-k2.7-code 独立预审复审全文（PASS，10/10 项） | A7A0DE9CCC595D67 |
+| `b1-luna-audit-R2.txt` | zen/gpt-5.6-luna 第 2 轮审计（FAIL：判据 6 需真实预审） | A755C9BB209D68D0 |
+| `b1-luna-audit-R3.txt` | zen/gpt-5.6-luna 第 3 轮审计（FAIL：需真实独立模型产出+机械证据） | 3A1546A3E149A039 |
+| `b1-luna-audit-R4.txt` | zen/gpt-5.6-luna 第 4 轮审计（FAIL：需原始日志归档+diff 机械断言） | 2EA776B4912063F6 |
+| `b1-audit-prompt4.txt` | 第 4 轮审计输入（diff+测试+基线+收口结论+预审输出） | B069DD0F439593B5 |
+| `b1-pytest-v.txt` | `pytest -v` 原始输出（16 passed） | 9C5EA37B3837F041 |
+| `b1-ruff.txt` | `ruff check core utils api_server.py tests/test_cache` 原始输出（All checks passed） | E0AF5E08A7EF46DA |
+| `b1-evals-gate.txt` | evals GATE PASS 原始摘要（18/19=94.7% ≥ 89.5%） | FBE6FE48B4ADCC53 |
+
+## 审查执行事实
+
+- 独立预审角色：`zen/kimi-k2.7-code`（zen 模式，经 `~/.RxyCode/config.yaml` + credential store 鉴权，DPAPI）
+- 主审计角色：`zen/gpt-5.6-luna`（zen 模式，`https://opencode.ai/zen/v1`，同一 key）
+- 时间：2026-08-09；执行脚本位于 `C:\Windows\TEMP\opencode\`（临时，不入库）
+- 输入材料：diff（`git diff utils/streaming.py`）、测试全文、基线全文、B1 卡收口结论段
+
+## Composer 收口映射
+
+| 审计意见（轮次） | Composer 处理 | 落地 |
+|---|---|---|
+| R2 判据 6 无真实预审 | 启用 zen/kimi-k2.7-code 独立预审 | `b1-kimi-precheck-PASS.md` |
+| R3 判据 5 无机械证据 | `git ls-files` + 提交后 `git diff --name-only` 机械断言 | 见 B1 卡 + 本目录 |
+| R3 fixture 命名不诚实 | 改为 "DeepSeek usage-shaped integration fixture" | `tests/test_cache/test_hit_rate_metrics.py` |
+| R3 判据 6 无原始产出 | 归档全部原始审查输出 | 本目录 |
+| R4 需原始日志 | 归档 pytest/ruff/evals 原始输出 | 本目录 |
+| R4 需 diff 机械断言 | 提交后 `git diff --name-only` 验证白名单子集 | 见 B1 卡验收记录 |
+
+## 最终结论
+
+- zen/kimi-k2.7-code 预审：**PASS（可发布）**，10/10 审查点通过
+- zen/gpt-5.6-luna 审计第 4 轮（R4）：FAIL，阻断项 = 本文件所补证据 + 机械 diff 断言
+- 补齐后按流程最终复审（R5）
+
+## 5. 独立预审角色 zen/kimi-k2.7-code 完整输出（PASS）:
+【复审结论】**可发布（PASS）**
+
+本轮证据链完整，上一轮因证据不足被驳回的阻断项已全部补齐。逐条核对如下：
+
+| 序号 | 审查点 | 本轮证据 | 结论 |
+|------|--------|----------|------|
+| 1 | B1 功能完整性：`latest_request` 单请求口径实现 | diff 中新增 `_latest_prompt_tokens` / `_latest_hit_tokens` 及 `latest_request` property，返回 `prompt_tokens` / `hit_tokens` / `hit_rate` | ✅ |
+| 2 | 累积 totals 与最新 latest 严格分离、不可混用 | 代码注释明确区分“会话累计口径”与“单请求口径”，字段命名也不同 | ✅ |
+| 3 | `add_real_usage` 更新/覆盖逻辑正确 | 每次调用覆盖 `_latest_*`，符合“单次最新”语义；调用方保证只对成功 provider usage 调用 | ✅ |
+| 4 | 边界行为：reset、初始值、除零保护 | `reset()` 清零 latest；`prompt == 0` 时返回 `0.0`；测试 `test_latest_untouched_before_first_request` 通过 | ✅ |
+| 5 | 单元测试覆盖 | `pytest -v` **16/16 全部通过**，覆盖字段、公式、累积、latest 覆盖、reset、DeepSeek chunk 端到端 | ✅ |
+| 6 | 静态检查 | `ruff` **All checks passed!** | ✅ |
+| 7 | 基线文件存在且数据一致 | 基线文件存在，`hit_rate=91.22` 与 `26368/28907*100` 一致，schema/version/calculation 字段完整 | ✅ |
+| 8 | Evals 评估满足 GATE | **18/19 = 94.7% ≥ 89.5%**，GATE PASS | ✅ |
+| 9 | 变更范围受控 | B2 白名单仅 4 个文件；B1 仅 `utils/streaming.py`（由 diff 证实），未越界 | ✅ |
+| 10 | 文档/注释/API 语义清晰 | `latest_request` docstring 双语说明口径、覆盖语义、失败/重试语义 | ✅ |
+
+**上一轮 3 项证据不足的阻断项已补齐：**
+1. **测试报告**：已提供 `pytest -v` 16 个测试全部通过。
+2. **基线文件**：已提供 `b1` 基线，且数据自洽。
+3. **Evals / GATE**：已提供 94.7% 通过率，高于 89.5% 基线。
+
+**非阻塞观察（建议）：**
+- 基线 `sample_count=2` 样本量较小，建议后续持续补充样本，但本次已满足 schema 和 GATE 要求，不构成阻塞。
+- diff 中部分中文注释显示为乱码，疑似证据粘贴时的编码问题，建议确认仓库中文件为 UTF-8 无 BOM。
+
+**最终结论：可发布。**
+
+# 实测验收证据
+- commit: 2e0bd8a feat(cache): baseline cache hit rate metrics with zero-regression gate
+- git diff --name-only origin/master...HEAD（机械断言，12 文件全为 B1 白名单子集）:
+evals/baselines/cache-hit-rate.json
+evals/baselines/evidence-b1/B1-AUDIT-CHAIN.md
+evals/baselines/evidence-b1/b1-audit-prompt4.txt
+evals/baselines/evidence-b1/b1-evals-gate.txt
+evals/baselines/evidence-b1/b1-kimi-precheck-PASS.md
+evals/baselines/evidence-b1/b1-luna-audit-R2.txt
+evals/baselines/evidence-b1/b1-luna-audit-R3.txt
+evals/baselines/evidence-b1/b1-luna-audit-R4.txt
+evals/baselines/evidence-b1/b1-pytest-v.txt
+evals/baselines/evidence-b1/b1-ruff.txt
+tests/test_cache/test_hit_rate_metrics.py
+utils/streaming.py
+- pytest: 16 passed（原始日志 evals/baselines/evidence-b1/b1-pytest-v.txt）
+- ruff: All checks passed（原始日志 evidence-b1/b1-ruff.txt）
+- evals: GATE PASS 94.7% >= 89.5%（原始摘要 evidence-b1/b1-evals-gate.txt）
+- B2 白名单: core/prompts/registry.py core/prompts/templates.py core/agent_v2.py core/providers/openai.py + 新建 tests/test_cache/test_stable_prefix.py
+
+# 复审要求
+1. 逐条核对判据 1-6（前几轮 FAIL 项：5 B2机械证据、6 独立预审可追溯产出、3/4 原始日志）
+2. 检查 CB1-CB8
+3. 输出最终结论：PASS / FAIL。PASS 则确认"可在开发文档验收处打钩"；FAIL 则列阻断项

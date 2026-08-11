@@ -1,0 +1,59 @@
+# 复审结论：FAIL
+
+## R8 三项
+
+1. **Reviewer regeneration 结果不丢：基本 PASS**
+   - `max_api_calls=2` 时，review + regeneration 耗尽预算后，通过：
+     ```python
+     if current != answer and best.get("answer") == answer and not budget.can_retry():
+         return current or answer
+     ```
+     返回 regeneration 结果。
+   - regeneration 失败会回退原答案。
+   - 新增测试覆盖该场景。
+
+2. **工具错误结果缓存防护：FAIL，未完全闭合**
+   - 主工具循环中设置了：
+     ```python
+     self._tool_error_occurred = True
+     ```
+   - 但 `_synthesis_with_tools()` 中也会执行工具，却没有设置该状态：
+     ```python
+     result = await self._execute_tool(...)
+     ```
+   - 因此，`max_tool_rounds` 耗尽后 synthesis 阶段发生工具错误，最终普通文本仍可能进入缓存，违反 R8-2。
+
+   **修复建议：**
+   ```python
+   if _tool_output_is_error(str(result)):
+       self._tool_error_occurred = True
+   ```
+   同时建议在每次顶层请求开始时重置状态；当前状态只在 `__init__` 初始化，一旦发生错误，后续所有请求都会永久禁止缓存。
+
+3. **重要性判定：PASS**
+   - 任一强动词即可得到 `0.8`。
+   - 中英文关键词已扩充。
+   - 新增单关键词测试覆盖。
+
+## 完成判据 1–6 / CB1–CB8
+
+| 项目 | 判定 |
+|---|---|
+| 回归测试 | PASS：报告的 9004 passed |
+| Ruff | PASS |
+| Evals Gate | PASS：94.7% |
+| Reviewer retry | PASS |
+| 工具错误缓存隔离 | **FAIL** |
+| 状态跨请求隔离 | **FAIL** |
+| 其余 CB 项 | 基于所给证据未见新增阻断，但不能覆盖上述两个问题 |
+
+## 必须修复的阻断项
+
+1. **`_synthesis_with_tools()` 工具错误未设置 `_tool_error_occurred`**
+   - 导致错误后的普通 synthesis 文本可能被缓存。
+
+2. **`_tool_error_occurred` 未按顶层请求重置**
+   - 当前会造成一次工具错误污染后续所有请求，永久禁用缓存。
+   - 应在顶层请求入口重置，而不是在 regeneration 的内部 `_run_impl()` 中重置。
+
+修复并补充 synthesis 工具错误及跨请求状态隔离测试后，方可改判 **PASS**。

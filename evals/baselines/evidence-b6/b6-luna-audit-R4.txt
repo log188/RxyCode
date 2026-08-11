@@ -1,0 +1,77 @@
+## 结论：FAIL
+
+R3 顶层字符串阻断项已闭合：
+
+- `""` + `limit=1`：退化为 `"0"`，长度 1，`json.loads()` 合法。
+- `limit=2`：可返回 `""`。
+- 极小正数限制下长度上限与 JSON 合法性均满足。
+
+但仍有阻断问题：
+
+### 阻断项 B6-4：JSON 容器压缩可能无进展并重复循环 500 次
+
+`_minimize_values()` 对已经是 `None` 的值仍无条件返回 `True`：
+
+```python
+if isinstance(parsed, dict):
+    for key in parsed:
+        parsed[key] = None
+    return True
+```
+
+例如：
+
+```python
+parsed = {"a": 1}
+limit = 1
+```
+
+流程会变为：
+
+```json
+{"a":null}
+```
+
+仍超限，随后 `_minimize_values()` 重复执行 500 次，最后才退化为 `"0"`。
+
+问题包括：
+
+1. 无进展循环，极端大 key/value 时造成不必要的重复序列化开销。
+2. 没有实现文档所述的“删除过长 dict key”策略。
+3. 可保留结构时过早退化为标量。例如 `{"abcdefgh": 1}` 在限制允许 `{}` 时，当前实现最终可能返回 `"0"`。
+
+**修复要求：**
+
+- `_minimize_values()` 仅在确实改变且能缩短结果时返回 `True`。
+- 对单元素/超长 key 的 dict，应支持删除 key 或直接裁剪容器。
+- 循环必须保证每轮有实际进展，或检测重复状态后立即退化。
+
+### 次要问题
+
+`_tool_output_max_chars()` 使用：
+
+```python
+isinstance(raw, int)
+```
+
+会把 `True` 当作 `1` 接受。若布尔值属于非法配置，应显式排除：
+
+```python
+if isinstance(raw, bool) or not isinstance(raw, int):
+    return None
+```
+
+## 判据核对
+
+- 1：PASS（顶层字符串极限修复）
+- 2：PASS（正常路径长度与 JSON 合法性）
+- 3：PASS（普通文本截断）
+- 4：PASS（指纹去重逻辑）
+- 5：PASS（截断前计算原始指纹）
+- 6：FAIL（容器压缩存在无进展循环及结构保留缺陷）
+- CB5：PASS（已有 token 对比记录）
+- CB6：PASS（未触碰缓存写入路径）
+- CB8：PASS（默认 2000 的设计与配置已加入）
+- CB1–CB4、CB7：题面未提供判据正文，无法独立逐条确认。
+
+需修复上述 B6-4 后再复审。

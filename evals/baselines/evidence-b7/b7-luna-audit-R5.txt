@@ -1,0 +1,16 @@
+结论：**FAIL**
+
+阻断项：
+
+1. **R4 的 PS 引用修复证据不完整**
+   - `_ps_single_quote` 实现本身正确：`'` → `''`，可避免 `$HOME` 展开。
+   - 但所附测试代码未覆盖声明中的 `C:\Users\Administrator`，且 `a\nb` 实际测试的是 PowerShell 反引号字符串 `a\`nb`，不是实际换行。
+   - `_translate_grep_find` 使用未开启 `re.DOTALL` 的正则，真实换行 pattern 不会被转换为 `Select-String`。
+
+2. **判据 1–6 / CB1–CB8 仍无法完全独立复核**
+   - 所附 diff 仅覆盖 `agent_v2.py` 与 `shell.py`，未提供 `stuck_detector.py`、`snapshot.py`、`reviewer_retry.py`、settings 及实际调用链 diff。
+   - reviewer 测试主要验证 helper 和默认配置，未验证 Agent 实际执行重试及预算拦截。
+   - Git 测试验证快照能力和调用顺序，但未验证 Agent 在失败结局中实际调用 `restore()`。
+   - eval 结果仅为汇总声明，未附可复现命令、原始结果及 baseline 对比文件。
+
+在补充完整实现 diff、真实换行/Windows 路径测试，以及 reviewer/Git 集成测试前，不能判定 PASS。

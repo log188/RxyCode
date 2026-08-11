@@ -1,0 +1,63 @@
+结论：**FAIL**
+
+### 判据核对
+
+1. **append-only 会话恢复：部分修复，仍有阻断**
+   - `append_from_dicts` 已支持 `system/tool`，R5-1 已修复。
+   - 但重叠检测仅匹配 `existing` 尾部与持久历史头部：
+     ```python
+     if existing[-k:] == messages[:k]
+     ```
+   - 对已有历史窗口、任意位置重叠的情况会重复追加完整历史。现有测试 `test_manager_append_only_partial_overlap_any_length` 已明确暴露该行为，却将重复结果作为期望。
+   - 因此“通用重叠去重/不产生第二种前缀形态”尚未满足。
+
+2. **稳定 session_id / prompt_cache_key：基本满足**
+   - `_session_id` 未按 turn 改变。
+   - 需确认 `_raw_stream` 实际 payload 始终使用该 session_id；提交证据不足，但未见本 diff 中的明显回归。
+
+3. **prewarm 签名失效与重建：未完全满足**
+   - 签名覆盖 model/cwd/MCP，状态重建逻辑存在。
+   - 但 `_maybe_rebuild_prewarm()` 先执行：
+     ```python
+     state.rebuild(sig)
+     ```
+     已将新签名标记为 warmed，之后真实请求失败会被静默吞掉：
+     ```python
+     except Exception:
+         pass
+     ```
+   - `_llm is None` 时甚至不会发预热请求，但状态仍被标记为已预热。
+   - 下次调用不会再次重建，无法保证“真实重建并写入新前缀”。
+
+4. **keep-alive：已满足**
+   - 默认关闭。
+   - 启用后按 5 分钟间隔及预算触发。
+   - 调用 `_raw_stream(..., max_tokens=1)`。
+   - R5-2 已修复。
+
+5. **成本/预算保护：基本满足**
+   - keep-alive 有调用上限。
+   - 但请求失败仍会提前消耗预算，属于次要语义风险。
+
+6. **真实 usage / 命中率可观测：基本满足**
+   - `_record_usage` 和 token stats 链路存在。
+   - 预热路径额外调用 `record_application_cache(...)`，但真实预热失败也可能记录状态，数据可能失真。
+
+### CB1-CB8
+
+提交内容未给出 CB1-CB8 的具体定义，无法逐字映射核验。按可见实现，至少以下硬约束存在风险：
+
+- **append-only 不重复/前缀唯一**：不满足。
+- **真实 prewarm 成功后才提交状态**：不满足。
+- **失败不可静默伪装为已完成**：不满足。
+
+### 前五轮阻断项
+
+- R5-1：**已修复**
+- R5-2：**已修复**
+- R5-3：**未充分修复**，真实预热失败后状态仍被标记成功，且异常被吞掉。
+
+**阻断项：**
+
+1. append-only 重叠恢复仍可能重复追加完整历史。
+2. prewarm 在真实请求成功前即提交 warmed 状态，失败不可重试且被静默忽略。

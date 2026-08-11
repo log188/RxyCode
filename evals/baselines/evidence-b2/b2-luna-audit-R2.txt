@@ -1,0 +1,23 @@
+结论：**FAIL**
+
+阻断项：
+
+1. **判据 1 未被充分证明**
+   - `test_prefix_bytes_identical_while_user_changes` 仅手工调用 `_to_openai_messages`。
+   - 未构造真实请求，未包含 tools，也未进行实际字节序列化比较；仅比较 Python dict。
+   - 因此不能证明“system + tools + 历史字节完全一致”。
+
+2. **判据 4 存在实现漏洞**
+   - `AgentV2` 的 filtered 分支仍按输入顺序返回：
+     ```python
+     return [t for t in tools if getattr(t, "name", "") in cache]
+     ```
+   - 只有 full 分支调用 `sorted()`。
+   - 当输入工具列表乱序且命中 subset cache 时，输出顺序仍会抖动，可能破坏前缀缓存稳定性。
+
+其余证据显示：
+- research contract 不再覆盖 `messages[0]`
+- OpenAI/DeepSeek prompt cache key 行为测试通过
+- evals、命中率、ruff 均达标
+
+但上述两项仍未满足 B2 完成判据，需修复后复审。

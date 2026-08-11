@@ -200,6 +200,11 @@ class ModelCapabilities:
     #: 未归类的 provider 特有参数，会原样透传给 LLM 构造函数
     extra_body: dict[str, Any] = field(default_factory=dict)
 
+    #: OpenAI 系是否要求请求级 prompt_cache_key=session_id（B2，codex/kimi 语义）。
+    #: True = 请求组装处注入 prompt_cache_key；False = 不注入（DeepSeek 自动前缀、
+    #: Anthropic 显式断点、未知模型现状不变）。默认 False 保持现状行为（CB8）。
+    prompt_cache_key_required: bool = False
+
     def merged_with_overrides(self, overrides: dict[str, Any]) -> "ModelCapabilities":
         """应用用户在模型配置里写的显式覆盖。
 

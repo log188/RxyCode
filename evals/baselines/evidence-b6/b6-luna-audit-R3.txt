@@ -1,0 +1,64 @@
+## 复审结论：FAIL
+
+### 阻断项
+
+`_truncate_json_chars()` 的顶层字符串分支仍未覆盖空字符串：
+
+```python
+parsed = ""
+char_limit = 1
+```
+
+执行路径：
+
+```python
+budget = max(1, char_limit - 2)  # 1
+if budget >= len(parsed):        # 1 >= 0
+    return json.dumps(parsed)     # '""'，长度 2
+```
+
+结果为合法 JSON，但长度为 2，违反 `≤ char_limit`。
+
+### 可执行修复
+
+改为先验证序列化结果长度：
+
+```python
+rendered = json.dumps(parsed, ensure_ascii=False)
+if len(rendered) <= char_limit:
+    return rendered
+
+budget = max(0, char_limit - 2)
+rendered = json.dumps(parsed[:budget], ensure_ascii=False)
+if len(rendered) <= char_limit:
+    return rendered
+
+return AgentV2._minimal_json(char_limit)
+```
+
+并增加：
+
+```python
+def test_truncate_json_top_level_empty_string_tiny_limit():
+    result = agent._truncate_json_chars("", 1)
+    assert len(result) <= 1
+    json.loads(result)
+```
+
+### 判据核对
+
+- 完成判据 1：**FAIL**，空顶层字符串仍超限
+- 完成判据 2：**FAIL**，因此无法保证所有 JSON 输入满足长度上限
+- 完成判据 3：PASS
+- 完成判据 4：PASS，已有 A20 相关测试证据
+- 完成判据 5：PASS，指纹在截断前计算
+- 完成判据 6：PASS，未修改 `ToolMessage` 原对象及缓存写入路径
+
+CB：
+
+- CB5：PASS
+- CB6：PASS
+- CB8：PASS
+- 其余 CB1–CB4、CB7：题面未提供具体判据原文，无法独立核验
+
+修复空字符串边界后再复审。

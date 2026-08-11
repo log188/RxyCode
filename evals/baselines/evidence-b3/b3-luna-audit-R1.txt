@@ -1,0 +1,30 @@
+审计结论：**FAIL**
+
+- **判据1：不通过。** `allocate_breakpoints` 虽实现了 `tools→system→messages`，但 `_apply_cache_control` 未调用该分配器，实际只处理 `system` 与末条 user；`tools` 断点未实现，预算及超额丢弃未在真实请求路径生效。
+- **判据2：不通过。** TTL 仅能解析，未注入 Anthropic `cache_control`，5m/1h 未实际生效。
+- **判据3：不通过。** Anthropic 仅注入固定 `{"type":"ephemeral"}`；OpenAI 的 `prompt_cache_key` 未由本卡验证；DeepSeek 命中验证仅有孤立辅助函数，未接入请求/响应链路。
+- **判据4：不通过。** 末条 user 断点标记的是整条消息的 `additional_kwargs`，不是最后一个 text 块；连续 `tool_result` 仅校验完整性，未实现合并。
+- **判据5：通过。** 提供的 evals 证据为 `94.7%`、`18/19`、零回归。
+- **判据6：通过。** 提供了真实数据：`26496/28953 = 91.51%`，高于 B1 `91.22%`。
+
+硬约束审计：
+
+- **CB3：违反。** 实际 Anthropic/OpenAI/DeepSeek 分派不完整，DeepSeek 验证未接入。
+- **CB8：部分满足但存在风险。** 无 capabilities 时保留旧 system 行为，但该兼容分支可能绕过 provider 能力限制。
+- 其余 CB1、CB2、CB4、CB5、CB6、CB7：现有材料不足以证明完全满足；至少无法证明真实调用链覆盖。
+
+操作步骤中第 1、部分第 5/6 步完成；第 2、3、4 步未完整执行。
+
+必须修改：
+
+- **阻断**
+  1. 在 `_apply_cache_control` 中实际调用统一预算分配器，并实现 tools/system/messages 的固定分配与最多 4 个断点。
+  2. 将 TTL 配置实际写入 Anthropic `cache_control`。
+  3. 接入 DeepSeek `prompt_cache_hit_tokens` 的真实响应验证与告警。
+  4. 实现末条 user 消息最后一个 text 块的断点标记及连续 `tool_result` 合并语义。
+- **重要**
+  1. 补充 OpenAI `prompt_cache_key` 的端到端测试。
+  2. 补充真实 provider 分派、预算超额、TTL 注入和多断点请求测试。
+- **次要**
+  1. `allocate_breakpoints` 应强制限制 `budget ≤ 4`，避免调用方传入更大预算。
+  2. `mark_last_user_breakpoint` 应避免修改原消息对象。

@@ -66,6 +66,158 @@ class TestShellExecutor:
         assert "Get-ChildItem" in cmd2
         assert "ls -l" not in cmd2
 
+    def test_powershell_translates_posix_grep(self):
+        """POSIX grep → Select-String（B7：模型高频输出 grep 语法）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command('grep -n "add_node" core/graph.py')
+        assert shell == "powershell"
+        assert "Select-String" in cmd
+        assert "grep" not in cmd
+        assert "core/graph.py" in cmd
+
+    def test_powershell_translates_posix_cat(self):
+        """POSIX cat → Get-Content（B7）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command("cat counter.py")
+        assert shell == "powershell"
+        assert "Get-Content" in cmd
+        assert "cat " not in cmd
+
+    def test_powershell_translates_dev_null_redirect(self):
+        """POSIX 2>/dev/null → 2>$null（B7，现有只覆盖 2>nul）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command("ls test.py 2>/dev/null")
+        assert shell == "powershell"
+        assert "2>/dev/null" not in cmd
+        assert "2>$null" in cmd
+
+    def test_powershell_translates_pwd(self):
+        """POSIX pwd → Get-Location（B7）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command("pwd")
+        assert shell == "powershell"
+        assert "Get-Location" in cmd
+
+    def test_powershell_translates_or_fallback(self):
+        """POSIX || → 失败分支（B7：cmd1 || cmd2 语义）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command("cat x.py || echo missing")
+        assert shell == "powershell"
+        assert "||" not in cmd
+        assert "echo missing" in cmd
+
+    def test_powershell_translates_posix_find(self):
+        """POSIX find -name → Get-ChildItem -Recurse -Filter（B7）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command('find . -name "graph.py"')
+        assert shell == "powershell"
+        assert "Get-ChildItem" in cmd
+        assert "-Recurse" in cmd
+        assert "graph.py" in cmd
+
+    def test_powershell_translates_grep_rl(self):
+        """POSIX grep -rl → Select-String 递归（B7）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command('grep -rl "goal_planner" core/')
+        assert shell == "powershell"
+        assert "Select-String" in cmd
+        assert "-Recurse" in cmd
+        assert "goal_planner" in cmd
+
+    def test_powershell_translate_does_not_touch_quoted_text(self):
+        """引号内的普通文本（echo 输出等）不被转换误改（luna R1）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command('echo "pwd && cat readme"')
+        assert shell == "powershell"
+        # 引号内的 pwd/cat 不应被转换为 Get-Location/Get-Content
+        assert "Get-Location" not in cmd
+        assert "Get-Content" not in cmd
+
+    def test_powershell_translate_quoted_redirect_and_or(self):
+        """引号内的 2>/dev/null 与 || 不被转换（luna R2）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, _ = executor.translate_command('echo "2>/dev/null"')
+        assert '"2>/dev/null"' in cmd
+
+        cmd2, _ = executor.translate_command('echo "a || b"')
+        assert '"a || b"' in cmd2
+        assert "if (-not" not in cmd2
+
+        cmd3, _ = executor.translate_command('echo "x; pwd"')
+        assert '"x; pwd"' in cmd3
+        assert "Get-Location" not in cmd3
+
+    def test_powershell_translate_unclosed_quote_protected(self):
+        """未闭合引号后的文本不受转换（luna R3-1）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, _ = executor.translate_command('echo "2>/dev/null')
+        assert '"2>/dev/null' in cmd
+        assert "2>$null" not in cmd
+
+    def test_powershell_translate_escaped_quote_protected(self):
+        """转义引号不结束保护范围（luna R3-2）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, _ = executor.translate_command(r'echo "a \" 2>/dev/null"')
+        assert "2>/dev/null" in cmd
+        assert "2>$null" not in cmd
+
+    def test_powershell_translate_grep_multiple_files(self):
+        """grep 多文件参数不丢失（luna R3-4）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, _ = executor.translate_command('grep -n "pat" file1 file2')
+        assert "file1" in cmd
+        assert "file2" in cmd
+
+    def test_powershell_translate_or_then_pwd(self):
+        """|| 分支内的 pwd 也转换（luna R3-5）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, _ = executor.translate_command("echo x || pwd")
+        assert "if (-not $?)" in cmd
+        assert "Get-Location" in cmd
+
+    def test_powershell_translate_grep_after_cd_chain(self):
+        """cd && grep 链中 grep 也转换（B8：; 后位置）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, _ = executor.translate_command(
+            r'cd "D:\x" && grep -n "class UsageTrackingLLM" core/agent_v2.py'
+        )
+        assert "Select-String" in cmd
+        assert "grep" not in cmd
+
+    def test_powershell_translate_grep_after_semicolon(self):
+        """echo x; grep 链中 grep 也转换（B8）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, _ = executor.translate_command('echo hi; grep -n "x" f.py')
+        assert "Select-String" in cmd
+
+    def test_powershell_translate_grep_pattern_safe_quoting(self):
+        """grep pattern 用 PS 单引号包裹，$ 不展开、引号/反引号保留（luna R4-1）。"""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, _ = executor.translate_command("grep '$HOME' file")
+        assert "Select-String -Pattern '$HOME'" in cmd
+
+        cmd2, _ = executor.translate_command("grep 'a\"b' file")
+        assert "'a\"b'" in cmd2
+
+        cmd3, _ = executor.translate_command("grep 'a`nb' file")
+        assert "'a`nb'" in cmd3
+
     def test_powershell_translates_ampersand_separators(self):
         executor = self._make_executor()
         executor.shell_type = "powershell"

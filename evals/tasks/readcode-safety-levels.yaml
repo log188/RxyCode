@@ -1,5 +1,6 @@
 id: readcode-safety-levels
 category: readcode
+effect: read
 prompt: |
   说明并解释：本仓库的 core/safety/policy.py 中定义了哪几个风险等级（RiskLevel）？
   每个等级的含义是什么？bash 工具的风险等级是如何动态判定的（classify_bash_command 的作用）？

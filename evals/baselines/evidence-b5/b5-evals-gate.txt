@@ -1,0 +1,8 @@
+﻿
+C:\Windows\TEMP\opencode\b5_evals_wt.log:3197:235:     """Deprecated compatibility shim: delegate to the provider layer
+ (A8).
+C:\Windows\TEMP\opencode\b5_evals_wt.log:3278:316:     Cache-hit extraction is delegated to the provider layer
+C:\Windows\TEMP\opencode\b5_evals_wt.log:5443:Eval suite complete: 18/19 passed (94.7%)
+C:\Windows\TEMP\opencode\b5_evals_wt.log:5482:GATE: PASS (pass rate 94.7% >= baseline 89.5%)
+
+

@@ -1,0 +1,42 @@
+结论：**FAIL**
+
+R1 五项复核：
+
+1. **to_thread：基本闭合**  
+   `compact_messages` 已通过 `asyncio.to_thread` 执行。注意 `deepcopy(messages)` 仍在事件循环线程中，但不属于压缩主体。
+
+2. **位置索引：闭合**  
+   使用 `results[index]`，空/重复 `call_id` 不会覆盖。
+
+3. **读写顺序：闭合**  
+   连续只读段并行，写工具及读写段边界按原始位置等待，满足相对顺序。
+
+4. **TTFT 口径：未闭合，阻断**  
+   `_ttft_start` 是请求局部的，但“是否已记录”使用了全局：
+
+   ```python
+   token_stats.ttft_ms is None
+   ```
+
+   因此首个请求记录后，后续请求即使拥有新的局部起点，也不会记录 TTFT。并发请求还会共享并互相污染该状态，违反“每请求独立”。
+
+   **修复：**增加请求局部标志，例如：
+
+   ```python
+   ttft_recorded = False
+   ...
+   if _ttft_start is not None and not ttft_recorded and content:
+       ttft_recorded = True
+       token_stats.record_ttft(...)
+   ```
+
+   同时补测：连续两次请求、并发请求、空 chunk 后才出现内容 chunk。
+
+5. **行为测试：部分闭合**  
+   已覆盖工具错误和缓存防护，但未覆盖上述 TTFT 多请求污染问题。
+
+另外发现一个潜在阻断风险：
+
+- `run_at()` 捕获 `BaseException`，会吞掉 `asyncio.CancelledError`，导致请求取消被转换成普通工具错误。建议改为捕获 `Exception`，显式放行取消异常。
+
+由于题目未附“完成判据 1-6 / CB1-CB8”具体文本，无法逐条做形式化映射；按提交 diff 和 R1 修复目标审计，TTFT 状态污染已足以判定 **FAIL**。

@@ -1,0 +1,100 @@
+## 结论：FAIL
+
+R1 仍有阻断项，主要是“行为测试”和“模型切换失效”并未真正闭合。
+
+### 已闭合
+
+1. **Qwen 显式断点**：基本闭合  
+   `_apply_cache_control` 已由 `cache_mode` 裁决，不再硬编码 Anthropic；Qwen 行为测试能验证实际消息注入 `cache_control`。
+
+2. **schema required**：已闭合  
+   `cache_contract` 已要求：
+   `cache_mode`、`cache_hit_discount`、`usage_fields`、`reasoning_contract`、`breakpoints_max`、`prompt_cache_key_required`。
+
+3. **DeepSeek 不注入 key**：已覆盖  
+   契约读取结果能证明 DeepSeek 不要求 `prompt_cache_key`。
+
+### 阻断项
+
+#### B9-1：Kimi 测试不是实际行为测试
+
+`test_kimi_prompt_cache_key_injected` 只验证：
+
+```python
+requires_prompt_cache_key(...) is True
+```
+
+以及源码中存在：
+
+```python
+"contract_pk_key or caps_pk_key"
+```
+
+它没有调用 `_raw_stream`，也没有检查最终 payload，因此即使运行时没有注入 `extra_body.prompt_cache_key`，测试仍会通过。
+
+**修复要求：**
+
+构造最小化 `AgentV2`/provider，实际调用 `_raw_stream` 或提取 payload，断言：
+
+```python
+payload["extra_body"]["prompt_cache_key"] == session_id
+```
+
+同时保留 DeepSeek/Anthropic 的实际 payload 负向测试。
+
+#### B9-2：模型切换并未证明会使缓存失效
+
+当前 key 仍是：
+
+```python
+str(self._session_id or "latest")
+```
+
+代码中没有 provider/model 维度。若同一实例仅切换 `model_config["model_name"]`，Kimi 的 `prompt_cache_key` 可能保持不变。
+
+现有测试只比较：
+
+```python
+k3 is not k27
+hit_discount(...) != ...
+```
+
+这不能证明运行时缓存或 key 已失效。
+
+**修复要求：**
+
+任选其一：
+
+- 模型切换时重置 `_session_id`/缓存状态；或
+- 将 provider/model 纳入 key 派生，例如：
+  ```python
+  f"{provider}:{model}:{session_id}"
+  ```
+
+并增加实际切换模型后的 payload/cache 命中隔离测试。
+
+### 完成判据复核
+
+| 判据 | 结论 |
+|---|---|
+| 1. 9 家契约及 schema | 基本通过；仍建议校验每条记录而非仅 provider 集合 |
+| 2. 唯一读取入口 | 部分通过；当前测试只扫描 `core/providers`，未证明全仓无散落逻辑 |
+| 3. usage 归一化 | 测试覆盖充分，暂通过 |
+| 4. 9 条限制规范 | 多数仍是契约字段断言，实际运行时行为覆盖不足 |
+| 5. 未识别模型 CB8 | 基本通过 |
+| 6. R1 行为测试 | Qwen 通过；Kimi 不通过 |
+| CB1-CB8 | 未提供各 CB 的正式定义，无法逐项审计；从现有材料看 CB8 有覆盖，其余不能据此判定已闭合 |
+
+另外，schema 允许显式断点契约的 `breakpoints_max` 为 `null`，而实现直接执行：
+
+```python
+contract.get("breakpoints_max", 0) > 0
+```
+
+建议改为：
+
+```python
+(contract.get("breakpoints_max") or 0) > 0
+```
+
+或在 schema 中对 `explicit_breakpoints` 增加非空约束。

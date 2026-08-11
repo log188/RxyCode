@@ -1,0 +1,34 @@
+结论：**FAIL**
+
+阻断项：
+
+1. **TTL 实际未生效**
+   - `resolve_ttl_seconds()` 虽能解析 `5m/1h`，但 `_apply_cache_control()` 丢弃了 `_ttl`。
+   - 实际注入仍固定为：
+     ```python
+     {"type": "ephemeral"}
+     ```
+   - 未生成包含 TTL 的 provider 请求字段，现有测试只验证解析值，未验证请求 payload。
+
+2. **tools 断点仅参与“分配记录”，未证明实际注入**
+   - `apply_breakpoint_budget()` 返回 `"tools"`，但本层明确“不操作 tools”。
+   - 提供的改动中未看到 Anthropic tools 定义注入 `cache_control` 的实现或端到端测试。
+   - 因此“tools 参与分配”不等于“tools 断点实际生效”。
+
+3. **非 streaming 调用未传递 tools**
+   - `_raw_stream()` 已传入 `tools=tools`，但 `ainvoke()` 仍调用：
+     ```python
+     self._apply_cache_control(messages)
+     ```
+   - 若 `ainvoke` 路径存在 tools，tools 不会参与分配，策略并非所有调用路径统一。
+
+核对结果：
+
+- 判据 1：分配序/≤4/超额丢弃：通过
+- 判据 2：解析测试通过，但实际 TTL 生效：不通过
+- 判据 3：DeepSeek 硬阻断及命中验证：通过；Anthropic tools payload：未证实
+- 判据 4：末条 user：通过
+- 判据 5：evals：通过
+- 判据 6：命中率高于 B1：提供数据满足
+
+前两轮阻断项：1、2、3、4 的对应代码和测试基本已补齐；但上述新增问题仍阻断 B3 验收。

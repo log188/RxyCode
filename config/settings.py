@@ -221,6 +221,9 @@ def _default_config() -> dict:
             "enabled": True,
             "prompt_prefix_cache": True,
             "ttl": 3600,
+            # B6: 工具输出落地前截断的字符上限（opencode compaction.ts 2k 语义）。
+            # 0 / 负数 = 关闭截断（现状行为）。截断只作用于新落地消息，不碰前缀。
+            "tool_output_max_chars": 2000,
         },
         "mcpServers": {},
         "lsp": {},
@@ -301,6 +304,20 @@ def _default_config() -> dict:
             "tool_retry_wait_multiplier": 1.0,
             "tool_timeout_seconds": 1800,
             "pipeline_soft_budget_seconds": 3600,
+            # B7: 死循环检测阈值（opencode DOOM_LOOP_THRESHOLD=3）。
+            # 连续相同/交替/连错达到该阈值 → 主循环干预（引导语/终止）。
+            "stuck_threshold": 3,
+            # B10: run_official_agent 桥接工具（官方 agent CLI 旁路）。
+            # 默认禁用（CB8：默认工具集不变）；开启后注册 run_official_agent。
+            "run_official_agent_enabled": False,
+            # B7: reviewer 重试（SWE-agent 语义）——默认关闭（CB8）。
+            # 开启时仅对重要任务生效，且有 API 调用预算保护。
+            "reviewer_retry": {
+                "enabled": False,
+                "max_api_calls": 3,
+                "min_importance_score": 0.7,
+                "min_score": 0.6,
+            },
             # Disabled by default: a legitimate silent tool may run longer
             # than ten minutes. The explicit tool and task ceilings remain.
             "task_stall_timeout_seconds": 0,

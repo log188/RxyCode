@@ -1,0 +1,151 @@
+# B10 第 1 轮审计结论：FAIL
+
+现有测试通过不能证明满足 B10 完成标准。主要阻断项如下。
+
+## 1. 完成判据核对
+
+| 判据 | 结论 | 审计意见 |
+|---|---|---|
+| 委托/流式/回收/超时 kill | 部分通过 | mock 测试覆盖了基本流程，但未验证真实 ACP/CLI，也未验证子孙进程回收 |
+| `/status cache_rate` 前后不降 | **不通过** | 仅验证 `token_stats` 未变化，没有调用 `/status`，没有记录桥接前后真实 `cache_rate` 数字 |
+| token/时间预算超限 kill | 部分通过 | mock 中 `finally` 会调用 `stop()`；但无真实进程验证，且只 kill 直接子进程 |
+| 默认禁用、`/bridge` 可用 | 基本通过 | 默认配置为 `False`，命令有白名单和参数校验 |
+| evals 无回归 | 证据不足 | 声称 `94.7%`，但未提供验收命令完整输出、baseline 对比明细及运行环境确认 |
+
+## 2. 模型限制性规范
+
+### 规范 1：B9 `cache_contract`
+
+**不通过。**
+
+桥接层没有按模型读取 B9 `cache_contract`。`BridgeConfig` 也没有模型信息，`ACPBridge`/`CLIBridge` 未读取或应用模型契约，存在散落/缺失实现问题。
+
+### 规范 2：thinking 参数
+
+**不通过/未实现。**
+
+没有 `thinking_param` 注入逻辑，也没有保证 thinking 开启时不传自定义 `temperature/top_p`。
+
+### 规范 3：`reasoning_content` 和原生 think 块
+
+**不通过。**
+
+- ACP 只把部分事件映射为 `content`。
+- lifecycle 仅处理少数固定事件类型。
+- CLI 原始 reasoning 字段没有统一回传逻辑。
+- `agent_thought_chunk` 虽被收集，但没有明确保证完整保留原生 think 块及 `reasoning_content`。
+
+### 规范 4：窗口预留
+
+**不通过。**
+
+未读取模型窗口契约，也没有上下文窗口预留或预算计算。
+
+### 规范 5：`prompt_cache_key` / `cache_control`
+
+**不通过/未实现。**
+
+没有会话期恒定的 `prompt_cache_key`，也没有按模型判断是否注入 `cache_control`。
+
+### 规范 6：usage 归一化
+
+**不通过。**
+
+`bridge.usage()` 永远返回 `{}`，lifecycle 也没有调用它。`_event_token_cost()` 通过硬编码字段累加：
+
+```python
+("input", "output", "total", "input_tokens", "output_tokens")
+```
+
+这会在同时存在多个同义字段时重复计数，违反 B9 `usage_fields` 契约。
+
+### 规范 7：前缀、lineage、摘要、kill
+
+- 主 harness 前缀：当前代码未修改主 `messages`/`token_stats`，这一点基本符合。
+- lineage-only：CLI 使用固定 `["main-session-ref"]`，没有复制历史，基本符合，但应使用真实会话 lineage，而不是硬编码占位值。
+- 摘要限制：默认 2000 字符，但工具参数允许调用方设置任意大的 `max_result_chars`，没有严格上限。
+- 超时/预算 kill：直接子进程会 `kill()+wait()`，但没有进程组管理，无法保证官方 CLI 派生的子孙进程被杀死。
+
+## 3. ACP/CLI 协议问题
+
+### ACP
+
+当前 `start()` 只启动进程，没有真正完成 ACP 握手。代码直接发送：
+
+```json
+{"method": "session/new_prompt", ...}
+```
+
+未见 `initialize`、session 创建及协议能力协商。并且只监听：
+
+```text
+agent_message_chunk
+agent_thought_chunk
+tool_call
+session/result
+```
+
+未处理 JSON-RPC response、错误、通知及协议版本差异。因此不能认定为正确 ACP 实现。
+
+### CLI
+
+`task_delegate` 请求格式是自定义假设：
+
+```json
+{
+  "type": "task_delegate",
+  "target": "...",
+  "lineage": ["main-session-ref"]
+}
+```
+
+未证明与 `grok agent stdio` 的真实输入协议一致。也没有统一事件 schema、usage、reasoning 和错误处理。
+
+## 4. `/bridge` 安全性
+
+通过项：
+
+- 默认配置禁用 `run_official_agent`
+- agent 使用白名单
+- 缺少 agent/task 时返回 usage
+- 结果有 2000 字符截断
+- 未复制主历史
+
+问题：
+
+1. `/bridge` 直接在 API 分支中实例化并运行 bridge，绕过了工具注册、风险确认和统一预算策略。
+2. 没有命令级 token/time budget 参数控制。
+3. `run_official_agent()` 异常被直接转成字符串，可能泄露 CLI/路径/内部错误信息。
+4. 只 `kill()` 直接子进程，未建立 process group。
+5. `max_result_chars` 没有硬性最大值。
+
+## 5. CB1-CB8
+
+在已给出的改动中，可确认满足或基本满足的只有：
+
+- 默认不注册官方 agent 工具
+- 不复制主历史
+- 结果默认截断
+- 主链路 `token_stats` 未被直接修改
+
+但以下硬约束未满足或没有证据：
+
+- B9 模型契约继承
+- usage 统一归一化
+- thinking/cache/window 约束
+- 完整 reasoning 回传
+- 真实超时/预算进程组回收
+- `/status cache_rate` 真实数字验证
+- baseline 无回归的可复核证据
+
+## 必须修复的阻断项
+
+1. 实现统一的 B9 `cache_contract` 读取路径，覆盖 thinking、窗口、cache key、cache_control、usage_fields。
+2. 完成真实 ACP 初始化、session 建立、错误响应及事件协议处理。
+3. 使用 process group/session，超时或预算超限时杀死整个进程树并等待回收。
+4. 修复 usage 归一化，禁止多字段重复计数。
+5. 严格限制所有入口的结果摘要上限。
+6. 增加 `/status` 桥接前后真实 `cache_rate` 测试，并记录具体数字。
+7. 提供验收命令的完整 pytest/evals 输出及 baseline 差异。
+
+**最终结论：FAIL，不具备 B10 验收通过条件。**

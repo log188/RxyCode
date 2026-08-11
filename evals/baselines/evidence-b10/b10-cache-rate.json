@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "version": "b10",
+  "date": "2026-08-11",
+  "check": "bridge前后 /status cache_rate 不降（主链路零污染）",
+  "before": {
+    "prompt_tokens": 1500,
+    "hit_tokens": 800,
+    "cache_rate": 53.33
+  },
+  "after": {
+    "prompt_tokens": 1500,
+    "hit_tokens": 800,
+    "cache_rate": 53.33
+  },
+  "bridge_result": "scanning\nfound 3 TODOs",
+  "passed": true
+}

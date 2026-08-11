@@ -1,0 +1,56 @@
+结论：**FAIL**
+
+前三轮两个明确阻断项已修复，但本轮仍有新的阻断问题。
+
+## 判据核对
+
+1. **前缀不可变：基本通过**  
+   首位 system 保持原对象与内容；首条非 system 时，后续 system 不再被提升。
+
+2. **摘要模板：通过**  
+   包含 Objective / Work State / Next Move，并携带任务状态。
+
+3. **尾部保留与 25% 预算：FAIL**  
+   预算循环存在摘要重复问题：
+
+   ```python
+   tighter = _fold_middle_section(
+       result,
+       ...,
+       existing_summary=existing_summary,
+   )
+   ```
+
+   `result` 已包含旧摘要，但 `_fold_middle_section` 只把 `messages[0]` 的 system 当作头部 system。旧摘要位于 body，会被作为非首位 system 保留；同时又追加一个新的摘要。因此预算循环可能产生多个重复摘要，并且 `fixed_overhead` 也会失真，无法可靠满足 25% 预算约束。
+
+   **阻断项 B4-1：预算收紧不得重复保留/追加摘要。**
+
+4. **遥测：通过**  
+   `tokens_before/tokens_after` 已返回并记录。
+
+5. **assistant/tool 配对：测试范围内通过**  
+   R3 的“不吞并其他 assistant 的 tool result”修复已体现；匹配 tool 会被正确绑定，不匹配时停止收集。
+
+6. **Agent 集成：基本通过**  
+   已移除旧的原位 ToolMessage 截断逻辑，统一调用 `compact_messages`，并计入 reserved tokens。
+
+## CB1-CB8
+
+- **CB1：通过**，压缩入口已统一。
+- **CB2：通过**，非压缩路径不再原位截断 tool 内容。
+- **CB3：通过**，摘要模板和状态信息存在。
+- **CB4：基本通过**，首位 system 前缀不变。
+- **CB5：通过**，工具配对校验失败会回退。
+- **CB6：FAIL**，预算循环可能产生重复摘要并破坏预算计算。
+- **CB7：通过**，system 不裁剪的测试覆盖较充分。
+- **CB8：通过**，遥测和触发日志已接入。
+
+## 前三轮阻断项
+
+1. 首条非 system 时 system 被提升：**已修复**。
+2. 吞并其他 assistant 的 tool result：**已修复**。
+3. 预算循环重复生成摘要：**未完全修复**。虽然传入了 `existing_summary`，但旧摘要仍会被当作 body 中的 system 保留，导致重复摘要。
+
+### 必须修复
+
+在预算循环或 `_fold_middle_section` 中显式识别并移除/唯一保留已有摘要，确保每次结果最多一个摘要消息，并重新按最终固定开销计算预算。修复后再审。

@@ -1,0 +1,30 @@
+## B3 第 6 轮复审结论：PASS
+
+### 判据 1–6
+
+1. **断点预算**：统一经 `allocate_breakpoints` 分配，顺序为 tools → system → messages，硬上限 ≤4。通过。  
+2. **TTL**：支持默认 5m、可配置 1h 及数字秒，并注入 Anthropic 请求。通过。  
+3. **Provider 分派**：Anthropic 才注入 `cache_control`；OpenAI/DeepSeek 不注入。通过。  
+4. **末条 user 断点**：仅标记最后一条 user，且不修改原消息对象。通过。  
+5. **tool pair 完整性**：检测孤儿、拆对、未消费 tool call、连续 tool result。通过。  
+6. **DeepSeek 自动前缀**：使用 `prompt_cache_hit_tokens` 验证，MISS 发出警告。通过。  
+
+### CB1–CB8
+
+- 断点逻辑集中于 `core/cache_policy.py`
+- Anthropic/OpenAI/DeepSeek 行为隔离
+- tools 断点路径与 `_apply_cache_control` 判定一致
+- tool 配对完整性已补充尾部未消费检查
+- TTL 配置链路完整
+- 原消息对象不被修改
+- 不支持缓存的模型保持兼容行为
+- 无绕过 `_apply_cache_control` 的独立非 Anthropic 注入路径
+
+### 前五轮阻断项
+
+1. `_raw_stream` tools 断点绕过 CB3：**已修复**，并新增 OpenAI 负向测试。  
+2. `tool_pair_integrity` 未检查未消费 tool call：**已修复**，并新增覆盖测试。  
+
+验收证据充分：缓存策略测试 33 passed、streaming 通过、ruff 通过、eval GATE PASS、命中率达标。
+
+**最终：PASS，无阻断项。**

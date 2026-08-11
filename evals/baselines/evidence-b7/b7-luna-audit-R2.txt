@@ -1,0 +1,63 @@
+## 结论：FAIL
+
+R1 五项中：
+
+- ToolMessage 导入：已闭合
+- stuck 外层循环退出：已闭合，`stuck_triggered` 可跳出外层轮次
+- synthesis 轮 Git 快照：已在 `_raw_stream` 前捕获
+- DSML 混合文本：已提取 `<tool_calls>...</tool_calls>` 片段
+- `pwd` 基础转换：常规场景已修复
+
+但仍存在阻断项：
+
+### 阻断项 1：Shell 转换仍会改写引号内文本
+
+以下转换均未做引号感知：
+
+```python
+re.sub(r"\b2>/dev/null\b", "2>$null", command)
+```
+
+以及：
+
+```python
+if "||" in command and command.count("||") == 1:
+    ...
+```
+
+例如：
+
+```bash
+echo "2>/dev/null"
+echo "a || b"
+echo "x; pwd"
+```
+
+可能被改写为：
+
+```powershell
+echo "2>$null"
+echo "a; if (-not $?) { b }"
+echo "x; Get-Location"
+```
+
+这仍违反“不得改写引号文本”的转换约束，且可能改变用户命令语义。
+
+### 修复要求
+
+将 POSIX 转换统一改为引号感知解析，仅在单引号、双引号之外进行：
+
+- `2>/dev/null`
+- `pwd`
+- `||`
+- 其他新增 shell 重写规则
+
+并补充至少以下回归测试：
+
+```python
+assert convert('echo "2>/dev/null"') == 'echo "2>/dev/null"'
+assert convert('echo "a || b"') == 'echo "a || b"'
+assert convert('echo "x; pwd"') == 'echo "x; pwd"'
+```
+
+完成上述修复并通过回归后，可重新复审。

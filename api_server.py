@@ -1385,6 +1385,55 @@ async def _execute_command(req: CommandRequest):
             },
         }
 
+    if c == "/bridge":
+        # B10: 单 agent 桥接命令——官方 agent CLI 旁路（白名单默认禁用）。
+        # 用法：/bridge <agent> <task>（如 /bridge claude 扫描 TODO）
+        parts = (args or "").strip().split(None, 1)
+        agent_name = (parts[0] if parts else "").strip()
+        task = (parts[1] if len(parts) > 1 else "").strip()
+        from .config.settings import load_config as _bridge_load_config
+
+        exec_cfg = _bridge_load_config().get("execution", {})
+        if not bool(exec_cfg.get("run_official_agent_enabled", False)):
+            return {
+                "action": "bridge_disabled",
+                "message": (
+                    "[bridge] run_official_agent 默认禁用；"
+                    "请在 config.yaml 设置 execution.run_official_agent_enabled=true"
+                ),
+            }
+        if not agent_name or not task:
+            return {
+                "action": "bridge_usage",
+                "message": "用法: /bridge <agent> <task>（支持 claude / grok）",
+            }
+        from .core.bridge.base import BridgeConfig
+        from .core.bridge.lifecycle import run_official_agent
+
+        if agent_name.lower() in ("claude", "claude-code"):
+            from .core.bridge.acp import ACPBridge
+
+            bridge = ACPBridge(cfg=BridgeConfig())
+        elif agent_name.lower() in ("grok", "grok-build"):
+            from .core.bridge.cli import CLIBridge
+
+            bridge = CLIBridge(
+                cfg=BridgeConfig(), cmd=["grok", "agent", "stdio"]
+            )
+        else:
+            return {
+                "action": "bridge_unknown_agent",
+                "message": f"[bridge] unknown agent {agent_name!r}; supported: claude, grok",
+            }
+        try:
+            summary = await run_official_agent(bridge, task)
+        except Exception as exc:  # pragma: no cover - 桥接异常兜底
+            summary = f"[bridge] error: {exc}"
+        return {
+            "action": "bridge_result",
+            "message": summary[:2000],
+        }
+
 
     # ── /queue ──────────────────────────────────────────────
     if c == "/queue":

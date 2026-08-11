@@ -1,0 +1,12 @@
+﻿
+C:\Windows\TEMP\opencode\b3_evals_wt.log:1406:|-- GATEFINAL_SIGNOFF_2026-07-28.md (1.4KB)
+C:\Windows\TEMP\opencode\b3_evals_wt.log:3563:Name          : GATEFINAL_SIGNOFF_2026-07-28.md
+C:\Windows\TEMP\opencode\b3_evals_wt.log:4117:|-- GATEFINAL_SIGNOFF_2026-07-28.md (1.4KB)
+C:\Windows\TEMP\opencode\b3_evals_wt.log:4712:317:     Cache-hit extraction is delegated to the provider layer
+C:\Windows\TEMP\opencode\b3_evals_wt.log:6911:  Tagged with ai, opensource, agents, programming.What it is: A personal 
+AI assistant gateway �� built by Peter Steinberger �� that connects LLMs to your own devices and apps through messaging
+ platforms you already use. Why it matters in 2026: 374K+ stars and still climbing.
+C:\Windows\TEMP\opencode\b3_evals_wt.log:7065:Eval suite complete: 18/19 passed (94.7%)
+C:\Windows\TEMP\opencode\b3_evals_wt.log:7109:GATE: PASS (pass rate 94.7% >= baseline 89.5%)
+
+

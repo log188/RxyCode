@@ -1,0 +1,42 @@
+结论：**FAIL**
+
+R6 三项修复未完全闭合，存在以下阻断项：
+
+1. **Reviewer 的 `_review_answer()` 实际无法正常调用 LLM**
+   ```python
+   resp = await self._raw_stream(...)
+   ```
+   主流程中 `_raw_stream()` 明确按 async iterator 使用：
+   ```python
+   async for chunk in self._raw_stream(...):
+   ```
+   因此这里 `await` 会触发 `TypeError`，随后被 `except` 吞掉并恒返回 `0.0`。Reviewer 永远判低分，功能失效。
+
+   **修复：**
+   ```python
+   resp = self._raw_stream(...)
+   async for chunk in resp:
+       ...
+   ```
+
+2. **Git snapshot 的 restore 不能保留快照前的未暂存修改**
+   `git checkout -- .` 会把所有 tracked 文件的工作区内容恢复到 index，快照前的 unstaged changes 会被覆盖。它只能保留 index 中的 staged 内容及 untracked 文件，不能满足“保留快照前未提交/未暂存修改”的判据。
+
+   **修复：**记录快照时的工作区 diff，并在 restore 时仅回滚快照之后产生的修改；或使用临时 stash/patch 方案精确恢复。
+
+3. **stuck recovery 可能返回 DSML 工具调用文本而非最终答案**
+   当前逻辑：
+   ```python
+   if synth_answer.strip():
+       answer = synth_answer
+   if not answer.strip():
+       answer = fallback
+   ```
+   若原始 `answer` 是非空 DSML 文本，而 recovery synthesis 为空，则不会触发 fallback，最终可能直接返回工具调用文本。
+
+   **修复：** recovery synthesis 为空时无条件使用 fallback，或先清空原始工具调用答案：
+   ```python
+   answer = synth_answer.strip() or fallback_answer
+   ```
+
+Reviewer 预算的 `regeneration` 计数及耗尽后禁止 regeneration 逻辑本身已闭合；stuck 外层跳出及 recovery 调用次数也基本满足 R6-3。CB1-CB8 不能据此判定全部通过，以上阻断项修复后再复审。
