@@ -1,5 +1,6 @@
 id: readcode-pipeline-nodes
 category: readcode
+effect: read
 prompt: |
   说明并解释：本仓库的 core/graph.py 中，LangGraph pipeline 从 START 到 END 依次经过哪些节点？
   请列出节点名称，并说明 executor 节点之后、validator 节点之前/之后的路由逻辑（validator 失败时会路由到哪个节点）。

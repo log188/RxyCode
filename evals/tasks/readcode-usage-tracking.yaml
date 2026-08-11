@@ -1,5 +1,6 @@
 id: readcode-usage-tracking
 category: readcode
+effect: read
 prompt: |
   说明并解释：本仓库的 core/agent_v2.py 中的 UsageTrackingLLM 类包装了哪些 LLM 调用方法（至少说明 ainvoke 和 astream）？
   token 用量是通过哪个函数记录到 token_stats 的？bind_tools 返回的新实例为什么要重新包装？

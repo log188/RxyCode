@@ -18,6 +18,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -273,6 +274,146 @@ def _estimate_tokens(text, spec: str = "tiktoken:o200k_base") -> int:
     if not isinstance(text, str):
         text = str(text)
     return count_tokens(text, spec)
+
+
+def _tool_output_is_error(result_text: str) -> bool:
+    """B7: 判断工具输出是否为失败结果。
+
+    以 ``[error ...]`` 前缀（_execute_tool / tool_orchestrator 的统一
+    失败格式）开头的视为失败；其余视为成功。空输出视为成功（不误报）。
+    """
+    text = (result_text or "").strip()
+    return text.lower().startswith("[error")
+
+
+def _extract_error_hint(result_text: str) -> str:
+    """从失败结果中提取简短错误提示（去掉 [error executing X: 前缀）。"""
+    text = (result_text or "").strip()
+    if text.lower().startswith("[error executing "):
+        tail = text[len("[error executing "):]
+        if ":" in tail:
+            tail = tail.split(":", 1)[1].strip()
+        return tail[:200]
+    if text.lower().startswith("[error"):
+        return text[:200]
+    return ""
+
+
+def _should_cache_answer(answer: str, *, tool_error_occurred: bool = False) -> bool:
+    """B7: 失败结果不缓存（共性 8：任何新增缓存路径对失败结果一律 miss）。
+
+    空答案 / ``[error ...]`` 前缀的错误串 / 本轮发生工具错误的场景
+    （luna R8-2：工具失败后模型生成普通文本，如"无法完成该操作"，
+    同样禁止写入应用缓存，避免下次直接复用失败结果）一律不缓存。
+    """
+    if tool_error_occurred:
+        return False
+    if not answer:
+        return False
+    return not _tool_output_is_error(answer)
+
+
+def _parse_dsml_tool_calls(answer: str) -> list[dict] | None:
+    """B7: 解析 DSML 文本格式的工具调用（deepseek FC 偶发输出兜底）。
+
+    deepseek-v4-flash 声明 supports_function_calling=True，但采样时偶发
+    输出 DSML 文本而非原生 tool_calls。实测存在两种标签变体：
+      - 标准：``<dsml><tool_calls><invoke name="X">...</invoke></tool_calls></dsml>``
+      - 变体：``<||DSML||tool_calls><||DSML||invoke name="X">...``
+        （``||`` 分隔符风格，实测 U+FF5C 全角竖线）
+    agent 若无兜底，文本会直接进入答案（pattern 检查失败）。
+
+    输出与 ``_fast_reply_with_tools`` 重组结果同构的 ``list[dict]``：
+    ``[{"name", "args", "id", "type": "tool_call"}]``。无 DSML 或解析失败
+    返回 None（不干扰正常路径）。
+    """
+    if not answer or ("tool_calls" not in answer and "invoke" not in answer):
+        return None
+    # 归一化标签变体：<dsml>、<||DSML||>、<____DSML____> 等任意前缀
+    # （含实测 U+FF5C 全角竖线）统一剥掉，保留标准标签名。
+    normalized = re.sub(
+        r"</?\s*[^<>]*?(\s*(?:tool_calls|invoke|parameter)\b)",
+        lambda m: (
+            ("</" if m.group(0).lstrip().startswith("</") else "<")
+            + m.group(1).strip()
+        ),
+        answer,
+        flags=re.IGNORECASE,
+    )
+    if "<tool_calls>" not in normalized and "<invoke" not in normalized:
+        return None
+    # luna R1-4: DSML 前后可能混有普通说明文本 → 只提取 <tool_calls>..</tool_calls>
+    # 片段（无外层包裹时退化为整体）。提取后仍有 <invoke> 才算有效。
+    block = re.search(r"<tool_calls>.*?</tool_calls>", normalized, re.DOTALL)
+    candidate = block.group(0) if block else normalized
+    if "<invoke" not in candidate:
+        return None
+    try:
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring(f"<root>{candidate}</root>")
+    except (ET.ParseError, ValueError):
+        return None
+    # 定位 tool_calls 容器（可嵌套在 <dsml>/<root> 内，递归查找）。
+    container = root if root.tag == "tool_calls" else None
+    if container is None:
+        container = next(iter(root.iter("tool_calls")), None)
+    if container is None:
+        return None
+    calls: list[dict] = []
+    for index, invoke in enumerate(container.findall("invoke")):
+        name = invoke.get("name") or ""
+        if not name:
+            continue
+        args: dict = {}
+        for param in invoke.findall("parameter"):
+            key = param.get("name") or ""
+            if not key:
+                continue
+            value = param.text or ""
+            # 数字参数尽量保持数字类型（offset/limit 等）。
+            try:
+                if "." in value:
+                    args[key] = float(value)
+                else:
+                    args[key] = int(value)
+            except ValueError:
+                args[key] = value
+        calls.append(
+            {
+                "name": name,
+                "args": args,
+                "id": f"dsml_{index}",
+                "type": "tool_call",
+            }
+        )
+    return calls
+
+
+def _error_feedback_wrap(
+    messages,
+    tool_name: str,
+    result_text: str,
+    *,
+    tool_id: str,
+    feedback_fn,
+):
+    """B7: 错误回喂包装（测试辅助）：把引导语消息原地追加在断点之后。
+
+    仅当 result_text 为失败结果时追加引导语 ToolMessage；成功结果
+    不追加（返回原列表引用）。前缀消息（system 等）保持字节不变。
+    """
+    if not _tool_output_is_error(result_text):
+        return messages
+    from langchain_core.messages import ToolMessage
+
+    messages.append(
+        ToolMessage(
+            content=feedback_fn(tool_name, result_text),
+            tool_call_id=tool_id or tool_name,
+        )
+    )
+    return messages
 
 
 def _usage_counts(resp, messages=None) -> tuple[int, int]:
@@ -1390,6 +1531,14 @@ class AgentV2:
             self._resolved_limits = None
         # B6: 工具输出去重指纹表（工具名 → 指纹集合），会话内累计。
         self._seen_tool_fingerprints: dict[str, set[str]] = {}
+        # B7: 本轮是否发生工具错误（缓存防护，luna R8-2）。
+        self._tool_error_occurred = False
+        # B7: 死循环检测器（fast path 工具循环开始时重建；此处兜底占位）。
+        from RxyCode.RxyCode1_1_0.core.stuck_detector import StuckDetector
+
+        self._stuck_detector: StuckDetector = StuckDetector(threshold=3)
+        # B7: Git 快照（LLM 调用前捕获，坏结局回滚）。
+        self._git_snapshot = None
         # B3 (CB2): TTL 档位写入 model_config（供 Anthropic provider 注入请求）。
         try:
             from .cache_policy import resolve_ttl_seconds
@@ -1895,6 +2044,108 @@ class AgentV2:
             )
         fingerprints.add(fingerprint)
         return content
+
+    def _error_feedback_message(self, tool_name: str, result_text: str) -> str:
+        """B7: 错误回喂引导语（smolagents 语义："换一种完全不同的方法"）。
+
+        只对失败结果（_tool_output_is_error）生成；成功结果原样返回。
+        调用方把它作为独立 ToolMessage **追加在断点之后**（不碰前缀）。
+        """
+        if not _tool_output_is_error(result_text):
+            return result_text
+        hint = _extract_error_hint(result_text)
+        return (
+            f"[error feedback] 工具 {tool_name} 执行失败"
+            f"（{hint or '未知错误'}）。请换一种完全不同的方法重试，"
+            "不要重复刚才的操作。"
+        )
+
+    def _stuck_feedback_message(self, reason: str | None) -> str:
+        """B7: 死循环干预引导语（追加在断点之后）。"""
+        detail = reason or "检测到重复动作"
+        return (
+            f"[stuck detection] {detail}。已中止当前循环，请停下来总结"
+            "已经做过的事，换一种完全不同的思路，或直接给出当前可交付的答案。"
+        )
+
+    def _capture_git_snapshot(self) -> bool:
+        """B7: LLM 调用前捕获 Git 快照（opencode snapshot 语义）。
+
+        每轮 LLM 调用前调用；git 不可用/非仓库时容错（返回 False，
+        不阻断主流程）。快照存于 ``self._git_snapshot`` 供坏结局回滚。
+        """
+        from RxyCode.RxyCode1_1_0.core.snapshot import GitSnapshot
+
+        snapshot = getattr(self, "_git_snapshot", None)
+        if snapshot is None:
+            snapshot = self._git_snapshot = GitSnapshot(repo_path=".")
+        return snapshot.capture()
+
+    async def _synthesis_with_tools(
+        self,
+        messages,
+        tool_calls,
+        *,
+        mode: str | None,
+        tui,
+        fallback_answer: str,
+    ) -> str:
+        """B7: 合成轮检测到 DSML 工具调用时，追加执行并再给一次 synthesis。
+
+        max_rounds 耗尽后模型仍输出 DSML（想调工具）→ 执行这些调用，
+        把结果追加进 messages，再调一次无工具 synthesis 产最终答案。
+        最多一轮（防死循环）；失败/无答案时回退原文本。
+        """
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        ai_kwargs = {}
+        messages.append(AIMessage(
+            content="",
+            tool_calls=tool_calls,
+            additional_kwargs=ai_kwargs,
+        ))
+        for tc in tool_calls:
+            tool_name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+            tool_args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+            tool_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+            result = await self._execute_tool(
+                tool_name,
+                tool_args,
+                mode=mode,
+                call_id=tool_id or None,
+            )
+            messages.append(
+                ToolMessage(
+                    content=self._truncate_tool_text(
+                        self._dedupe_tool_output(tool_name, str(result))
+                    ),
+                    tool_call_id=tool_id or tool_name,
+                )
+            )
+            is_error = _tool_output_is_error(str(result))
+            if is_error:
+                # luna R9-1: synthesis 阶段的工具错误也记录（缓存防护）。
+                self._tool_error_occurred = True
+                messages.append(
+                    ToolMessage(
+                        content=self._error_feedback_message(tool_name, str(result)),
+                        tool_call_id=tool_id or tool_name,
+                    )
+                )
+        # 再给一次 synthesis（无工具）；LLM 调用前捕获 Git 快照（luna R1-3）。
+        self._capture_git_snapshot()
+        parts: list[str] = []
+        async for chunk in self._raw_stream(messages):
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta
+            token = getattr(delta, "content", "") or ""
+            if token:
+                parts.append(token)
+                if tui and hasattr(tui, "stream_token"):
+                    tui.stream_token(token)
+        out = "".join(parts)
+        return out or fallback_answer
 
     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
         """Phase 3 M4：请求层解析最终 max_tokens（含 context 钳制）。
@@ -2724,9 +2975,18 @@ class AgentV2:
                 1,
                 int(execution_cfg.get("max_tool_rounds", 10) or 10),
             )
+            # B7: 死循环检测（阈值可配，默认 3）。
+            from RxyCode.RxyCode1_1_0.core.stuck_detector import StuckDetector
+
+            try:
+                stuck_threshold = int(execution_cfg.get("stuck_threshold", 3) or 3)
+            except (TypeError, ValueError):
+                stuck_threshold = 3
+            self._stuck_detector = StuckDetector(threshold=max(2, stuck_threshold))
 
             for round_num in range(max_rounds):
                 round_received_real_usage = False
+                stuck_triggered = False
                 if tui and hasattr(tui, "write_progress"):
                     tui.write_progress(f"Thinking... (round {round_num + 1})")
 
@@ -2740,6 +3000,9 @@ class AgentV2:
                 answer_parts = []
                 _reasoning_buffer = []
                 tool_calls_acc: dict = {}
+
+                # B7: LLM 调用前捕获 Git 快照（坏结局可回滚到快照点）。
+                self._capture_git_snapshot()
 
                 async for chunk in self._raw_stream(messages, core_tools):
                     if not getattr(chunk, "choices", None):
@@ -2838,6 +3101,11 @@ class AgentV2:
                     )
 
                 if not tool_calls:
+                    # B7: deepseek FC=True 偶发输出 DSML 文本而非原生
+                    # tool_calls → 兜底解析，避免文本直接进答案。
+                    tool_calls = _parse_dsml_tool_calls(answer) or []
+
+                if not tool_calls:
                     # No tool calls - tokens already streamed in real-time, done
                     break
 
@@ -2886,6 +3154,48 @@ class AgentV2:
                             tool_call_id=tool_id or tool_name,
                         )
                     )
+
+                    # B7: 错误回喂 + 死循环检测（错误消息追加在断点之后）。
+                    is_error = _tool_output_is_error(str(result))
+                    if is_error:
+                        # luna R8-2: 记录本轮发生工具错误（用于缓存防护）。
+                        self._tool_error_occurred = True
+                        messages.append(
+                            ToolMessage(
+                                content=self._error_feedback_message(
+                                    tool_name, str(result)
+                                ),
+                                tool_call_id=tool_id or tool_name,
+                            )
+                        )
+                    stuck = self._stuck_detector.record(
+                        tool_name,
+                        tool_args,
+                        failed=is_error,
+                    )
+                    if stuck:
+                        messages.append(
+                            ToolMessage(
+                                content=self._stuck_feedback_message(
+                                    self._stuck_detector.stuck_reason
+                                ),
+                                tool_call_id=tool_id or tool_name,
+                            )
+                        )
+                        _logger.warning(
+                            "B7 stuck detection tripped: %s",
+                            self._stuck_detector.stuck_reason,
+                        )
+                        # B7: 坏结局回滚到快照点（luna R5：快照的 restore 调用链）。
+                        snapshot = getattr(self, "_git_snapshot", None)
+                        if snapshot is not None and snapshot.captured:
+                            snapshot.restore()
+                        stuck_triggered = True
+                        break
+                if stuck_triggered:
+                    # luna R1-2: break 只跳内层 for tc；需真正终止外层工具轮，
+                    # 避免下一轮继续发起 LLM 调用。
+                    break
             else:
                 # Exceeded max rounds - give LLM one tool-free synthesis pass
                 if tui and hasattr(tui, "write_progress"):
@@ -2943,8 +3253,43 @@ class AgentV2:
                 if _synth_reasoning:
                     self._last_thinking = "".join(_synth_reasoning)
                     self._thinking_history.append(self._last_thinking)
+                # B7: 合成轮也可能输出 DSML（max_rounds 耗尽后模型仍想调工具）。
+                # 解析出工具调用 → 追加执行 + 再给一次 synthesis；最多一轮，
+                # 防死循环。解析失败 → 原样保留文本。
+                synth_tool_calls = _parse_dsml_tool_calls(answer) or []
+                if synth_tool_calls and answer:
+                    answer = await self._synthesis_with_tools(
+                        messages,
+                        synth_tool_calls,
+                        mode=mode,
+                        tui=tui,
+                        fallback_answer=answer,
+                    )
                 if not answer:
                     answer = "[max tool-call rounds reached]"
+
+            if stuck_triggered:
+                # luna R6-3: stuck 跳出后执行一次 tool-free synthesis 保证
+                # 最终答案，避免把最后一次工具调用/DSML 文本直接返回给用户。
+                if tui and hasattr(tui, "write_progress"):
+                    tui.write_progress("Synthesizing results (stuck recovery)...")
+                parts: list[str] = []
+                async for chunk in self._raw_stream(messages):
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    delta = chunk.choices[0].delta
+                    token = getattr(delta, "content", "") or ""
+                    if token:
+                        parts.append(token)
+                        if tui and hasattr(tui, "stream_token"):
+                            tui.stream_token(token)
+                synth_answer = "".join(parts)
+                # luna R7-3: recovery 为空时无条件 fallback，
+                # 不保留原 DSML/工具调用文本。
+                answer = (
+                    synth_answer.strip()
+                    or "[stuck detection] 已中止循环；请换一种完全不同的思路重试。"
+                )
 
             if research_policy.citations_required and research_sources:
                 supported_urls = set(research_sources)
@@ -3399,9 +3744,15 @@ class AgentV2:
                 self._last_thinking = ''.join(_reasoning_buffer)
                 self._thinking_history.append(self._last_thinking)
 
-            precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
-            if not memory_ctx:
-                semantic_cache.put(user_input, answer, namespace=cache_namespace)
+            # B7 (共性 8): 失败结果不缓存——空答案 / [error ...] 错误串 /
+            # 本轮发生工具错误（luna R8-2）一律不写入应用缓存。
+            if _should_cache_answer(
+                answer,
+                tool_error_occurred=getattr(self, "_tool_error_occurred", False),
+            ):
+                precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
+                if not memory_ctx:
+                    semantic_cache.put(user_input, answer, namespace=cache_namespace)
             self._memory.add_interaction(user_input, answer)
             self._memory.save_session()
 
@@ -3639,6 +3990,8 @@ class AgentV2:
         # 顶层显式声明的任务副作用类型（"write"/"danger"/只读效果）。默认 "auto"
         # 走启发式；evals 只读任务可显式声明 effect="search" 避免被误判。
         self._task_effect = (effect or "auto").strip().lower()
+        # luna R9-2: 顶层请求入口重置工具错误状态（避免一次错误污染后续请求）。
+        self._tool_error_occurred = False
 
         # ``download_mcp`` writes config atomically.  Reading the fingerprint
         # here makes an add/remove effective on the next request without an
@@ -3648,9 +4001,118 @@ class AgentV2:
 
         bound_run_id = get_bound_run_id()
         if bound_run_id is not None:
-            return await self._run_observed(user_input, mode, bound_run_id)
-        with run_id_context() as run_id:
-            return await self._run_observed(user_input, mode, run_id)
+            result = await self._run_observed(user_input, mode, bound_run_id)
+        else:
+            with run_id_context() as run_id:
+                result = await self._run_observed(user_input, mode, run_id)
+        # B7: reviewer 重试（默认关闭，CB8）——开启且任务重要时独立打分，
+        # 不达标重跑，同分取 API 调用最少者（SWE-agent 语义）。
+        result = await self._maybe_reviewer_retry(user_input, result, mode)
+        return result
+
+    async def _maybe_reviewer_retry(self, user_input: str, answer: str, mode: str) -> str:
+        """B7: reviewer 重试（默认关闭；开启时有预算保护）。
+
+        流程：读配置 → 未开启直接返回 → 任务重要性评估 → 独立 reviewer
+        打分 → 不达标重跑（预算内）→ 同分取 API 调用最少者。
+        """
+        from RxyCode.RxyCode1_1_0.core.reviewer_retry import (
+            ReviewerBudget,
+            pick_best_attempt,
+        )
+
+        cfg = (getattr(self, "_cfg", {}) or {}).get("execution", {})
+        rr_cfg = cfg.get("reviewer_retry") or {}
+        if not rr_cfg.get("enabled"):
+            return answer
+        min_score_raw = rr_cfg.get("min_score")
+        min_score = float(min_score_raw) if min_score_raw is not None else 0.6
+        min_imp_raw = rr_cfg.get("min_importance_score")
+        min_importance = (
+            float(min_imp_raw) if min_imp_raw is not None else 0.7
+        )
+        if not self._task_important_enough(user_input, min_importance):
+            return answer
+        budget = ReviewerBudget(max_calls=int(rr_cfg.get("max_api_calls", 3) or 3))
+        attempts: list[dict] = []
+        current = answer
+        while budget.can_retry():
+            score = await self._review_answer(user_input, current)
+            budget.consume()
+            attempts.append({
+                "score": score,
+                "api_calls": budget.calls,
+                "answer": current,
+            })
+            if score >= min_score:
+                break
+            if not budget.can_retry():
+                break
+            current = await self._regenerate_answer(user_input, mode)
+            budget.consume()
+            if not current:
+                current = answer  # 重跑失败 → 回退原答案
+        best = pick_best_attempt(attempts)
+        # luna R8-1: 若最后一次产出是 regeneration 结果且未被复审，
+        # 它至少不比原答案差（重跑语义）——预算耗尽时返回它。
+        if not best or (
+            current != answer
+            and best.get("answer") == answer
+            and not budget.can_retry()
+        ):
+            return current or answer
+        return (best or {}).get("answer") or answer
+
+    def _task_important_enough(self, user_input: str, min_importance: float) -> bool:
+        """B7: 任务重要性启发式（0-1）。含构建/修复/重构等强动词 → 高分。
+
+        luna R8-3: 阈值放宽——命中任一强动词即视为重要（0.8），
+        避免单关键词任务被错误跳过；支持中英文同义表达。
+        """
+        strong = (
+            "build", "implement", "fix", "refactor", "create", "write",
+            "generate", "add", "update", "modify", "debug",
+            "构建", "实现", "修复", "重构", "创建", "编写",
+            "生成", "新增", "更新", "修改", "调试", "修", "改",
+        )
+        text = (user_input or "").lower()
+        hits = sum(1 for w in strong if w.lower() in text)
+        # 命中 1 个强动词 → 0.8（重要）；0 个 → 0.2（非重要）。
+        score = 0.8 if hits >= 1 else 0.2
+        return score >= min_importance
+
+    async def _review_answer(self, user_input: str, answer: str) -> float:
+        """B7: 独立 reviewer 打分（0-1）。失败时保守返回低分（触发重试）。"""
+        try:
+            from langchain_core.messages import HumanMessage
+
+            prompt = (
+                "你是独立评审。任务：\n"
+                f"{user_input[:2000]}\n\n"
+                "最终答案：\n"
+                f"{answer[:4000]}\n\n"
+                "请仅返回 0 到 1 之间的一个数字，表示答案是否完成任务。"
+            )
+            stream = self._raw_stream(
+                [HumanMessage(content=prompt)], tools=None, max_tokens=10
+            )
+            text = ""
+            async for chunk in stream:
+                if getattr(chunk, "choices", None):
+                    text += getattr(chunk.choices[0].delta, "content", "") or ""
+            import re as _re
+
+            match = _re.search(r"0?\.\d+|1(?:\.0)?", text)
+            return min(1.0, max(0.0, float(match.group(0)))) if match else 0.0
+        except Exception:
+            return 0.0
+
+    async def _regenerate_answer(self, user_input: str, mode: str) -> str:
+        """B7: 重跑一次请求（reviewer 不达标时）。失败返回原答案。"""
+        try:
+            return await self._run_impl(user_input, mode=mode)
+        except Exception:
+            return ""
 
     async def _run_observed(
         self,

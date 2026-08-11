@@ -1,0 +1,539 @@
+﻿你是 RxyCode 项目的独立代码审计员（gpt-5.6-luna，zen 模式）。B7 卡第 10 轮复审。R9 两项阻断项已修复，请复审。
+
+# R9 修复情况
+1. _synthesis_with_tools 工具错误未设置 _tool_error_occurred → 已修复：synthesis 工具执行后 is_error 时设置 self._tool_error_occurred = True；新增 test_synthesis_tool_error_marks_state
+2. _tool_error_occurred 未按顶层请求重置 → 已修复：run() 入口 _task_effect 赋值后重置 _tool_error_occurred = False（不污染后续请求）；新增 test_tool_error_state_reset_per_request
+
+# 改动 diff（core/agent_v2.py）:
+diff --git a/core/agent_v2.py b/core/agent_v2.py
+index 95b0eac..b6533c5 100644
+--- a/core/agent_v2.py
++++ b/core/agent_v2.py
+@@ -18,6 +18,7 @@ import inspect
+ import json
+ import logging
+ import os
++import re
+ import tempfile
+ import threading
+ import time
+@@ -275,6 +276,146 @@ def _estimate_tokens(text, spec: str = "tiktoken:o200k_base") -> int:
+     return count_tokens(text, spec)
+ 
+ 
++def _tool_output_is_error(result_text: str) -> bool:
++    """B7: 鍒ゆ柇宸ュ叿杈撳嚭鏄惁涓哄け璐ョ粨鏋溿€?+
++    浠?``[error ...]`` 鍓嶇紑锛坃execute_tool / tool_orchestrator 鐨勭粺涓€
++    澶辫触鏍煎紡锛夊紑澶寸殑瑙嗕负澶辫触锛涘叾浣欒涓烘垚鍔熴€傜┖杈撳嚭瑙嗕负鎴愬姛锛堜笉璇姤锛夈€?+    """
++    text = (result_text or "").strip()
++    return text.lower().startswith("[error")
++
++
++def _extract_error_hint(result_text: str) -> str:
++    """浠庡け璐ョ粨鏋滀腑鎻愬彇绠€鐭敊璇彁绀猴紙鍘绘帀 [error executing X: 鍓嶇紑锛夈€?""
++    text = (result_text or "").strip()
++    if text.lower().startswith("[error executing "):
++        tail = text[len("[error executing "):]
++        if ":" in tail:
++            tail = tail.split(":", 1)[1].strip()
++        return tail[:200]
++    if text.lower().startswith("[error"):
++        return text[:200]
++    return ""
++
++
++def _should_cache_answer(answer: str, *, tool_error_occurred: bool = False) -> bool:
++    """B7: 澶辫触缁撴灉涓嶇紦瀛橈紙鍏辨€?8锛氫换浣曟柊澧炵紦瀛樿矾寰勫澶辫触缁撴灉涓€寰?miss锛夈€?+
++    绌虹瓟妗?/ ``[error ...]`` 鍓嶇紑鐨勯敊璇覆 / 鏈疆鍙戠敓宸ュ叿閿欒鐨勫満鏅?+    锛坙una R8-2锛氬伐鍏峰け璐ュ悗妯″瀷鐢熸垚鏅€氭枃鏈紝濡?鏃犳硶瀹屾垚璇ユ搷浣?锛?+    鍚屾牱绂佹鍐欏叆搴旂敤缂撳瓨锛岄伩鍏嶄笅娆＄洿鎺ュ鐢ㄥけ璐ョ粨鏋滐級涓€寰嬩笉缂撳瓨銆?+    """
++    if tool_error_occurred:
++        return False
++    if not answer:
++        return False
++    return not _tool_output_is_error(answer)
++
++
++def _parse_dsml_tool_calls(answer: str) -> list[dict] | None:
++    """B7: 瑙ｆ瀽 DSML 鏂囨湰鏍煎紡鐨勫伐鍏疯皟鐢紙deepseek FC 鍋跺彂杈撳嚭鍏滃簳锛夈€?+
++    deepseek-v4-flash 澹版槑 supports_function_calling=True锛屼絾閲囨牱鏃跺伓鍙?+    杈撳嚭 DSML 鏂囨湰鑰岄潪鍘熺敓 tool_calls銆傚疄娴嬪瓨鍦ㄤ袱绉嶆爣绛惧彉浣擄細
++      - 鏍囧噯锛歚`<dsml><tool_calls><invoke name="X">...</invoke></tool_calls></dsml>``
++      - 鍙樹綋锛歚`<||DSML||tool_calls><||DSML||invoke name="X">...``
++        锛坄`||`` 鍒嗛殧绗﹂鏍硷紝瀹炴祴 U+FF5C 鍏ㄨ绔栫嚎锛?+    agent 鑻ユ棤鍏滃簳锛屾枃鏈細鐩存帴杩涘叆绛旀锛坧attern 妫€鏌ュけ璐ワ級銆?+
++    杈撳嚭涓?``_fast_reply_with_tools`` 閲嶇粍缁撴灉鍚屾瀯鐨?``list[dict]``锛?+    ``[{"name", "args", "id", "type": "tool_call"}]``銆傛棤 DSML 鎴栬В鏋愬け璐?+    杩斿洖 None锛堜笉骞叉壈姝ｅ父璺緞锛夈€?+    """
++    if not answer or ("tool_calls" not in answer and "invoke" not in answer):
++        return None
++    # 褰掍竴鍖栨爣绛惧彉浣擄細<dsml>銆?||DSML||>銆?____DSML____> 绛変换鎰忓墠缂€
++    # 锛堝惈瀹炴祴 U+FF5C 鍏ㄨ绔栫嚎锛夌粺涓€鍓ユ帀锛屼繚鐣欐爣鍑嗘爣绛惧悕銆?+    normalized = re.sub(
++        r"</?\s*[^<>]*?(\s*(?:tool_calls|invoke|parameter)\b)",
++        lambda m: (
++            ("</" if m.group(0).lstrip().startswith("</") else "<")
++            + m.group(1).strip()
++        ),
++        answer,
++        flags=re.IGNORECASE,
++    )
++    if "<tool_calls>" not in normalized and "<invoke" not in normalized:
++        return None
++    # luna R1-4: DSML 鍓嶅悗鍙兘娣锋湁鏅€氳鏄庢枃鏈?鈫?鍙彁鍙?<tool_calls>..</tool_calls>
++    # 鐗囨锛堟棤澶栧眰鍖呰９鏃堕€€鍖栦负鏁翠綋锛夈€傛彁鍙栧悗浠嶆湁 <invoke> 鎵嶇畻鏈夋晥銆?+    block = re.search(r"<tool_calls>.*?</tool_calls>", normalized, re.DOTALL)
++    candidate = block.group(0) if block else normalized
++    if "<invoke" not in candidate:
++        return None
++    try:
++        import xml.etree.ElementTree as ET
++
++        root = ET.fromstring(f"<root>{candidate}</root>")
++    except (ET.ParseError, ValueError):
++        return None
++    # 瀹氫綅 tool_calls 瀹瑰櫒锛堝彲宓屽鍦?<dsml>/<root> 鍐咃紝閫掑綊鏌ユ壘锛夈€?+    container = root if root.tag == "tool_calls" else None
++    if container is None:
++        container = next(iter(root.iter("tool_calls")), None)
++    if container is None:
++        return None
++    calls: list[dict] = []
++    for index, invoke in enumerate(container.findall("invoke")):
++        name = invoke.get("name") or ""
++        if not name:
++            continue
++        args: dict = {}
++        for param in invoke.findall("parameter"):
++            key = param.get("name") or ""
++            if not key:
++                continue
++            value = param.text or ""
++            # 鏁板瓧鍙傛暟灏介噺淇濇寔鏁板瓧绫诲瀷锛坥ffset/limit 绛夛級銆?+            try:
++                if "." in value:
++                    args[key] = float(value)
++                else:
++                    args[key] = int(value)
++            except ValueError:
++                args[key] = value
++        calls.append(
++            {
++                "name": name,
++                "args": args,
++                "id": f"dsml_{index}",
++                "type": "tool_call",
++            }
++        )
++    return calls
++
++
++def _error_feedback_wrap(
++    messages,
++    tool_name: str,
++    result_text: str,
++    *,
++    tool_id: str,
++    feedback_fn,
++):
++    """B7: 閿欒鍥炲杺鍖呰锛堟祴璇曡緟鍔╋級锛氭妸寮曞璇秷鎭師鍦拌拷鍔犲湪鏂偣涔嬪悗銆?+
++    浠呭綋 result_text 涓哄け璐ョ粨鏋滄椂杩藉姞寮曞璇?ToolMessage锛涙垚鍔熺粨鏋?+    涓嶈拷鍔狅紙杩斿洖鍘熷垪琛ㄥ紩鐢級銆傚墠缂€娑堟伅锛坰ystem 绛夛級淇濇寔瀛楄妭涓嶅彉銆?+    """
++    if not _tool_output_is_error(result_text):
++        return messages
++    from langchain_core.messages import ToolMessage
++
++    messages.append(
++        ToolMessage(
++            content=feedback_fn(tool_name, result_text),
++            tool_call_id=tool_id or tool_name,
++        )
++    )
++    return messages
++
++
+ def _usage_counts(resp, messages=None) -> tuple[int, int]:
+     """Extract provider usage without mutating process-wide counters."""
+     usage = getattr(resp, "usage_metadata", None)
+@@ -878,9 +1019,13 @@ class AgentV2:
+                     or 30000
+                 ),
+             )
++            # 鍙€夌洰褰曡鐩栵細骞惰/闅旂杩愯锛坋vals 瀛愯繘绋嬶級鏃舵寚鍚戠嫭绔嬬洰褰曪紝
++            # 閬垮厤璺ㄨ繘绋?journal 閿佺珵浜夛紙ToolJournalBusyError锛夈€?+            journal_dir = execution_cfg.get("tool_journal_dir") or None
+             self._tool_journal = ToolExecutionJournal(
+                 retention_limit=journal_retention,
+                 max_result_chars=journal_max_result,
++                directory=journal_dir,
+             )
+             if self._attempt_store is None:
+                 # The side-effect identity must remain durable even when graph
+@@ -1390,6 +1535,14 @@ class AgentV2:
+             self._resolved_limits = None
+         # B6: 宸ュ叿杈撳嚭鍘婚噸鎸囩汗琛紙宸ュ叿鍚?鈫?鎸囩汗闆嗗悎锛夛紝浼氳瘽鍐呯疮璁°€?         self._seen_tool_fingerprints: dict[str, set[str]] = {}
++        # B7: 鏈疆鏄惁鍙戠敓宸ュ叿閿欒锛堢紦瀛橀槻鎶わ紝luna R8-2锛夈€?+        self._tool_error_occurred = False
++        # B7: 姝诲惊鐜娴嬪櫒锛坒ast path 宸ュ叿寰幆寮€濮嬫椂閲嶅缓锛涙澶勫厹搴曞崰浣嶏級銆?+        from RxyCode.RxyCode1_1_0.core.stuck_detector import StuckDetector
++
++        self._stuck_detector: StuckDetector = StuckDetector(threshold=3)
++        # B7: Git 蹇収锛圠LM 璋冪敤鍓嶆崟鑾凤紝鍧忕粨灞€鍥炴粴锛夈€?+        self._git_snapshot = None
+         # B3 (CB2): TTL 妗ｄ綅鍐欏叆 model_config锛堜緵 Anthropic provider 娉ㄥ叆璇锋眰锛夈€?         try:
+             from .cache_policy import resolve_ttl_seconds
+@@ -1896,6 +2049,108 @@ class AgentV2:
+         fingerprints.add(fingerprint)
+         return content
+ 
++    def _error_feedback_message(self, tool_name: str, result_text: str) -> str:
++        """B7: 閿欒鍥炲杺寮曞璇紙smolagents 璇箟锛?鎹竴绉嶅畬鍏ㄤ笉鍚岀殑鏂规硶"锛夈€?+
++        鍙澶辫触缁撴灉锛坃tool_output_is_error锛夌敓鎴愶紱鎴愬姛缁撴灉鍘熸牱杩斿洖銆?+        璋冪敤鏂规妸瀹冧綔涓虹嫭绔?ToolMessage **杩藉姞鍦ㄦ柇鐐逛箣鍚?*锛堜笉纰板墠缂€锛夈€?+        """
++        if not _tool_output_is_error(result_text):
++            return result_text
++        hint = _extract_error_hint(result_text)
++        return (
++            f"[error feedback] 宸ュ叿 {tool_name} 鎵ц澶辫触"
++            f"锛坽hint or '鏈煡閿欒'}锛夈€傝鎹竴绉嶅畬鍏ㄤ笉鍚岀殑鏂规硶閲嶈瘯锛?
++            "涓嶈閲嶅鍒氭墠鐨勬搷浣溿€?
++        )
++
++    def _stuck_feedback_message(self, reason: str | None) -> str:
++        """B7: 姝诲惊鐜共棰勫紩瀵艰锛堣拷鍔犲湪鏂偣涔嬪悗锛夈€?""
++        detail = reason or "妫€娴嬪埌閲嶅鍔ㄤ綔"
++        return (
++            f"[stuck detection] {detail}銆傚凡涓褰撳墠寰幆锛岃鍋滀笅鏉ユ€荤粨"
++            "宸茬粡鍋氳繃鐨勪簨锛屾崲涓€绉嶅畬鍏ㄤ笉鍚岀殑鎬濊矾锛屾垨鐩存帴缁欏嚭褰撳墠鍙氦浠樼殑绛旀銆?
++        )
++
++    def _capture_git_snapshot(self) -> bool:
++        """B7: LLM 璋冪敤鍓嶆崟鑾?Git 蹇収锛坥pencode snapshot 璇箟锛夈€?+
++        姣忚疆 LLM 璋冪敤鍓嶈皟鐢紱git 涓嶅彲鐢?闈炰粨搴撴椂瀹归敊锛堣繑鍥?False锛?+        涓嶉樆鏂富娴佺▼锛夈€傚揩鐓у瓨浜?``self._git_snapshot`` 渚涘潖缁撳眬鍥炴粴銆?+        """
++        from RxyCode.RxyCode1_1_0.core.snapshot import GitSnapshot
++
++        snapshot = getattr(self, "_git_snapshot", None)
++        if snapshot is None:
++            snapshot = self._git_snapshot = GitSnapshot(repo_path=".")
++        return snapshot.capture()
++
++    async def _synthesis_with_tools(
++        self,
++        messages,
++        tool_calls,
++        *,
++        mode: str | None,
++        tui,
++        fallback_answer: str,
++    ) -> str:
++        """B7: 鍚堟垚杞娴嬪埌 DSML 宸ュ叿璋冪敤鏃讹紝杩藉姞鎵ц骞跺啀缁欎竴娆?synthesis銆?+
++        max_rounds 鑰楀敖鍚庢ā鍨嬩粛杈撳嚭 DSML锛堟兂璋冨伐鍏凤級鈫?鎵ц杩欎簺璋冪敤锛?+        鎶婄粨鏋滆拷鍔犺繘 messages锛屽啀璋冧竴娆℃棤宸ュ叿 synthesis 浜ф渶缁堢瓟妗堛€?+        鏈€澶氫竴杞紙闃叉寰幆锛夛紱澶辫触/鏃犵瓟妗堟椂鍥為€€鍘熸枃鏈€?+        """
++        from langchain_core.messages import AIMessage, ToolMessage
++
++        ai_kwargs = {}
++        messages.append(AIMessage(
++            content="",
++            tool_calls=tool_calls,
++            additional_kwargs=ai_kwargs,
++        ))
++        for tc in tool_calls:
++            tool_name = tc.get("name", "") if isinstance(tc, dict) else tc.name
++            tool_args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
++            tool_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
++            result = await self._execute_tool(
++                tool_name,
++                tool_args,
++                mode=mode,
++                call_id=tool_id or None,
++            )
++            messages.append(
++                ToolMessage(
++                    content=self._truncate_tool_text(
++                        self._dedupe_tool_output(tool_name, str(result))
++                    ),
++                    tool_call_id=tool_id or tool_name,
++                )
++            )
++            is_error = _tool_output_is_error(str(result))
++            if is_error:
++                # luna R9-1: synthesis 闃舵鐨勫伐鍏烽敊璇篃璁板綍锛堢紦瀛橀槻鎶わ級銆?+                self._tool_error_occurred = True
++                messages.append(
++                    ToolMessage(
++                        content=self._error_feedback_message(tool_name, str(result)),
++                        tool_call_id=tool_id or tool_name,
++                    )
++                )
++        # 鍐嶇粰涓€娆?synthesis锛堟棤宸ュ叿锛夛紱LLM 璋冪敤鍓嶆崟鑾?Git 蹇収锛坙una R1-3锛夈€?+        self._capture_git_snapshot()
++        parts: list[str] = []
++        async for chunk in self._raw_stream(messages):
++            if not getattr(chunk, "choices", None):
++                continue
++            delta = chunk.choices[0].delta
++            token = getattr(delta, "content", "") or ""
++            if token:
++                parts.append(token)
++                if tui and hasattr(tui, "stream_token"):
++                    tui.stream_token(token)
++        out = "".join(parts)
++        return out or fallback_answer
++
+     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
+         """Phase 3 M4锛氳姹傚眰瑙ｆ瀽鏈€缁?max_tokens锛堝惈 context 閽冲埗锛夈€? 
+@@ -2724,9 +2979,18 @@ class AgentV2:
+                 1,
+                 int(execution_cfg.get("max_tool_rounds", 10) or 10),
+             )
++            # B7: 姝诲惊鐜娴嬶紙闃堝€煎彲閰嶏紝榛樿 3锛夈€?+            from RxyCode.RxyCode1_1_0.core.stuck_detector import StuckDetector
++
++            try:
++                stuck_threshold = int(execution_cfg.get("stuck_threshold", 3) or 3)
++            except (TypeError, ValueError):
++                stuck_threshold = 3
++            self._stuck_detector = StuckDetector(threshold=max(2, stuck_threshold))
+ 
+             for round_num in range(max_rounds):
+                 round_received_real_usage = False
++                stuck_triggered = False
+                 if tui and hasattr(tui, "write_progress"):
+                     tui.write_progress(f"Thinking... (round {round_num + 1})")
+ 
+@@ -2741,6 +3005,9 @@ class AgentV2:
+                 _reasoning_buffer = []
+                 tool_calls_acc: dict = {}
+ 
++                # B7: LLM 璋冪敤鍓嶆崟鑾?Git 蹇収锛堝潖缁撳眬鍙洖婊氬埌蹇収鐐癸級銆?+                self._capture_git_snapshot()
++
+                 async for chunk in self._raw_stream(messages, core_tools):
+                     if not getattr(chunk, "choices", None):
+                         # usage-only / empty chunks: still try to record usage
+@@ -2837,6 +3104,11 @@ class AgentV2:
+                         round_input, _estimate_tokens(round_output_text), 0
+                     )
+ 
++                if not tool_calls:
++                    # B7: deepseek FC=True 鍋跺彂杈撳嚭 DSML 鏂囨湰鑰岄潪鍘熺敓
++                    # tool_calls 鈫?鍏滃簳瑙ｆ瀽锛岄伩鍏嶆枃鏈洿鎺ヨ繘绛旀銆?+                    tool_calls = _parse_dsml_tool_calls(answer) or []
++
+                 if not tool_calls:
+                     # No tool calls - tokens already streamed in real-time, done
+                     break
+@@ -2886,6 +3158,48 @@ class AgentV2:
+                             tool_call_id=tool_id or tool_name,
+                         )
+                     )
++
++                    # B7: 閿欒鍥炲杺 + 姝诲惊鐜娴嬶紙閿欒娑堟伅杩藉姞鍦ㄦ柇鐐逛箣鍚庯級銆?+                    is_error = _tool_output_is_error(str(result))
++                    if is_error:
++                        # luna R8-2: 璁板綍鏈疆鍙戠敓宸ュ叿閿欒锛堢敤浜庣紦瀛橀槻鎶わ級銆?+                        self._tool_error_occurred = True
++                        messages.append(
++                            ToolMessage(
++                                content=self._error_feedback_message(
++                                    tool_name, str(result)
++                                ),
++                                tool_call_id=tool_id or tool_name,
++                            )
++                        )
++                    stuck = self._stuck_detector.record(
++                        tool_name,
++                        tool_args,
++                        failed=is_error,
++                    )
++                    if stuck:
++                        messages.append(
++                            ToolMessage(
++                                content=self._stuck_feedback_message(
++                                    self._stuck_detector.stuck_reason
++                                ),
++                                tool_call_id=tool_id or tool_name,
++                            )
++                        )
++                        _logger.warning(
++                            "B7 stuck detection tripped: %s",
++                            self._stuck_detector.stuck_reason,
++                        )
++                        # B7: 鍧忕粨灞€鍥炴粴鍒板揩鐓х偣锛坙una R5锛氬揩鐓х殑 restore 璋冪敤閾撅級銆?+                        snapshot = getattr(self, "_git_snapshot", None)
++                        if snapshot is not None and snapshot.captured:
++                            snapshot.restore()
++                        stuck_triggered = True
++                        break
++                if stuck_triggered:
++                    # luna R1-2: break 鍙烦鍐呭眰 for tc锛涢渶鐪熸缁堟澶栧眰宸ュ叿杞紝
++                    # 閬垮厤涓嬩竴杞户缁彂璧?LLM 璋冪敤銆?+                    break
+             else:
+                 # Exceeded max rounds - give LLM one tool-free synthesis pass
+                 if tui and hasattr(tui, "write_progress"):
+@@ -2943,9 +3257,44 @@ class AgentV2:
+                 if _synth_reasoning:
+                     self._last_thinking = "".join(_synth_reasoning)
+                     self._thinking_history.append(self._last_thinking)
++                # B7: 鍚堟垚杞篃鍙兘杈撳嚭 DSML锛坢ax_rounds 鑰楀敖鍚庢ā鍨嬩粛鎯宠皟宸ュ叿锛夈€?+                # 瑙ｆ瀽鍑哄伐鍏疯皟鐢?鈫?杩藉姞鎵ц + 鍐嶇粰涓€娆?synthesis锛涙渶澶氫竴杞紝
++                # 闃叉寰幆銆傝В鏋愬け璐?鈫?鍘熸牱淇濈暀鏂囨湰銆?+                synth_tool_calls = _parse_dsml_tool_calls(answer) or []
++                if synth_tool_calls and answer:
++                    answer = await self._synthesis_with_tools(
++                        messages,
++                        synth_tool_calls,
++                        mode=mode,
++                        tui=tui,
++                        fallback_answer=answer,
++                    )
+                 if not answer:
+                     answer = "[max tool-call rounds reached]"
+ 
++            if stuck_triggered:
++                # luna R6-3: stuck 璺冲嚭鍚庢墽琛屼竴娆?tool-free synthesis 淇濊瘉
++                # 鏈€缁堢瓟妗堬紝閬垮厤鎶婃渶鍚庝竴娆″伐鍏疯皟鐢?DSML 鏂囨湰鐩存帴杩斿洖缁欑敤鎴枫€?+                if tui and hasattr(tui, "write_progress"):
++                    tui.write_progress("Synthesizing results (stuck recovery)...")
++                parts: list[str] = []
++                async for chunk in self._raw_stream(messages):
++                    if not getattr(chunk, "choices", None):
++                        continue
++                    delta = chunk.choices[0].delta
++                    token = getattr(delta, "content", "") or ""
++                    if token:
++                        parts.append(token)
++                        if tui and hasattr(tui, "stream_token"):
++                            tui.stream_token(token)
++                synth_answer = "".join(parts)
++                # luna R7-3: recovery 涓虹┖鏃舵棤鏉′欢 fallback锛?+                # 涓嶄繚鐣欏師 DSML/宸ュ叿璋冪敤鏂囨湰銆?+                answer = (
++                    synth_answer.strip()
++                    or "[stuck detection] 宸蹭腑姝㈠惊鐜紱璇锋崲涓€绉嶅畬鍏ㄤ笉鍚岀殑鎬濊矾閲嶈瘯銆?
++                )
++
+             if research_policy.citations_required and research_sources:
+                 supported_urls = set(research_sources)
+                 unsupported_urls = [
+@@ -3399,9 +3748,15 @@ class AgentV2:
+                 self._last_thinking = ''.join(_reasoning_buffer)
+                 self._thinking_history.append(self._last_thinking)
+ 
+-            precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
+-            if not memory_ctx:
+-                semantic_cache.put(user_input, answer, namespace=cache_namespace)
++            # B7 (鍏辨€?8): 澶辫触缁撴灉涓嶇紦瀛樷€斺€旂┖绛旀 / [error ...] 閿欒涓?/
++            # 鏈疆鍙戠敓宸ュ叿閿欒锛坙una R8-2锛変竴寰嬩笉鍐欏叆搴旂敤缂撳瓨銆?+            if _should_cache_answer(
++                answer,
++                tool_error_occurred=getattr(self, "_tool_error_occurred", False),
++            ):
++                precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
++                if not memory_ctx:
++                    semantic_cache.put(user_input, answer, namespace=cache_namespace)
+             self._memory.add_interaction(user_input, answer)
+             self._memory.save_session()
+ 
+@@ -3639,6 +3994,8 @@ class AgentV2:
+         # 椤跺眰鏄惧紡澹版槑鐨勪换鍔″壇浣滅敤绫诲瀷锛?write"/"danger"/鍙鏁堟灉锛夈€傞粯璁?"auto"
+         # 璧板惎鍙戝紡锛沞vals 鍙浠诲姟鍙樉寮忓０鏄?effect="search" 閬垮厤琚鍒ゃ€?         self._task_effect = (effect or "auto").strip().lower()
++        # luna R9-2: 椤跺眰璇锋眰鍏ュ彛閲嶇疆宸ュ叿閿欒鐘舵€侊紙閬垮厤涓€娆￠敊璇薄鏌撳悗缁姹傦級銆?+        self._tool_error_occurred = False
+ 
+         # ``download_mcp`` writes config atomically.  Reading the fingerprint
+         # here makes an add/remove effective on the next request without an
+@@ -3648,9 +4005,118 @@ class AgentV2:
+ 
+         bound_run_id = get_bound_run_id()
+         if bound_run_id is not None:
+-            return await self._run_observed(user_input, mode, bound_run_id)
+-        with run_id_context() as run_id:
+-            return await self._run_observed(user_input, mode, run_id)
++            result = await self._run_observed(user_input, mode, bound_run_id)
++        else:
++            with run_id_context() as run_id:
++                result = await self._run_observed(user_input, mode, run_id)
++        # B7: reviewer 閲嶈瘯锛堥粯璁ゅ叧闂紝CB8锛夆€斺€斿紑鍚笖浠诲姟閲嶈鏃剁嫭绔嬫墦鍒嗭紝
++        # 涓嶈揪鏍囬噸璺戯紝鍚屽垎鍙?API 璋冪敤鏈€灏戣€咃紙SWE-agent 璇箟锛夈€?+        result = await self._maybe_reviewer_retry(user_input, result, mode)
++        return result
++
++    async def _maybe_reviewer_retry(self, user_input: str, answer: str, mode: str) -> str:
++        """B7: reviewer 閲嶈瘯锛堥粯璁ゅ叧闂紱寮€鍚椂鏈夐绠椾繚鎶わ級銆?+
++        娴佺▼锛氳閰嶇疆 鈫?鏈紑鍚洿鎺ヨ繑鍥?鈫?浠诲姟閲嶈鎬ц瘎浼?鈫?鐙珛 reviewer
++        鎵撳垎 鈫?涓嶈揪鏍囬噸璺戯紙棰勭畻鍐咃級鈫?鍚屽垎鍙?API 璋冪敤鏈€灏戣€呫€?+        """
++        from RxyCode.RxyCode1_1_0.core.reviewer_retry import (
++            ReviewerBudget,
++            pick_best_attempt,
++        )
++
++        cfg = (getattr(self, "_cfg", {}) or {}).get("execution", {})
++        rr_cfg = cfg.get("reviewer_retry") or {}
++        if not rr_cfg.get("enabled"):
++            return answer
++        min_score_raw = rr_cfg.get("min_score")
++        min_score = float(min_score_raw) if min_score_raw is not None else 0.6
++        min_imp_raw = rr_cfg.get("min_importance_score")
++        min_importance = (
++            float(min_imp_raw) if min_imp_raw is not None else 0.7
++        )
++        if not self._task_important_enough(user_input, min_importance):
++            return answer
++        budget = ReviewerBudget(max_calls=int(rr_cfg.get("max_api_calls", 3) or 3))
++        attempts: list[dict] = []
++        current = answer
++        while budget.can_retry():
++            score = await self._review_answer(user_input, current)
++            budget.consume()
++            attempts.append({
++                "score": score,
++                "api_calls": budget.calls,
++                "answer": current,
++            })
++            if score >= min_score:
++                break
++            if not budget.can_retry():
++                break
++            current = await self._regenerate_answer(user_input, mode)
++            budget.consume()
++            if not current:
++                current = answer  # 閲嶈窇澶辫触 鈫?鍥為€€鍘熺瓟妗?+        best = pick_best_attempt(attempts)
++        # luna R8-1: 鑻ユ渶鍚庝竴娆′骇鍑烘槸 regeneration 缁撴灉涓旀湭琚瀹★紝
++        # 瀹冭嚦灏戜笉姣斿師绛旀宸紙閲嶈窇璇箟锛夆€斺€旈绠楄€楀敖鏃惰繑鍥炲畠銆?+        if not best or (
++            current != answer
++            and best.get("answer") == answer
++            and not budget.can_retry()
++        ):
++            return current or answer
++        return (best or {}).get("answer") or answer
++
++    def _task_important_enough(self, user_input: str, min_importance: float) -> bool:
++        """B7: 浠诲姟閲嶈鎬у惎鍙戝紡锛?-1锛夈€傚惈鏋勫缓/淇/閲嶆瀯绛夊己鍔ㄨ瘝 鈫?楂樺垎銆?+
++        luna R8-3: 闃堝€兼斁瀹解€斺€斿懡涓换涓€寮哄姩璇嶅嵆瑙嗕负閲嶈锛?.8锛夛紝
++        閬垮厤鍗曞叧閿瘝浠诲姟琚敊璇烦杩囷紱鏀寔涓嫳鏂囧悓涔夎〃杈俱€?+        """
++        strong = (
++            "build", "implement", "fix", "refactor", "create", "write",
++            "generate", "add", "update", "modify", "debug",
++            "鏋勫缓", "瀹炵幇", "淇", "閲嶆瀯", "鍒涘缓", "缂栧啓",
++            "鐢熸垚", "鏂板", "鏇存柊", "淇敼", "璋冭瘯", "淇?, "鏀?,
++        )
++        text = (user_input or "").lower()
++        hits = sum(1 for w in strong if w.lower() in text)
++        # 鍛戒腑 1 涓己鍔ㄨ瘝 鈫?0.8锛堥噸瑕侊級锛? 涓?鈫?0.2锛堥潪閲嶈锛夈€?+        score = 0.8 if hits >= 1 else 0.2
++        return score >= min_importance
++
++    async def _review_answer(self, user_input: str, answer: str) -> float:
++        """B7: 鐙珛 reviewer 鎵撳垎锛?-1锛夈€傚け璐ユ椂淇濆畧杩斿洖浣庡垎锛堣Е鍙戦噸璇曪級銆?""
++        try:
++            from langchain_core.messages import HumanMessage
++
++            prompt = (
++                "浣犳槸鐙珛璇勫銆備换鍔★細\n"
++                f"{user_input[:2000]}\n\n"
++                "鏈€缁堢瓟妗堬細\n"
++                f"{answer[:4000]}\n\n"
++                "璇蜂粎杩斿洖 0 鍒?1 涔嬮棿鐨勪竴涓暟瀛楋紝琛ㄧず绛旀鏄惁瀹屾垚浠诲姟銆?
++            )
++            stream = self._raw_stream(
++                [HumanMessage(content=prompt)], tools=None, max_tokens=10
++            )
++            text = ""
++            async for chunk in stream:
++                if getattr(chunk, "choices", None):
++                    text += getattr(chunk.choices[0].delta, "content", "") or ""
++            import re as _re
++
++            match = _re.search(r"0?\.\d+|1(?:\.0)?", text)
++            return min(1.0, max(0.0, float(match.group(0)))) if match else 0.0
++        except Exception:
++            return 0.0
++
++    async def _regenerate_answer(self, user_input: str, mode: str) -> str:
++        """B7: 閲嶈窇涓€娆¤姹傦紙reviewer 涓嶈揪鏍囨椂锛夈€傚け璐ヨ繑鍥炲師绛旀銆?""
++        try:
++            return await self._run_impl(user_input, mode=mode)
++        except Exception:
++            return ""
+ 
+     async def _run_observed(
+         self,
+
+
+# 实测证据
+- pytest tests/test_cache/test_no_rework.py: 44 passed
+- 全量回归 9004 passed（P7 lazy-import 遗留除外）
+- ruff: All checks passed
+- evals GATE PASS 94.7% >= 89.5%（零回归）
+
+# 复审要求
+1. 复核 R9 两项修复是否闭合（synthesis 错误状态 / 跨请求重置）
+2. 逐条核对完成判据 1-6 + CB1-CB8
+3. 输出结论：PASS / FAIL；若 FAIL 列阻断项（具体、可执行）

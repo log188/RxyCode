@@ -1,0 +1,55 @@
+结论：**FAIL**
+
+R5 的两项修复部分有效，但仍有阻断问题。
+
+### 已确认
+
+- **PS grep 正则**已加入 `re.DOTALL`，真实换行 pattern 可匹配；Windows 路径在无空格场景可保留。
+- **Reviewer 已接入 `run()` 尾部**，默认关闭；重要性判断、独立评分、重试和同分择少调用链存在。
+- 判据 1、3、5 及 CB1、CB5、CB6、CB7、CB8 的实现方向基本符合描述。
+
+### 阻断项
+
+1. **Git snapshot 并非真正恢复到快照点**
+
+`GitSnapshot.capture()` 只保存 status/diff 文本；`restore()` 却执行：
+
+```python
+git checkout -- .
+git reset -q --hard
+```
+
+这会丢弃快照前已有的未提交/已暂存修改，而不是恢复到捕获时状态。并且 `_capture_git_snapshot()` 在每次 LLM 调用前重复覆盖同一个快照，导致原始基线丢失。
+
+**修复要求：**
+
+- 每次任务只保留不可变的初始快照；
+- restore 必须恢复 tracked、staged、untracked 状态，不能无条件 `reset --hard`；
+- 增加“快照前已有修改，stuck 后仍保留”的测试。
+
+2. **ReviewerBudget 未限制总 API 调用**
+
+`_regenerate_answer()` 会调用 `_run_impl()`，其中可能产生多个 LLM/tool API 调用，但这些调用不计入 `ReviewerBudget`。此外，最后一次 reviewer 已耗尽预算且评分不达标时，代码仍会先执行一次无效 regeneration：
+
+```python
+current = await self._regenerate_answer(...)
+```
+
+因此 `max_api_calls` 不能保证实际 API 调用上限。
+
+**修复要求：**
+
+- 将 reviewer、regeneration 及其内部模型调用统一纳入预算；
+- 预算耗尽后禁止 regeneration；
+- 增加断言实际模型调用总数不超过配置预算的测试。
+
+3. **stuck 后没有保证生成最终答案**
+
+检测到 stuck 后直接跳出外层循环并进入收尾逻辑；当前 `answer` 仍可能是最后一次工具调用/DSML 内容，可能将工具调用文本直接返回给用户，而不是基于 stuck 引导消息进行一次无工具 synthesis。
+
+**修复要求：**
+
+- stuck 后执行一次明确的 tool-free synthesis，或返回稳定的可交付 fallback；
+- 增加测试确认最终返回值不是 DSML/tool-call 内容。
+
+因此，当前不能按 PASS 通过 B7 第 6 轮复审。

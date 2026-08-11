@@ -1,0 +1,58 @@
+结论：**FAIL**
+
+R7 三项修复均已闭合：
+
+1. `_review_answer` 已正确移除 `await`，改为直接 `async for`。
+2. Git 快照已采用“反向撤销当前 diff，再重放快照 diff”的两步恢复逻辑。
+3. stuck recovery 已使用 `synth_answer.strip() or fallback`，不会保留 DSML 原答案。
+
+但仍有以下阻断项：
+
+### 1. Reviewer 重试在 `max_api_calls=2` 时无效
+
+流程为：
+
+```python
+review -> consume()
+regenerate -> consume()
+```
+
+重新生成结果尚未加入 `attempts`，预算即耗尽，最终：
+
+```python
+pick_best_attempt(attempts)
+```
+
+只能返回原答案，生成结果被直接丢弃。
+
+**修复：**  
+要么将 regeneration 结果加入候选并参与选择；要么将预算定义为 reviewer 调用预算，确保生成结果至少会被复审一次。
+
+### 2. 错误结果缓存防护不完整
+
+当前仅检查最终答案是否以 `[error` 开头：
+
+```python
+_should_cache_answer(answer)
+```
+
+若工具返回 `[error executing ...]`，模型随后生成普通文本，例如“无法完成该操作”，该答案仍会写入 precise/semantic cache，下一次可能直接复用失败结果。
+
+**修复：**  
+把本轮是否发生工具错误作为状态传递到缓存阶段；发生工具错误且未成功恢复时，禁止写入应用缓存，而不是只检查最终字符串前缀。
+
+### 3. Reviewer 重要性判定过于脆弱
+
+`_task_important_enough` 仅靠固定关键词计分，默认要求命中两个关键词。诸如：
+
+- “请实现一个 API”
+- “帮我修这个 bug”
+- 英文单关键词任务
+- 同义表达
+
+可能被错误跳过，导致开启 reviewer 后实际不执行。
+
+**修复：**  
+改用明确的任务类型/配置判定，或降低并完善关键词规则，并补充中英文测试。
+
+另外，当前消息未附“完成判据 1-6、CB1-CB8”的正文，因此无法诚实地逐项标记全部判据；现有实测证据也不足以覆盖上述预算和缓存边界场景。

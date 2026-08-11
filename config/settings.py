@@ -304,6 +304,17 @@ def _default_config() -> dict:
             "tool_retry_wait_multiplier": 1.0,
             "tool_timeout_seconds": 1800,
             "pipeline_soft_budget_seconds": 3600,
+            # B7: 死循环检测阈值（opencode DOOM_LOOP_THRESHOLD=3）。
+            # 连续相同/交替/连错达到该阈值 → 主循环干预（引导语/终止）。
+            "stuck_threshold": 3,
+            # B7: reviewer 重试（SWE-agent 语义）——默认关闭（CB8）。
+            # 开启时仅对重要任务生效，且有 API 调用预算保护。
+            "reviewer_retry": {
+                "enabled": False,
+                "max_api_calls": 3,
+                "min_importance_score": 0.7,
+                "min_score": 0.6,
+            },
             # Disabled by default: a legitimate silent tool may run longer
             # than ten minutes. The explicit tool and task ceilings remain.
             "task_stall_timeout_seconds": 0,
