@@ -49,6 +49,7 @@ def register_builtin_tools(
     *,
     rag_enabled: bool,
     subagents_enabled: bool = False,
+    run_official_agent_enabled: bool = False,
 ) -> None:
     """Populate registry and orchestrator with built-in tools.
 
@@ -57,6 +58,10 @@ def register_builtin_tools(
     ``task_manage``. When False (default), the legacy ``task`` task-list
     tool is registered and the subagent dispatch tool is NOT — guaranteeing
     single-agent zero regression. Exactly one tool may own the ``task`` name.
+
+    When ``run_official_agent_enabled`` is True, the ``run_official_agent``
+    bridge tool (official agent CLI as side subprocess) is registered with
+    DANGER risk. Default False (CB8: default toolset unchanged).
     """
     from RxyCode.RxyCode1_1_0.tools.task_manage import task_manage_tool
 
@@ -99,6 +104,14 @@ def register_builtin_tools(
     # Isolated subagent dispatch tool (name `task`) — ONLY when subagents on
     if subagents_enabled:
         registry.register(subagent_task_tool, risk="write")
+
+    # B10: run_official_agent 桥接工具（官方 agent CLI 旁路）— ONLY when enabled
+    if run_official_agent_enabled:
+        from RxyCode.RxyCode1_1_0.tools.run_official_agent import (
+            run_official_agent_tool,
+        )
+
+        registry.register(run_official_agent_tool(), risk="danger")
 
     registry.register(download_skill_tool, risk="danger")
     registry.register(download_mcp_tool, risk="danger")

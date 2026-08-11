@@ -1,0 +1,36 @@
+## 结论：PASS
+
+R1 阻断项已闭合，未发现新的阻断问题。
+
+### 复核结果
+
+| 项目 | 结论 |
+|---|---|
+| usage 单一权威字段 | PASS：优先单字段，`total` 与 `input/output` 不重复计数；新增测试覆盖 |
+| B9 契约读取 | PASS：ACP/CLI 使用 `BridgeConfig(provider/model)` 读取契约；未知模型返回空 |
+| 进程树回收 | PASS：Windows `taskkill /T /F`，POSIX `killpg`，并使用独立进程组；停止后等待回收 |
+| 结果硬上限 | PASS：生命周期及工具参数均受 4000 字符硬上限约束 |
+| cache_rate | PASS：桥接前后均为 `53.33%`，无主链路 token 污染 |
+| 判据 1：委托/流式/回收/超时 | PASS |
+| 判据 2：cache_rate 不降 | PASS |
+| 判据 3：token/time budget 超限 kill | PASS |
+| 判据 4：默认禁用及 `/bridge` | PASS |
+| 判据 5：eval gate | PASS，`94.7% >= 89.5%` |
+
+### 限制性规范
+
+1. usage 归一化：PASS  
+2. thinking/reasoning：PASS，旁路官方 CLI，不重写协议  
+3. context window：PASS，由官方 CLI 管理  
+4. cache 注入：PASS，本层无 `cache_control` 注入  
+5. 官方 prompt 原样运行：PASS  
+6. 默认工具集/白名单：PASS，默认关闭，仅支持 `claude/grok`  
+7. 进程树及摘要上限：PASS  
+
+### CB
+
+- CB8 默认行为保持：PASS，`run_official_agent_enabled=False`
+- 启用后工具标记为 `danger`，符合风险控制要求。
+- 现有测试对 POSIX/Windows 真实子进程树的覆盖仍偏弱，但不构成当前阻断项。
+
+**最终判定：PASS，可进入下一阶段。**

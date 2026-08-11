@@ -2464,6 +2464,11 @@ class AgentV2:
             self._tool_orchestrator,
             rag_enabled=bool(getattr(self._memory, "_rag_enabled", False)),
             subagents_enabled=_subagents_on,
+            run_official_agent_enabled=bool(
+                (getattr(self, "_cfg", {}) or {})
+                .get("execution", {})
+                .get("run_official_agent_enabled", False)
+            ),
         )
 
     @staticmethod

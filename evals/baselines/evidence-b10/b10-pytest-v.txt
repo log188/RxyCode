@@ -1,0 +1,31 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-8.4.2, pluggy-1.5.0 -- D:\Anaconda3\python.exe
+cachedir: .pytest_cache
+rootdir: D:\agent-demo\RxyCode\RxyCode1_1_0\.worktrees\phase-b-cache2
+configfile: pytest.ini
+plugins: anyio-4.10.0, langsmith-0.9.0, asyncio-1.4.0, base-url-2.1.0, cov-7.1.0, playwright-0.8.0, timeout-2.4.0, xdist-3.8.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 180.0s
+timeout method: thread
+timeout func_only: False
+collecting ... collected 17 items
+
+tests/test_bridge/test_agent_bridge.py::test_bridge_config_defaults PASSED [  5%]
+tests/test_bridge/test_agent_bridge.py::test_agent_bridge_abstract PASSED [ 11%]
+tests/test_bridge/test_agent_bridge.py::test_acp_bridge_spawn_and_invoke PASSED [ 17%]
+tests/test_bridge/test_agent_bridge.py::test_cli_bridge_spawn_and_stream PASSED [ 23%]
+tests/test_bridge/test_agent_bridge.py::test_run_official_agent_result_flow PASSED [ 29%]
+tests/test_bridge/test_agent_bridge.py::test_run_official_agent_timeout_kills PASSED [ 35%]
+tests/test_bridge/test_agent_bridge.py::test_stop_kills_process PASSED   [ 41%]
+tests/test_bridge/test_agent_bridge.py::test_token_budget_exceeded_kills PASSED [ 47%]
+tests/test_bridge/test_agent_bridge.py::test_run_official_agent_tool_default_disabled PASSED [ 52%]
+tests/test_bridge/test_agent_bridge.py::test_run_official_agent_tool_registered_when_enabled PASSED [ 58%]
+tests/test_bridge/test_agent_bridge.py::test_run_official_agent_tool_not_registered_when_disabled PASSED [ 64%]
+tests/test_bridge/test_agent_bridge.py::test_bridge_command_available PASSED [ 70%]
+tests/test_bridge/test_agent_bridge.py::test_bridge_supports_usage_normalization PASSED [ 76%]
+tests/test_bridge/test_agent_bridge.py::test_bridge_does_not_touch_main_token_stats PASSED [ 82%]
+tests/test_bridge/test_agent_bridge.py::test_event_token_cost_single_authoritative_field PASSED [ 88%]
+tests/test_bridge/test_agent_bridge.py::test_bridge_usage_reads_b9_contract PASSED [ 94%]
+tests/test_bridge/test_agent_bridge.py::test_result_hard_limit_enforced PASSED [100%]
+
+============================= 17 passed in 5.37s ==============================

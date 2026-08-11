@@ -398,6 +398,17 @@ class TestCommandEndpoint:
         resp = client.post("/command", json={"command": "/clear"})
         assert resp.status_code == 200
 
+    def test_bridge_command_default_disabled(self, client):
+        """/bridge 默认禁用：返回 bridge_disabled（CB8）。"""
+        payload = client.post("/command", json={"command": "/bridge claude hi"}).json()
+        assert payload["action"] == "bridge_disabled"
+        assert "默认禁用" in payload["message"]
+
+    def test_bridge_command_usage_hint(self, client):
+        """/bridge 缺参数：返回用法提示。"""
+        payload = client.post("/command", json={"command": "/bridge"}).json()
+        assert payload["action"] == "bridge_disabled" or payload["action"] == "bridge_usage"
+
     def test_unknown_command_returns_result(self, client):
         resp = client.post("/command", json={"command": "/nonexistent"})
         assert resp.status_code == 200

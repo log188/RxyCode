@@ -307,6 +307,9 @@ def _default_config() -> dict:
             # B7: 死循环检测阈值（opencode DOOM_LOOP_THRESHOLD=3）。
             # 连续相同/交替/连错达到该阈值 → 主循环干预（引导语/终止）。
             "stuck_threshold": 3,
+            # B10: run_official_agent 桥接工具（官方 agent CLI 旁路）。
+            # 默认禁用（CB8：默认工具集不变）；开启后注册 run_official_agent。
+            "run_official_agent_enabled": False,
             # B7: reviewer 重试（SWE-agent 语义）——默认关闭（CB8）。
             # 开启时仅对重要任务生效，且有 API 调用预算保护。
             "reviewer_retry": {
