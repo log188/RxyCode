@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import asyncio
 
+# The top-level ``python -m appserver`` entrypoint binds the canonical project
+# package in appserver.__init__.  Use that identity first so the deterministic
+# stub and the protocol worker share the same approval broker singleton.  The
+# relative/top-level fallbacks retain direct package and legacy-script support.
 try:
-    from ..core.safety.approval import ApprovalRequest, get_approval_broker
-    from ..core.safety.policy import RiskLevel
+    from RxyCode.RxyCode1_1_0.core.safety.approval import (
+        ApprovalRequest,
+        get_approval_broker,
+    )
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
 except ImportError:
-    from core.safety.approval import ApprovalRequest, get_approval_broker
-    from core.safety.policy import RiskLevel
+    try:
+        from ..core.safety.approval import ApprovalRequest, get_approval_broker
+        from ..core.safety.policy import RiskLevel
+    except ImportError:
+        from core.safety.approval import ApprovalRequest, get_approval_broker
+        from core.safety.policy import RiskLevel
 
 
 class StubAgent:

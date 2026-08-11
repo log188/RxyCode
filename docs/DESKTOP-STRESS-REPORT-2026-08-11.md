@@ -101,6 +101,43 @@ python -m pytest tests/unit/test_gui_command.py tests/test_appserver/test_stdio_
 - 当前机器没有已配置的真实 MCP server；DTS 中的 MCP 与 Skill 卡通过协议回放验证 Desktop 的渲染、会话隔离、失败与审批路径，不宣称调用了真实远程 MCP。
 - 本报告的 15 条未跑长模型任务，目的是以零模型费用找出 Desktop 前端问题。真实模型的 token/caching 统计应由 appserver 在每次 provider 响应中标准化后上报 UI；这属于后续 Phase 的可观测性工作。
 
+## 闭环复测（2026-08-11，真实 Electron）
+
+本节是对上文“初轮结果”的最终修订：15 张原始 DTS 任务卡均已完成真实模型 + 真实 Electron 的终态复测。DTS-02、DTS-06、DTS-07、DTS-09、DTS-10、DTS-13、DTS-14、DTS-15 在初轮即通过；DTS-01、DTS-03、DTS-04、DTS-05、DTS-08、DTS-11、DTS-12 在修复后重跑通过。这里的“通过”要求：有 final answer、没有错误横幅、所有已开始的工具卡都已终态化、视口根节点不滚动，并且每例结束后没有遗留 Electron 进程。
+
+| 复测卡 | 真实用户式场景 | 最终工具卡 | 耗时 | token / 缓存 |
+| --- | --- | --- | ---: | --- |
+| DTS-01 | 发布工程师审计 `appserver/runtime.py`；精确 `glob → grep → read`，明确禁止 web | `glob, grep, read` 均成功 | 24.938 s | provider 未上报终态 token 事件 |
+| DTS-03 | 审计 Desktop terminal-state reducer | `glob, grep, read` 均成功 | 25.216 s | 35,020 / 653 / 32,128 / 91.74% |
+| DTS-04 | 审计模型输出上限目录 | `glob, grep, read` 均成功 | 26.230 s | provider 未上报终态 token 事件 |
+| DTS-05 | 审计 Desktop 审批策略 | `glob, grep, read` 均成功 | 21.593 s | 18,502 / 826 / 15,104 / 81.63% |
+| DTS-08 | 加载已安装 `tdd` Skill 后读取回归测试 | `skill, glob, read` 均成功 | 22.970 s | provider 未上报终态 token 事件 |
+| DTS-11 | 审计 Desktop appserver 启动路径 | `glob, grep, read` 均成功 | 23.319 s | provider 未上报终态 token 事件 |
+| DTS-12 | 审计审批渲染/规则路径 | `glob, grep, read` 均成功 | 23.890 s | provider 未上报终态 token 事件 |
+
+token 栏顺序固定为 `input / output / cache-hit / cache-hit-rate`。`未上报` 绝不记为 0：相应模型回合未发出可采集的终态 usage 事件；GUI 的任务结果和工具卡仍是成功终态。
+
+### 本轮新增的三类真实 UI 验收
+
+| ID | 场景与检查 | 结果 |
+| --- | --- | --- |
+| DTS-16 | `write` 真实审批弹窗：截屏后点击“批准”，再 `read` 验证精确文件内容 | 通过；`write`、`read` 均成功；20.133 s；23,187 / 361 / 22,016 / 94.95% |
+| DTS-17 | 工具开始后点击 Composer “停止” | 通过；运行指示器消失、已开始工具转错误终态、无挂起 RPC |
+| DTS-18 | 完成一段长回答后新建会话，再返回原会话 | 通过；新会话没有泄漏消息/工具卡，原会话完整恢复；21.742 s；26,143 / 629 / 23,424 / 89.60% |
+
+图像复核覆盖了 Skill 成功态、WRITE 审批态和双会话恢复态。长回答时右侧滚动条属于 `.chat-area` 内容容器，顶栏和 Composer 固定，根文档高度等于视口；这符合桌面端会话滚动设计，并非页面溢出。
+
+### 修复根因与防回归
+
+1. 顶层 `appserver` 启动曾可能混入同级 checkout 的 canonical 包；启动时现绑定当前 checkout，并以子进程测试覆盖。
+2. 真正的终态事件缺失时，工具卡会停在“运行中”；conversation reducer 现在会将其统一收束为成功、失败或已中断。
+3. 已安装 Skill 被误路由到 `download_skill`；现在真实调用只读 `skill`，并完成 `skill → glob → read` 验收。
+4. 副作用证据启发式曾把“Do not call ... write”与“read a test file”误判成写入意图；现在区分否定的工具约束、只读 Skill 调用、只读文件检查和只读工具计划，同时保留“之后写文件”仍需 WRITE/DANGER 证据的反向回归。
+5. 本地 `glob/grep/read` 审计即使包含 `release` 一词也不应被强制 web research；只有明确的本地只读工具序列且明确禁止网络时才覆盖该关键词策略，真实 DTS-01 已复测通过。
+6. Worker、真实 AgentV2 与测试 stub 的审批 broker 曾因双模块身份分裂；现统一 canonical 导入，stdio 双向审批集成测试覆盖该路径。取消 prompt 的 `CancelledError` 也会回传明确 terminal result，避免 GUI 永久“运行中”。
+
+所有真实 Electron 证据（提示词、final answer、工具卡、截图、可用 token 指标）保留在未入库目录：`artifacts/desktop-real-suite-20260811/DTS-*/`。每个探针均在 `finally` 中终止 Electron 进程树并删除临时 profile；闭环复测后再次检查，未发现残留 Electron 进程。
+
 ## 补充：真实模型与真实 Electron 复测（2026-08-11）
 
 本节替代上文“15 条均为确定性 appserver 回放”的结论，记录随后完成的真实验收：每例均启动生产 `python -m appserver`、真实 Electron、真实模型，通过 CDP 输入提示词和截屏；没有使用 Computer Use。每个探针都在 `finally` 中 `taskkill /T /F` Electron 进程树并删除临时 profile。结束后复核：无残留 Electron 进程。

@@ -86,6 +86,18 @@ _LOCAL_TOOL_CALL = re.compile(
     r"\b(?:glob|grep|read|ls|cat|open)\b|调用\s*(?:glob|grep|read|ls|cat|open)",
     re.IGNORECASE,
 )
+# A bounded local inspection workflow often has a release/compatibility word
+# in its requested answer.  When it explicitly prohibits network tools, that
+# constraint must win over keyword freshness detection; otherwise a Desktop
+# audit is diverted to websearch before it can run its requested glob/grep/read
+# sequence.  This does not apply to a bare "do not use web" factual question:
+# a local inspection tool must also be named.
+_NEGATED_WEB_TOOL_CONSTRAINT = re.compile(
+    r"\b(?:do\s+not|don't|never)\s+"
+    r"(?:call|use|run|execute|invoke|browse|search)\b[^.\n]*\b"
+    r"(?:websearch|web|internet|online)\b",
+    re.IGNORECASE,
+)
 
 _HTTP_URL = re.compile(r"https?://[^\s<>\[\]{}\"'`]+", re.IGNORECASE)
 _TRAILING_URL_PUNCTUATION = ".,;:!?)]}"
@@ -164,7 +176,10 @@ def get_research_policy(query: str) -> ResearchPolicy:
         bool(_LOCAL_WORKSPACE_EN.search(text))
         or any(term in text for term in _LOCAL_WORKSPACE_ZH)
     ) and bool(_LOCAL_TOOL_CALL.search(text))
-    if local_workspace_task:
+    constrained_local_inspection = bool(_LOCAL_TOOL_CALL.search(text)) and bool(
+        _NEGATED_WEB_TOOL_CONSTRAINT.search(text)
+    )
+    if local_workspace_task or constrained_local_inspection:
         return ResearchPolicy(
             requires_web=False,
             cache_read_allowed=True,

@@ -75,6 +75,53 @@ _EXPLICIT_EXPLANATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Tool allow/deny lists are execution constraints, not an instruction to perform
+# every verb they happen to contain.  In particular, a read-only prompt often
+# says "Do not call ... write ..."; treating that quoted verb as a requested
+# write would incorrectly require WRITE/DANGER evidence from a Skill or review
+# workflow.  Limit the removal to an explicit negative *tool invocation*
+# clause so ordinary requests such as "do not write a file" keep their normal
+# intent semantics.
+_NEGATED_TOOL_CONSTRAINT_RE = re.compile(
+    r"\b(?:do\s+not|don't|never)\s+"
+    r"(?:call|use|run|execute|invoke)\b[^.\n]*",
+    re.IGNORECASE,
+)
+
+# ``skill`` is a registered READ tool.  Its invocation is a request to load
+# workflow instructions, not evidence that the task itself must mutate the
+# workspace.  Remove only that invocation phrase before the broad verb/artifact
+# heuristic; any later "write/edit/..." instruction remains visible and is
+# still gated.
+_READ_ONLY_SKILL_INVOCATION_RE = re.compile(
+    r"\b(?:use|call|invoke)\s+(?:the\s+)?(?:installed\s+)?skill\s+tool\b"
+    r"(?:\s+with\b[^,.;\n]*)?",
+    re.IGNORECASE,
+)
+
+# The broad action vocabulary deliberately contains ``test`` for requests such
+# as "test the application".  In "read a test file", though, it is part of a
+# noun phrase and the leading verb is explicitly non-mutating.  Remove that
+# bounded inspection phrase before applying the broad heuristic, retaining any
+# subsequent positive action in the same request.
+_READ_ONLY_INSPECTION_RE = re.compile(
+    r"\b(?:read|inspect|review|analy[sz]e)\s+(?:(?:a|an|the)\s+)?"
+    r"(?:(?:[\w-]+)\s+){0,2}(?:file|files|module|modules)\b",
+    re.IGNORECASE,
+)
+
+# A leading, explicit read-only tool plan describes allowed observations.  Its
+# verb (usually ``execute``) and path-like nouns must not be reinterpreted as a
+# request to mutate merely because a later response-format clause says
+# "component" or "risk".  Stop at the sentence boundary: any following
+# positive action remains available to the safety gate.
+_READ_ONLY_TOOL_SEQUENCE_RE = re.compile(
+    r"\b(?:execute|use|call)\s+(?:exactly\s+)?(?:these\s+)?"
+    r"read[- ]only\s+tools\b[^\n]*?(?="
+    r"(?:\.\s*(?:do\s+not|don't|never|then|act|return)\b)|$)",
+    re.IGNORECASE,
+)
+
 # Task effects that by definition produce NO write/danger side effect.  A task
 # declared with one of these must never be forced to supply WRITE/DANGER tool
 # evidence -- for example a "verify file integrity" task whose description merely
@@ -129,17 +176,24 @@ def task_requires_side_effect_evidence(
     # one leading directive so an anchored read-only request such as
     # ``/fast Review ...`` retains its explanatory classification.
     request = re.sub(r"^\s*/(?:fast|full|pipeline)\b\s*", "", request, count=1, flags=re.IGNORECASE)
+    # A negative tool constraint can mention mutating verbs while expressly
+    # prohibiting them.  Classify the actual task intent after removing those
+    # constraints, while preserving all positive task text.
+    intent_request = _NEGATED_TOOL_CONSTRAINT_RE.sub("", request)
+    intent_request = _READ_ONLY_SKILL_INVOCATION_RE.sub("", intent_request)
+    intent_request = _READ_ONLY_INSPECTION_RE.sub("", intent_request)
+    intent_request = _READ_ONLY_TOOL_SEQUENCE_RE.sub("", intent_request)
     # 锚定解释意图（请求以解释/总结词开头）：即使提到修复/重构话题也是只读
-    anchored_explanation = bool(_EXPLANATION_RE.search(request))
+    anchored_explanation = bool(_EXPLANATION_RE.search(intent_request))
     # 中段显式请求短语（请总结/总结一下/搜索…总结）：覆盖 ACTION+ARTIFACT
     # 启发式，但**不**覆盖强副作用动词。
     explicit_request = anchored_explanation or bool(
-        _EXPLICIT_EXPLANATION_RE.search(request)
+        _EXPLICIT_EXPLANATION_RE.search(intent_request)
     )
-    if not anchored_explanation and _STRONG_ACTION_RE.search(request):
+    if not anchored_explanation and _STRONG_ACTION_RE.search(intent_request):
         return True
     if not explicit_request and (
-        _ACTION_RE.search(request) and _ARTIFACT_RE.search(request)
+        _ACTION_RE.search(intent_request) and _ARTIFACT_RE.search(intent_request)
     ):
         return True
     return not explicit_request and bool(

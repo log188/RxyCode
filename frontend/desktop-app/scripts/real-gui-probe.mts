@@ -23,6 +23,7 @@ const prompt = process.env.RXYCODE_REAL_GUI_PROMPT ??
 const approvePendingRequest = process.env.RXYCODE_REAL_GUI_APPROVE === 'true'
 const minimumToolCards = Number(process.env.RXYCODE_REAL_GUI_MIN_TOOLS ?? '3')
 const cancelAfterFirstTool = process.env.RXYCODE_REAL_GUI_CANCEL === 'true'
+const verifySessionIsolation = process.env.RXYCODE_REAL_GUI_MULTI_SESSION === 'true'
 
 const delay = (ms: number): Promise<void> => new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
 
@@ -212,6 +213,20 @@ async function main(): Promise<void> {
     }
     if (snapshot.shellScroll.y !== 0 || snapshot.shellScroll.height > snapshot.viewport.height) {
       throw new Error(`desktop shell scrolled unexpectedly: ${JSON.stringify(snapshot.shellScroll)}`)
+    }
+    if (verifySessionIsolation) {
+      await evaluate(`document.querySelector('.new-session').click()`)
+      await waitFor(async () => (await evaluate(`document.querySelectorAll('.session-item').length >= 2`)) ? true : null, 15_000, 'second session')
+      const second = await evaluate(`(() => ({
+        messages: document.querySelectorAll('.message').length,
+        tools: document.querySelectorAll('.tool-card').length,
+        active: document.querySelector('.session-item.active')?.querySelector('.session-id')?.textContent ?? ''
+      }))()`)
+      if (second.messages !== 0 || second.tools !== 0) throw new Error(`new session leaked prior UI state: ${JSON.stringify(second)}`)
+      await evaluate(`document.querySelectorAll('.session-item')[0].click()`)
+      const restored = await waitFor(async () => (await evaluate(`document.querySelectorAll('.tool-card').length`)) >= minimumToolCards ? true : null, 10_000, 'first session restoration')
+      if (!restored) throw new Error('first session did not restore its tool cards')
+      await screenshot('03-session-isolation-real.png')
     }
     console.log(`REAL_GUI_PROBE_OK ${outputDir}`)
   } finally {
