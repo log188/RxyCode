@@ -36,6 +36,7 @@ PROVIDER_PRESETS: tuple[dict, ...] = (
     {"id": "zhipu", "name": "智谱 GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4", "category": "常用"},
     {"id": "siliconflow", "name": "SiliconFlow 硅基流动", "base_url": "https://api.siliconflow.cn/v1", "category": "常用"},
     {"id": "openai", "name": "OpenAI", "base_url": "https://api.openai.com/v1", "category": "其他"},
+    {"id": "zen", "name": "OpenCode Zen", "base_url": "https://opencode.ai/zen/v1", "category": "其他"},
     {"id": "opencode-go", "name": "OpenCode Go", "base_url": "https://opencode.ai/zen/go/v1", "category": "其他"},
     {"id": "openrouter", "name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "category": "其他"},
     {"id": "groq", "name": "Groq", "base_url": "https://api.groq.com/openai/v1", "category": "其他"},
@@ -107,7 +108,9 @@ def infer_provider_group(base_url: str) -> dict:
     host = (urlsplit(normalized).hostname or "").casefold()
     if not host:
         return {"id": "custom", "name": "其他"}
-    for preset in PROVIDER_PRESETS:
+    # Both OpenCode gateways share a host.  Prefer the longer path first so
+    # the Go endpoint cannot capture the general Zen endpoint.
+    for preset in sorted(PROVIDER_PRESETS, key=lambda item: len(item["base_url"]), reverse=True):
         preset_host = (urlsplit(preset["base_url"]).hostname or "").casefold()
         if not preset_host:
             continue
@@ -116,7 +119,10 @@ def infer_provider_group(base_url: str) -> dict:
             or host.endswith("." + preset_host)
             or preset_host.endswith("." + host)
         ):
-            return {"id": preset["id"], "name": preset["name"]}
+            preset_path = urlsplit(preset["base_url"]).path.rstrip("/")
+            request_path = urlsplit(normalized).path.rstrip("/")
+            if request_path == preset_path or request_path.startswith(preset_path + "/"):
+                return {"id": preset["id"], "name": preset["name"]}
     return {"id": "custom", "name": "其他"}
 
 

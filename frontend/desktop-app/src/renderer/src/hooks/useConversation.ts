@@ -28,6 +28,7 @@ import {
   hydrateSessions,
   parseLeadingAgentMentions,
   purgeSession,
+  replaySessionEvents,
   renameSession,
   removeApprovalRequest,
   restoreSession,
@@ -54,6 +55,7 @@ import {
   type AppserverStatus,
   type ConversationConnection
 } from '../../../platform/index.mts'
+import { PerformanceTraceRegistry, publishPerformanceTrace } from '../lib/performanceTrace.mts'
 
 export interface UseConversationResult {
   state: ConversationState
@@ -101,6 +103,7 @@ export function useConversation(
       { resolve: (response: ApprovalResponse) => void; reject: (error: Error) => void }
     >()
   )
+  const performanceTraceRef = useRef(new PerformanceTraceRegistry())
 
   useEffect(() => {
     stateRef.current = state
@@ -115,6 +118,29 @@ export function useConversation(
   }, [approvalRules])
 
   const handleNotification = useCallback((method: string, params: unknown): void => {
+    const sessionId = typeof params === 'object' && params !== null &&
+      typeof (params as Record<string, unknown>).session_id === 'string'
+      ? String((params as Record<string, unknown>).session_id)
+      : null
+    if (sessionId !== null) {
+      const trace = performanceTraceRef.current
+      if (method === 'event/job_status') trace.mark(sessionId, 'worker_bootstrap')
+      if (method === 'event/message_delta') {
+        trace.mark(sessionId, 'model_request')
+        trace.mark(sessionId, 'first_token')
+      }
+      if (method === 'event/tool_begin') trace.mark(sessionId, 'tool_begin')
+      if (method.startsWith('event/recovery_')) trace.mark(sessionId, 'recovery')
+      if (method === 'event/final') {
+        trace.mark(sessionId, 'final')
+        const publish = (): void => {
+          trace.mark(sessionId, 'renderer_paint')
+          publishPerformanceTrace(trace.snapshot())
+        }
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(publish)
+        else publish()
+      }
+    }
     setState((current) => applyProtocolNotification(current, method, params))
   }, [])
 
@@ -260,6 +286,44 @@ export function useConversation(
           }
           for (const session of sessionsForReplay) {
             const rootSessionId = session.sessionId
+            const sessionCursor = stateRef.current.sessionEventCursorBySession[rootSessionId] ?? 0
+            try {
+              let replay = await client.requestWithTimeout<{
+                events: Array<{
+                  seq: number
+                  method: string
+                  params: Record<string, unknown>
+                }>
+                next_cursor: number
+                gap_detected: boolean
+              }>('session/events', {
+                session_id: rootSessionId,
+                cursor: sessionCursor
+              }, 10_000)
+              if (replay.gap_detected) {
+                // The task store is append-only. Replaying from zero is the
+                // authoritative repair path when a cursor gap is detected.
+                replay = await client.requestWithTimeout<{
+                  events: Array<{
+                    seq: number
+                    method: string
+                    params: Record<string, unknown>
+                  }>
+                  next_cursor: number
+                  gap_detected: boolean
+                }>('session/events', { session_id: rootSessionId, cursor: 0 }, 10_000)
+              }
+              setState((current) => replaySessionEvents(
+                current,
+                rootSessionId,
+                replay.events,
+                replay.next_cursor,
+                replay.gap_detected
+              ))
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              setConnectionError(`session event recovery failed: ${message}`)
+            }
             const cursor = stateRef.current.childEventCursorByRoot[rootSessionId] ?? 0
             try {
               const replay = await client.requestWithTimeout<{
@@ -413,13 +477,15 @@ export function useConversation(
     },
     []
   )
-
   const sendMessage = useCallback(async (text: string): Promise<void> => {
     const client = connectionRef.current?.client
     const trimmed = text.trim()
     const sessionId = stateRef.current.activeSessionId
     if (client === null || client === undefined || sessionId === null || trimmed === '') return
     if (stateRef.current.runningBySession[sessionId] === true) return
+    const trace = performanceTraceRef.current
+    trace.startRun(sessionId)
+    trace.mark(sessionId, 'send_click')
     const mention = parseLeadingAgentMentions(trimmed)
     if (mention !== null) {
       if (mention.prompt === '') {
@@ -457,6 +523,7 @@ export function useConversation(
     setState((current) => addUserMessage(current, sessionId, trimmed))
     setState((current) => beginAssistantMessage(current, sessionId))
     try {
+      trace.mark(sessionId, 'rpc_sent')
       const result = await client.requestWithTimeout<{
         run_id: string
         status: string
@@ -465,6 +532,10 @@ export function useConversation(
       // stall detection and cancellation; this is only a final transport
       // safety net so the renderer cannot retain a request forever.
       }>('session/prompt', { session_id: sessionId, text: trimmed }, 15 * 60_000)
+      trace.mark(sessionId, 'rpc_received')
+      trace.mark(sessionId, 'final')
+      trace.mark(sessionId, 'renderer_paint')
+      publishPerformanceTrace(trace.snapshot())
       setState((current) =>
         applyPromptResult(current, sessionId, {
           runId: result.run_id,

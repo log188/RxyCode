@@ -146,6 +146,10 @@ def _result_to_dict(result) -> dict[str, Any]:
             "steps": result.usage.steps,
             "input_tokens": result.usage.input_tokens,
             "output_tokens": result.usage.output_tokens,
+            "cache_hit_tokens": result.usage.cache_hit_tokens,
+            "wall_time_ms": result.usage.wall_time_ms,
+            "retry_count": result.usage.retry_count,
+            "reporting_status": result.usage.reporting_status,
         },
         "error": None if result.error is None else {
             "code": result.error.code,

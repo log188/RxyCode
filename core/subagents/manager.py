@@ -726,6 +726,7 @@ class ChildSessionManager:
                     "cache_hit_tokens": result.usage.cache_hit_tokens,
                     "wall_time_ms": result.usage.wall_time_ms,
                     "retry_count": result.usage.retry_count,
+                    "reporting_status": result.usage.reporting_status,
                 },
             })
 

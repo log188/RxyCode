@@ -23,6 +23,7 @@ import {
   setRunning,
   timelineFor,
   parseLeadingAgentMentions,
+  replaySessionEvents,
   purgeSession,
   renameSession,
   restoreSession,
@@ -518,6 +519,74 @@ test('applyProtocolNotification routes tool and done notifications into state', 
 test('applyProtocolNotification ignores unknown methods without changing state', () => {
   const state = baseState()
   assert.equal(applyProtocolNotification(state, 'event/unknown', { session_id: 's1' }), state)
+})
+
+test('replaySessionEvents rebuilds ordinary task timeline in persisted sequence order', () => {
+  const state = replaySessionEvents(baseState(), 's1', [
+    {
+      seq: 1,
+      method: 'event/tool_begin',
+      params: { session_id: 's1', call_id: 'call-1', tool_name: 'rg', arguments: { query: 'TODO' } }
+    },
+    {
+      seq: 2,
+      method: 'event/tool_end',
+      params: { session_id: 's1', call_id: 'call-1', tool_name: 'rg', ok: true, summary: '2 matches' }
+    },
+    {
+      seq: 3,
+      method: 'event/final',
+      params: { session_id: 's1', run_id: 'run-1', text: '发现两个待处理项' }
+    }
+  ], 3, false)
+
+  assert.deepEqual(timelineFor(state, 's1').map((item) => item.kind), [
+    'tool_activity',
+    'assistant_text',
+    'final_answer'
+  ])
+  const tool = timelineFor(state, 's1')[0]
+  assert.equal(tool?.kind, 'tool_activity')
+  if (tool?.kind === 'tool_activity') assert.equal(tool.status, 'ok')
+  assert.equal(timelineFor(state, 's1').at(-1)?.kind, 'final_answer')
+  assert.equal(state.sessionEventCursorBySession['s1'], 3)
+  assert.equal(state.sessionEventGapBySession['s1'], false)
+})
+
+test('replaySessionEvents records a cursor gap for the caller to repair from zero', () => {
+  const state = replaySessionEvents(baseState(), 's1', [
+    { seq: 4, method: 'event/final', params: { session_id: 's1', run_id: 'run-4', text: '完成' } }
+  ], 4, true)
+
+  assert.equal(state.sessionEventCursorBySession['s1'], 4)
+  assert.equal(state.sessionEventGapBySession['s1'], true)
+})
+
+test('replayed final answer is idempotent when the live event arrived before reconnect', () => {
+  const state = applyProtocolNotification(baseState(), 'event/final', {
+    session_id: 's1',
+    run_id: 'run-live',
+    text: 'Release audit complete',
+    input_tokens: null,
+    output_tokens: null,
+    cache_hit_tokens: null,
+    reporting_status: 'not_reported'
+  })
+  const replayed = replaySessionEvents(state, 's1', [{
+    seq: 1,
+    method: 'event/final',
+    params: {
+      session_id: 's1',
+      run_id: 'run-live',
+      text: 'Release audit complete',
+      input_tokens: null,
+      output_tokens: null,
+      cache_hit_tokens: null,
+      reporting_status: 'not_reported'
+    }
+  }], 1, false)
+
+  assert.equal(replayed.timelineBySession.s1?.filter((item) => item.kind === 'final_answer').length, 1)
 })
 
 test('cancelled run also finalizes the corresponding timeline tool activity', () => {

@@ -33,6 +33,18 @@ export async function waitFor<T>(
   throw new Error(`timeout waiting for ${label}`)
 }
 
+export interface DevToolsPageTarget {
+  type: string
+  url?: string
+  webSocketDebuggerUrl?: string
+}
+
+export function selectRendererTarget(pages: DevToolsPageTarget[]): string | null {
+  const candidates = pages.filter((page) => page.type === 'page' && page.webSocketDebuggerUrl !== undefined)
+  const renderer = candidates.find((page) => !String(page.url ?? '').startsWith('devtools://'))
+  return (renderer ?? candidates[0])?.webSocketDebuggerUrl ?? null
+}
+
 function sha256(path: string): string | null {
   if (!existsSync(path)) return null
   return createHash('sha256').update(readFileSync(path)).digest('hex')
@@ -181,8 +193,8 @@ export class DesktopCdpHarness {
       try {
         const pages = await (
           await fetch(`http://127.0.0.1:${this.debugPort}/json/list`)
-        ).json() as Array<{ type: string; webSocketDebuggerUrl?: string }>
-        return pages.find((page) => page.type === 'page')?.webSocketDebuggerUrl ?? null
+        ).json() as DevToolsPageTarget[]
+        return selectRendererTarget(pages)
       } catch {
         return null
       }
@@ -203,10 +215,27 @@ export class DesktopCdpHarness {
     }
     await this.send('Runtime.enable')
     await this.send('Page.enable')
-    await this.evaluate(`localStorage.setItem(
+    // A newly-created Electron profile can briefly expose a page target before
+    // its storage origin is ready. Wait for the renderer, then write the
+    // isolated workspace; retry once after a reload instead of leaking a
+    // partially initialized run into the next stress round.
+    await this.send('Page.reload', { ignoreCache: true })
+    await this.waitForSelector('[data-testid="task-command-center"]', 30_000)
+    const setWorkspace = (): Promise<unknown> => this.evaluate(`localStorage.setItem(
       'rxycode.desktop.workspaceSettings.v1',
       JSON.stringify({workspaceRoot:${JSON.stringify(this.workspaceDir)}})
     )`)
+    try {
+      await setWorkspace()
+    } catch (firstError) {
+      await this.send('Page.reload', { ignoreCache: true })
+      await this.waitForSelector('[data-testid="task-command-center"]', 30_000)
+      try {
+        await setWorkspace()
+      } catch {
+        throw new Error(`renderer storage origin was not ready: ${firstError instanceof Error ? firstError.message : String(firstError)}`)
+      }
+    }
     await this.send('Page.reload', { ignoreCache: true })
     await this.waitForSelector('[data-testid="task-command-center"]', 30_000)
   }

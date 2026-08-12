@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useDiagnostics, type UpdateStatus } from '../../../platform/index.mts'
 import type { UseModelsResult } from '../hooks/useModels'
 import type { ModelEntry } from '../hooks/useModels'
+import { groupModelsByProvider } from '../lib/modelPresentation.mts'
 
 export type SettingsTab = 'model' | 'apikey' | 'workspace' | 'diagnostics'
 
@@ -301,7 +302,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 <>
                   <BlockedPanel
                     title="模型管理不可用（旧版 appserver）"
-                    detail="当前 appserver 未提供 models/* JSON-RPC 方法。请升级后端到支持 Phase 4 D5 的版本，或先用 OpenTUI / HTTP API 配置模型。"
+                    detail="当前 appserver 未提供 models/* JSON-RPC 方法。请升级后端到支持 Phase 4 D5 的版本后，再从此处管理模型。"
                   />
                   <BlockedPanel
                     title="Phase 3 上限来源摘要"
@@ -315,50 +316,55 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                     <p className="settings-error">{props.models.error}</p>
                   )}
                   {(props.models.snapshot?.models ?? []).length === 0 && (
-                    <p className="settings-hint">尚无模型。请先添加模型（模型管理在 OpenTUI / HTTP API）。</p>
+                    <p className="settings-hint">尚无模型。请在此处选择 Provider、填写 API Key 并探测可用模型。</p>
                   )}
-                  {(props.models.snapshot?.models ?? []).map((model: ModelEntry) => (
-                    <div key={model.id} className={`model-row${model.active ? ' active' : ''}`}>
-                      <div className="model-main">
-                        <span className="model-name">{model.nickname || model.name}</span>
-                        <span className="model-id">{model.id}</span>
-                        <span className="model-provider">{model.provider_name}</span>
-                        {model.active && <span className="model-badge">当前</span>}
-                        {model.limit_source !== undefined && (
-                          <span className="model-limit">
-                            max_out={model.resolved_max_tokens ?? 'auto'} · {model.limit_source}
-                            {model.warning ? ` · ⚠ ${model.warning}` : ''}
-                          </span>
-                        )}
-                      </div>
-                      <div className="model-actions">
-                        {!model.active && (
-                          <button
-                            type="button"
-                            className="model-activate"
-                            onClick={() => void props.models.setActive(model.id).then((ok) => {
-                              if (ok) props.onModelSelected?.(model.id)
-                            })}
-                          >
-                            设为当前
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="model-test"
-                          onClick={() => void props.models.testConnection(model.id)}
-                        >
-                          测试连接
-                        </button>
-                        <button
-                          type="button"
-                          className="model-remove"
-                          onClick={() => void props.models.remove(model.id)}
-                        >
-                           删除
-                        </button>
-                      </div>
-                    </div>
+                  {groupModelsByProvider(props.models.snapshot?.models ?? []).map(([group, entries]) => (
+                    <section key={group} className="model-group" aria-labelledby={`model-group-${group}`}>
+                      <h3 id={`model-group-${group}`} className="model-group-title">{group}</h3>
+                      {entries.map((model: ModelEntry) => (
+                        <div key={model.id} className={`model-row${model.active ? ' active' : ''}`}>
+                          <div className="model-main">
+                            <span className="model-name">{model.nickname || model.name}</span>
+                            <span className="model-id">{model.id}</span>
+                            <span className="model-provider">{model.provider_name}</span>
+                            {model.active && <span className="model-badge">当前</span>}
+                            {model.limit_source !== undefined && (
+                              <span className="model-limit">
+                                max_out={model.resolved_max_tokens ?? 'auto'} · {model.limit_source}
+                                {model.warning ? ` · ${model.warning}` : ''}
+                              </span>
+                            )}
+                          </div>
+                          <div className="model-actions">
+                            {!model.active && (
+                              <button
+                                type="button"
+                                className="model-activate"
+                                onClick={() => void props.models.setActive(model.id).then((ok) => {
+                                  if (ok) props.onModelSelected?.(model.id)
+                                })}
+                              >
+                                设为当前
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="model-test"
+                              onClick={() => void props.models.testConnection(model.id)}
+                            >
+                              测试连接
+                            </button>
+                            <button
+                              type="button"
+                              className="model-remove"
+                              onClick={() => void props.models.remove(model.id)}
+                            >
+                               删除
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </section>
                   ))}
                 </div>
               )}

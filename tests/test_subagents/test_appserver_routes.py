@@ -114,4 +114,24 @@ class TestRoutes:
         assert d["status"] == "completed"
         assert d["summary"] == "done"
         assert d["usage"]["steps"] == 3
+        assert d["usage"]["input_tokens"] == 100
+        assert d["usage"]["output_tokens"] is None
+        assert d["usage"]["cache_hit_tokens"] is None
+        assert d["usage"]["reporting_status"] == "partial"
         assert d["error"] is None
+
+    def test_unreported_usage_is_not_serialized_as_zero(self):
+        from protocol.subagents import ChildStatus, TaskResult, UsageRecord
+
+        result = TaskResult(
+            request_id="req-unreported",
+            child_session_id="ses-child-unreported",
+            status=ChildStatus.CANCELLED,
+            usage=UsageRecord(steps=1),
+        )
+
+        usage = _result_to_dict(result)["usage"]
+        assert usage["input_tokens"] is None
+        assert usage["output_tokens"] is None
+        assert usage["cache_hit_tokens"] is None
+        assert usage["reporting_status"] == "not_reported"

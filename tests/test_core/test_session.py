@@ -115,10 +115,31 @@ def test_notification_to_sse_event_maps_final():
         "thinking": "thought",
         "input_tokens": 1,
         "output_tokens": 2,
-        "cache_hit_tokens": 0,
-        "cache_hit_rate": 0.0,
+        "cache_hit_tokens": None,
+        "cache_hit_rate": None,
         "session_schema_version": 3,
     }
+
+
+def test_notification_to_sse_event_preserves_unreported_usage_as_null():
+    event = notification_to_sse_event(
+        FinalAnswer(
+            session_id="s1",
+            run_id="run-unreported",
+            text="answer",
+            input_tokens=None,
+            output_tokens=None,
+            cache_hit_tokens=None,
+            cache_hit_rate=None,
+            reporting_status="not_reported",
+        )
+    )
+
+    assert event is not None
+    assert event["input_tokens"] is None
+    assert event["output_tokens"] is None
+    assert event["cache_hit_tokens"] is None
+    assert event["cache_hit_rate"] is None
 
 
 def test_session_interrupt_delegates_to_agent():

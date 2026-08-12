@@ -470,6 +470,7 @@ class ChildRuntime:
             input_tokens = max(0, scoped_usage["input_tokens"])
             output_tokens = max(0, scoped_usage["output_tokens"])
             cache_hit_tokens = max(0, scoped_usage["cache_hit_tokens"])
+            reported = bool(input_tokens or output_tokens or cache_hit_tokens)
             self._runtime.budget.consume_tokens(input_tokens + output_tokens)
             self._runtime.budget.check_wall_clock()
             wall_time_ms = int((__import__("time").monotonic() - started) * 1000)
@@ -505,10 +506,11 @@ class ChildRuntime:
                 summary=str(answer),
                 usage=UsageRecord(
                     steps=self._runtime.budget.steps_used,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cache_hit_tokens=cache_hit_tokens,
+                    input_tokens=input_tokens if reported else None,
+                    output_tokens=output_tokens if reported else None,
+                    cache_hit_tokens=cache_hit_tokens if reported else None,
                     wall_time_ms=wall_time_ms,
+                    reporting_status="reported" if reported else "not_reported",
                 ),
                 telemetry=telemetry,
             )
@@ -521,10 +523,14 @@ class ChildRuntime:
                 error=ErrorRecord(code=exc.code, message=str(exc)),
                 usage=UsageRecord(
                     steps=self._runtime.budget.steps_used,
-                    input_tokens=max(0, scoped_usage["input_tokens"]),
-                    output_tokens=max(0, scoped_usage["output_tokens"]),
-                    cache_hit_tokens=max(0, scoped_usage["cache_hit_tokens"]),
+                    input_tokens=(max(0, scoped_usage["input_tokens"])
+                                  if any(scoped_usage.values()) else None),
+                    output_tokens=(max(0, scoped_usage["output_tokens"])
+                                   if any(scoped_usage.values()) else None),
+                    cache_hit_tokens=(max(0, scoped_usage["cache_hit_tokens"])
+                                      if any(scoped_usage.values()) else None),
                     wall_time_ms=self._runtime.budget.elapsed_wall_ms,
+                    reporting_status="reported" if any(scoped_usage.values()) else "not_reported",
                 ),
             )
         except ChildCancelledError:

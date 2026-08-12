@@ -154,11 +154,12 @@ export interface WorkspaceScope {
  */
 export interface UsageRecord {
   steps?: number;
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_hit_tokens?: number;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_hit_tokens?: number | null;
   wall_time_ms?: number;
   retry_count?: number;
+  reporting_status?: "reported" | "partial" | "not_reported";
   [k: string]: unknown;
 }
 /**

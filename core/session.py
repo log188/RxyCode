@@ -71,10 +71,13 @@ def notification_to_sse_event(notification: BaseModel) -> dict[str, Any] | None:
             "run_id": notification.run_id,
             "text": notification.text,
             "thinking": notification.thinking or "",
-            "input_tokens": notification.input_tokens or 0,
-            "output_tokens": notification.output_tokens or 0,
-            "cache_hit_tokens": notification.cache_hit_tokens or 0,
-            "cache_hit_rate": notification.cache_hit_rate or 0.0,
+            # Preserve provider reporting semantics for the legacy SSE bridge.
+            # ``None`` means the provider did not report the metric; converting
+            # it to zero makes the Desktop under-report usage and cache rate.
+            "input_tokens": notification.input_tokens,
+            "output_tokens": notification.output_tokens,
+            "cache_hit_tokens": notification.cache_hit_tokens,
+            "cache_hit_rate": notification.cache_hit_rate,
         }
         if notification.session_schema_version is not None:
             event["session_schema_version"] = notification.session_schema_version

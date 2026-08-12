@@ -48,7 +48,26 @@ class DesktopTaskStore:
         if isinstance(tasks, dict):
             self._data["tasks"] = tasks
         if isinstance(events, dict):
-            self._data["events"] = events
+            # Before the cursor fix, persisted ``seq`` was copied directly
+            # from protocol events.  Normalize that legacy shape on load so a
+            # reconnect cursor always addresses this store's append order,
+            # while retaining the original protocol sequence for diagnostics.
+            normalized: dict[str, list[dict[str, Any]]] = {}
+            for session_id, raw_events in events.items():
+                if not isinstance(raw_events, list):
+                    continue
+                session_events: list[dict[str, Any]] = []
+                for storage_seq, raw_event in enumerate(raw_events, start=1):
+                    if not isinstance(raw_event, dict):
+                        continue
+                    value = dict(raw_event)
+                    old_seq = value.get("seq")
+                    if "protocol_seq" not in value and isinstance(old_seq, int):
+                        value["protocol_seq"] = old_seq
+                    value["seq"] = storage_seq
+                    session_events.append(value)
+                normalized[str(session_id)] = session_events
+            self._data["events"] = normalized
 
     def _save(self) -> None:
         if not self.persistent:
@@ -154,10 +173,13 @@ class DesktopTaskStore:
             self._data["events"][session_id] = events
         seq = len(events) + 1
         value = dict(event)
-        value.setdefault("seq", seq)
+        protocol_seq = value.pop("seq", None)
+        value["seq"] = seq
+        if isinstance(protocol_seq, int):
+            value["protocol_seq"] = protocol_seq
         events.append(value)
         self._save()
-        return int(value["seq"])
+        return seq
 
     def events(self, session_id: str, cursor: int = 0) -> tuple[list[dict[str, Any]], int, bool]:
         values = self._data["events"].get(session_id, [])

@@ -57,6 +57,14 @@ export interface SubagentResult {
   summary: string;
   artifacts: Array<{ kind: string; ref: string; sha256: string | null }>;
   evidence: Array<{ path: string; line: number | null; sha256: string | null }>;
-  usage: { steps: number; input_tokens: number; output_tokens: number };
+  usage: {
+    steps: number;
+    input_tokens: number | null;
+    output_tokens: number | null;
+    cache_hit_tokens?: number | null;
+    cache_write_tokens?: number | null;
+    cache_hit_rate?: number | null;
+    reporting_status?: "reported" | "partial" | "not_reported";
+  };
   error: { code: string; message: string } | null;
 }

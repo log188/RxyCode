@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ModelEntry } from '../hooks/useModels'
+import { groupModelsByProvider } from '../lib/modelPresentation.mts'
 
 interface ComposerProps {
   disabled: boolean
@@ -36,11 +37,7 @@ function Composer({
     else submit()
   }
 
-  const groups = models.reduce<Record<string, ModelEntry[]>>((result, model) => {
-    const key = model.provider_name || model.category || model.provider_id || 'Others'
-    ;(result[key] ??= []).push(model)
-    return result
-  }, {})
+  const groups = groupModelsByProvider(models)
 
   return (
     <footer className="composer">
@@ -79,7 +76,7 @@ function Composer({
             {models.length === 0 ? (
               <option value="">No configured models</option>
             ) : (
-              Object.entries(groups).map(([group, entries]) => (
+              groups.map(([group, entries]) => (
                 <optgroup key={group} label={group}>
                   {entries.map((model) => (
                     <option key={model.id} value={model.id}>

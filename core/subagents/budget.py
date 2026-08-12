@@ -129,8 +129,9 @@ class BudgetGuard:
         return UsageRecord(
             steps=self.steps_used,
             input_tokens=self.tokens_used,
-            output_tokens=0,
+            output_tokens=None,
             wall_time_ms=self.elapsed_wall_ms,
+            reporting_status="partial" if self.tokens_used else "not_reported",
         )
 
 

@@ -164,6 +164,8 @@ export interface ConversationState {
   seenChildEventIds: Record<string, true>
   childEventCursorByRoot: Record<string, number>
   childEventGapByRoot: Record<string, boolean>
+  sessionEventCursorBySession: Record<string, number>
+  sessionEventGapBySession: Record<string, boolean>
   childLastSeqBySession: Record<string, number>
   mentionDispatchBySession: Record<string, MentionDispatchState>
   runningBySession: Record<string, boolean>
@@ -228,6 +230,8 @@ export function createInitialState(): ConversationState {
     seenChildEventIds: {},
     childEventCursorByRoot: {},
     childEventGapByRoot: {},
+    sessionEventCursorBySession: {},
+    sessionEventGapBySession: {},
     childLastSeqBySession: {},
     mentionDispatchBySession: {},
     runningBySession: {},
@@ -517,6 +521,9 @@ export function applyFinalAnswer(
   sessionId: string,
   final: FinalAnswer
 ): ConversationState {
+  if (timelineFor(state, sessionId).some((item) => item.kind === 'final_answer' && item.runId === final.run_id)) {
+    return applyTokenUsage(state, sessionId, final as unknown as Record<string, unknown>)
+  }
   const completed = completeAssistant(state, sessionId, final.text, final.run_id)
   const withFinal = appendTimeline(completed, sessionId, {
     kind: 'final_answer',
@@ -696,6 +703,14 @@ export function purgeSession(state: ConversationState, sessionId: string): Conve
     [sessionId]: _childGap,
     ...childEventGapByRoot
   } = state.childEventGapByRoot
+  const {
+    [sessionId]: _sessionCursor,
+    ...sessionEventCursorBySession
+  } = state.sessionEventCursorBySession
+  const {
+    [sessionId]: _sessionGap,
+    ...sessionEventGapBySession
+  } = state.sessionEventGapBySession
   const childLastSeqBySession = Object.fromEntries(
     Object.entries(state.childLastSeqBySession).filter(([key]) => !key.startsWith(`${sessionId}:`))
   )
@@ -723,6 +738,8 @@ export function purgeSession(state: ConversationState, sessionId: string): Conve
     childSessionsByRoot,
     childEventCursorByRoot,
     childEventGapByRoot,
+    sessionEventCursorBySession,
+    sessionEventGapBySession,
     childLastSeqBySession,
     mentionDispatchBySession,
     approvals: state.approvals.filter((approval) => approval.sessionId !== sessionId)
@@ -1399,6 +1416,52 @@ export function hydrateChildSessions(
         ([key]) => !key.startsWith(`${rootSessionId}:`)
       )
     )
+  }
+}
+
+export interface PersistedSessionEvent {
+  seq: number
+  method: string
+  params: Record<string, unknown>
+}
+
+/**
+ * Rebuild ordinary task state after a renderer/appserver reconnect.
+ *
+ * The appserver deliberately does not persist prompt text, so this replay is
+ * limited to redacted protocol events.  A gap is recorded for the caller to
+ * request an authoritative replay from cursor zero; it is never silently
+ * converted into a complete-looking task.
+ */
+export function replaySessionEvents(
+  state: ConversationState,
+  sessionId: string,
+  rawEvents: PersistedSessionEvent[],
+  nextCursor: number,
+  gapDetected: boolean
+): ConversationState {
+  const events = [...rawEvents]
+    .filter((event) =>
+      event.seq > (state.sessionEventCursorBySession[sessionId] ?? 0) &&
+      event.method.startsWith('event/') &&
+      event.params.session_id === sessionId
+    )
+    .sort((left, right) => left.seq - right.seq)
+  const currentCursor = state.sessionEventCursorBySession[sessionId] ?? 0
+  const replayed = events.reduce(
+    (current, event) => applyProtocolNotification(current, event.method, event.params),
+    state
+  )
+  return {
+    ...replayed,
+    sessionEventCursorBySession: {
+      ...replayed.sessionEventCursorBySession,
+      [sessionId]: Math.max(currentCursor, nextCursor, ...events.map((event) => event.seq))
+    },
+    sessionEventGapBySession: {
+      ...replayed.sessionEventGapBySession,
+      [sessionId]: gapDetected
+    }
   }
 }
 
