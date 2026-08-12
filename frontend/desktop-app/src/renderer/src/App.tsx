@@ -146,6 +146,18 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', closeOnEscape, true)
   }, [settingsOpen])
 
+  useEffect(() => {
+    if (!navOpen) return
+    const closeNavigationOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setNavOpen(false)
+    }
+    window.addEventListener('keydown', closeNavigationOnEscape, true)
+    return () => window.removeEventListener('keydown', closeNavigationOnEscape, true)
+  }, [navOpen])
+
   const handleCreate = async (): Promise<void> => {
     showToast('正在创建任务…')
     const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
@@ -276,6 +288,7 @@ function App(): React.JSX.Element {
             timeline={activeSessionId !== null ? (conversation.state.timelineBySession[activeSessionId] ?? []) : []}
             running={running}
             error={activeSessionId !== null ? (conversation.state.errorBySession[activeSessionId] ?? null) : null}
+            progress={activeSessionId !== null ? (conversation.state.progressBySession[activeSessionId] ?? null) : null}
             onOpenInspector={openInspector}
           />
           <Composer

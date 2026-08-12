@@ -459,6 +459,10 @@ async function runApprovalPrompt(requestId, sessionId, text) {
 async function runPrompt(requestId, sessionId, text) {
   const runId = `demo-${++sessionCounter}`
   ensureTask(sessionId, { title: text.slice(0, 80) || 'New task', status: 'running' })
+  if (text.includes('startup demo')) {
+    notify('event/progress', { session_id: sessionId, text: 'Starting Agent…' })
+    await sleep(260)
+  }
   notify('event/job_status', {
     session_id: sessionId,
     job_id: `job-${runId}`,

@@ -514,12 +514,15 @@ export function useConversation(
   }, [])
 
   const trashTask = useCallback(async (sessionId: string): Promise<boolean> => {
-    const client = await ensureClient(sessionId)
-    if (client === null || client === undefined) return false
     // The server persists the soft-delete before cleaning up its worker. The
-    // task list must reflect that durable intent immediately; process cleanup
-    // is deliberately decoupled from this UI mutation.
+    // task list must reflect that durable intent before waiting for transport
+    // recovery; process cleanup is deliberately decoupled from this UI mutation.
     setState((current) => trashSession(current, sessionId))
+    const client = await ensureClient(sessionId)
+    if (client === null || client === undefined) {
+      setState((current) => restoreSession(current, sessionId))
+      return false
+    }
     try {
       await client.requestWithTimeout('session/trash', { session_id: sessionId }, 10_000)
       // The optimistic mutation already changed the list. This shallow
@@ -534,9 +537,12 @@ export function useConversation(
   }, [])
 
   const restoreTask = useCallback(async (sessionId: string): Promise<boolean> => {
-    const client = await ensureClient(sessionId)
-    if (client === null || client === undefined) return false
     setState((current) => restoreSession(current, sessionId))
+    const client = await ensureClient(sessionId)
+    if (client === null || client === undefined) {
+      setState((current) => trashSession(current, sessionId))
+      return false
+    }
     try {
       await client.requestWithTimeout('session/restore', { session_id: sessionId }, 10_000)
       setState((current) => ({ ...current }))

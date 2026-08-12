@@ -15,6 +15,7 @@ interface ChatAreaProps {
   timeline: TimelineItem[]
   running: boolean
   error: string | null
+  progress?: string | null
   onOpenInspector?: (item: TimelineItem) => void
 }
 
@@ -107,7 +108,7 @@ function TimelineEntry({ item, onOpenInspector }: { item: TimelineItem; onOpenIn
   }
 }
 
-function ChatArea({ timeline, running, error, onOpenInspector }: ChatAreaProps): React.JSX.Element {
+function ChatArea({ timeline, running, error, progress, onOpenInspector }: ChatAreaProps): React.JSX.Element {
   const scrollRef = useRef<HTMLElement | null>(null)
   const stickToBottomRef = useRef(true)
 
@@ -131,7 +132,12 @@ function ChatArea({ timeline, running, error, onOpenInspector }: ChatAreaProps):
       ) : (
         <div className="timeline" data-testid="task-timeline">
           {timeline.map((item) => <TimelineEntry key={item.id} item={item} onOpenInspector={onOpenInspector} />)}
-          {running && timeline.at(-1)?.kind !== 'tool_activity' && <div className="running-indicator"><CircleDashed className="activity-spinner" aria-hidden="true" size={15} />正在处理</div>}
+          {running && timeline.at(-1)?.kind !== 'tool_activity' && (
+            <div className="running-indicator" data-testid="running-indicator" data-phase={timeline.length <= 2 ? 'startup' : 'working'}>
+              <CircleDashed className="activity-spinner" aria-hidden="true" size={15} />
+              {progress ?? (timeline.length <= 2 ? '正在启动 Agent…' : '正在处理')}
+            </div>
+          )}
         </div>
       )}
       {error !== null && timeline.at(-1)?.kind !== 'error' && <div className="error-banner" role="alert">{error}</div>}

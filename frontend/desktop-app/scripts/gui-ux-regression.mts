@@ -43,6 +43,18 @@ async function main(): Promise<void> {
       if (!(await harness.has('[data-testid="composer-send"]'))) throw new Error('send arrow missing')
       if (!(await harness.has('[data-testid="composer-permission-mode"]'))) throw new Error('task permission switch missing')
     })
+    await check('UX-01b first turn exposes startup progress', async () => {
+      await harness.typePrompt('startup demo')
+      await harness.pressKey('Enter')
+      await harness.waitForSelector('[data-testid="running-indicator"]', 2_000)
+      const startup = await harness.evaluate<{ phase: string; text: string }>(`(() => {
+        const node = document.querySelector('[data-testid="running-indicator"]')
+        return { phase: node?.getAttribute('data-phase') ?? '', text: node?.textContent ?? '' }
+      })()`)
+      if (startup.phase !== 'startup') throw new Error(`first turn was not marked startup: ${JSON.stringify(startup)}`)
+      if (!startup.text.includes('Starting') && !startup.text.includes('启动')) throw new Error(`startup progress missing: ${startup.text}`)
+      await waitFor(async () => (await harness.has('[data-testid="running-indicator"]')) ? null : true, 5_000, 'startup task terminal')
+    })
     await check('UX-02 Enter submits', async () => {
       await harness.typePrompt('enter sends a real task')
       await harness.pressKey('Enter')
@@ -126,16 +138,28 @@ async function main(): Promise<void> {
       await harness.evaluate(`document.querySelector('.nav-sheet .sheet-close')?.click()`)
     })
     await check('UX-08 default layout centers task content without an inspector column', async () => {
-      const layout = await harness.evaluate<{ columns: string; inspector: boolean }>(`(() => {
+      const layout = await harness.evaluate<{ columns: string; inspector: boolean; viewportCenter: number; timelineCenter: number; composerCenter: number }>(`(() => {
         const node = document.querySelector('.command-layout')
-        if (!(node instanceof HTMLElement)) throw new Error('command layout missing')
+        const timeline = document.querySelector('.timeline')
+        const composer = document.querySelector('[data-testid="composer-surface"]')
+        if (!(node instanceof HTMLElement) || !(timeline instanceof HTMLElement) || !(composer instanceof HTMLElement)) throw new Error('command layout geometry missing')
+        const center = (element) => {
+          const rect = element.getBoundingClientRect()
+          return (rect.left + rect.right) / 2
+        }
         return {
           columns: getComputedStyle(node).gridTemplateColumns,
-          inspector: document.querySelector('.contextual-inspector-slot') !== null
+          inspector: document.querySelector('.contextual-inspector-slot') !== null,
+          viewportCenter: window.innerWidth / 2,
+          timelineCenter: center(timeline),
+          composerCenter: center(composer)
         }
       })()`)
       if (layout.inspector) throw new Error('inspector is open by default')
       if (layout.columns.trim().split(/\\s+/).length > 1) throw new Error(`default layout reserves extra columns: ${layout.columns}`)
+      if (Math.abs(layout.timelineCenter - layout.viewportCenter) > 48) throw new Error(`timeline is not centered: ${JSON.stringify(layout)}`)
+      if (Math.abs(layout.composerCenter - layout.viewportCenter) > 48) throw new Error(`composer is not centered: ${JSON.stringify(layout)}`)
+      await harness.screenshot('layout-default.png')
     })
     await check('UX-09 timeline keeps tool results before Final Answer', async () => {
       const order = await harness.evaluate<string[]>(`Array.from(document.querySelectorAll('[data-testid="task-timeline"] > *')).map((node) => {
@@ -162,6 +186,10 @@ async function main(): Promise<void> {
       })()`)
       if (layout.columns.trim().split(/\\s+/).length > 1) throw new Error(`narrow layout reserves a column: ${layout.columns}`)
       if (layout.navigation !== 'none') throw new Error(`narrow layout keeps permanent navigation: ${layout.navigation}`)
+      await harness.evaluate(`document.querySelector('.nav-toggle')?.click()`)
+      await harness.waitForSelector('.nav-sheet.open', 2_000)
+      await harness.pressKey('Escape')
+      await waitFor(async () => (await harness.has('.nav-sheet.open')) ? null : true, 2_000, 'navigation drawer Escape close')
       await harness.setViewport(1440, 900)
     })
     await check('UX-11 usage reports unknown values explicitly', async () => {
@@ -200,6 +228,7 @@ async function main(): Promise<void> {
       await harness.evaluate(`(() => { const details = document.querySelector('.tool-activity'); if (details instanceof HTMLDetailsElement) details.open = true; const button = details?.querySelector('.activity-inspect-button'); if (button instanceof HTMLElement) button.click(); })()`)
       await harness.waitForSelector('.contextual-inspector-slot', 2_000)
       if (!(await harness.has('[data-testid="inspector"]'))) throw new Error('task inspector content missing')
+      await harness.screenshot('layout-inspector-open.png')
       await harness.evaluate(`document.querySelector('[data-testid="inspector"] .inspector-header button')?.click()`)
       await waitFor(async () => (await harness.has('.contextual-inspector-slot')) ? null : true, 2_000, 'inspector close')
     })
