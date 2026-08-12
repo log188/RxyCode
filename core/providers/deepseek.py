@@ -177,6 +177,7 @@ class DeepSeekProvider(BaseProvider):
                         "balanced": "high",
                         "deep": "max",
                     },
+                    effort_options=("low", "high", "max"),
                     cache_min_block_tokens=64,
                     cache_ttl_s=None,
                     cache_breakpoints=(),

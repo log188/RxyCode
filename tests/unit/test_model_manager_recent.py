@@ -110,3 +110,48 @@ def test_history_reads_tolerate_a_missing_or_malformed_key(monkeypatch):
         monkeypatch, model_manager, {"models": {"alpha": {}}, "recent_models": "not-a-list"}
     )
     assert model_manager.list_recent_models() == []
+
+
+# ---- /effort 扩展（2026-08-12）：全局思考强度档位读写 -----------------------
+
+
+def test_effort_unset_returns_none(monkeypatch):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    _in_memory_config(monkeypatch, model_manager, _cfg("alpha"))
+    assert model_manager.get_effort() is None
+
+
+def test_effort_set_get_roundtrip(monkeypatch):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = _in_memory_config(monkeypatch, model_manager, _cfg("alpha"))
+
+    assert model_manager.set_effort("medium") is True
+    assert model_manager.get_effort() == "medium"
+    assert state["cfg"][model_manager.EFFORT_CONFIG_KEY] == "medium"
+
+    assert model_manager.set_effort("high") is True
+    assert model_manager.get_effort() == "high"
+
+
+def test_effort_blank_rejected_and_keeps_previous(monkeypatch):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = _in_memory_config(monkeypatch, model_manager, _cfg("alpha"))
+    assert model_manager.set_effort("low") is True
+
+    assert model_manager.set_effort("") is False
+    assert model_manager.set_effort("   ") is False
+    assert model_manager.get_effort() == "low"
+    assert state["cfg"][model_manager.EFFORT_CONFIG_KEY] == "low"
+
+
+def test_effort_read_tolerates_malformed_value(monkeypatch):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    _in_memory_config(monkeypatch, model_manager, {"effort": 123})
+    assert model_manager.get_effort() is None
+
+    _in_memory_config(monkeypatch, model_manager, {"effort": ""})
+    assert model_manager.get_effort() is None

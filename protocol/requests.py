@@ -312,10 +312,15 @@ class ModelsSetActiveRequest(BaseModel):
     """Switch the active model.
 
     Maps ``models/set_active``.
+
+    ``effort``（optional_field，2026-08-12）：同时设置全局思考强度档位
+    （/effort 命令与设置页共用；厂商档位值或 fast/balanced/deep 抽象档位）。
+    缺失 = 不改动当前档位。
     """
 
     method: Literal["models/set_active"] = "models/set_active"
     id: str
+    effort: str | None = None
 
 
 class ModelsTestConnectionRequest(BaseModel):

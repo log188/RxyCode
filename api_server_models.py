@@ -180,8 +180,24 @@ async def get_models():
             item["limit_source"] = "legacy_server"
             item["context_window"] = None
             item["warning"] = None
+        # /effort 扩展（2026-08-12）：厂商档位全集（effort_options），供档位
+        # 选择列表渲染；空列表 = 不支持档位选择。
+        try:
+            from .core.providers import resolve as _resolve_provider
+
+            caps = _resolve_provider(mcfg).capabilities(mcfg)
+            item["effort_options"] = list(caps.effort_options or ())
+        except Exception:
+            item["effort_options"] = []
         result.append(item)
-    return {"models": result, "active": active, "recent": prune_recent_models(cfg)}
+    from .config.model_manager import get_effort
+
+    return {
+        "models": result,
+        "active": active,
+        "recent": prune_recent_models(cfg),
+        "effort": get_effort(),
+    }
 
 
 @router.get("/models/presets")

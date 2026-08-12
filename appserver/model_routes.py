@@ -63,6 +63,7 @@ def list_models() -> dict[str, Any]:
     models = cfg.get("models", {})
     active = cfg.get("active_model", "")
     model_limits_cfg = cfg.get("model_limits") or {}
+    get_effort = manager.get_effort
     result = []
     for name, mcfg in models.items():
         vendor_id = mcfg.get("model_name", name)
@@ -111,8 +112,21 @@ def list_models() -> dict[str, Any]:
             item["limit_source"] = "legacy_server"
             item["context_window"] = None
             item["warning"] = None
+        # /effort 扩展（2026-08-12）：该模型的厂商档位全集（effort_options），
+        # 供 /effort 命令与设置页渲染档位选择列表；空列表 = 不支持档位选择。
+        try:
+            providers = _load_module("..core.providers", "core.providers")
+            caps = providers.resolve(mcfg).capabilities(mcfg)
+            item["effort_options"] = list(caps.effort_options or ())
+        except Exception:
+            item["effort_options"] = []
         result.append(item)
-    return {"models": result, "active": active, "recent": prune_recent_models(cfg)}
+    return {
+        "models": result,
+        "active": active,
+        "recent": prune_recent_models(cfg),
+        "effort": get_effort(),
+    }
 
 
 def list_presets() -> dict[str, Any]:
@@ -267,16 +281,31 @@ def remove(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def set_active(params: dict[str, Any]) -> dict[str, Any]:
-    """models/set_active — switch the active model. params: {id}"""
-    set_active_model = _load_module(
-        "..config.model_manager", "config.model_manager"
-    ).set_active_model
+    """models/set_active — switch the active model. params: {id, effort?}
+
+    ``effort``（optional_field，2026-08-12）：同时设置全局思考强度档位
+    （/effort 与设置页共用）。缺失时不改档位。
+    """
+    manager = _load_module("..config.model_manager", "config.model_manager")
+    set_active_model = manager.set_active_model
+    set_effort = manager.set_effort
 
     model_id = str(params.get("id", "")).strip()
     if not model_id:
         return {"ok": False, "error_code": "invalid", "message": "id must not be empty"}
     ok = set_active_model(model_id)
-    return {"ok": ok, "id": model_id}
+    if not ok:
+        return {"ok": False, "id": model_id}
+    effort = params.get("effort")
+    if effort is not None:
+        if not set_effort(str(effort)):
+            return {
+                "ok": False,
+                "id": model_id,
+                "error_code": "invalid",
+                "message": "effort must be a non-empty string",
+            }
+    return {"ok": True, "id": model_id}
 
 
 async def test_connection(params: dict[str, Any]) -> dict[str, Any]:

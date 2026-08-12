@@ -159,6 +159,11 @@ class GLMProvider(BaseProvider):
                     if is_52
                     else {}
                 ),
+                effort_options=(
+                    ("max", "xhigh", "high", "medium", "low", "minimal", "none")
+                    if is_52
+                    else ()
+                ),
                 # §7.4 问 4：隐式自动缓存，最小块/TTL 未找到 → None；无显式断点
                 cache_min_block_tokens=None,
                 cache_ttl_s=None,

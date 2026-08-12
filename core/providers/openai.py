@@ -137,6 +137,7 @@ class OpenAIProvider(BaseProvider):
                     "balanced": "medium",
                     "deep": "high",
                 },
+                effort_options=("low", "medium", "high"),
                 # §7.2 问 6：项目侧启发式；未找到官方 5.6 encoding 名
                 tokenizer="tiktoken:o200k_base",
                 # §7.2 第 4 问：自动前缀缓存，GPT-5.6+ 最小 1024；TTL 30m=1800s；
@@ -165,11 +166,18 @@ class OpenAIProvider(BaseProvider):
             # 保留 temperature（accepts_temperature=True）。
             kwargs.pop("temperature", None)
         if caps.supports_reasoning and caps.effort_presets:
-            # 仅对推理模型注入 reasoning_effort（§7.2 ③ 调研范围为 gpt-5.6；
+            # 仅对推理模型注入 reasoning_effort（§7.2 �?5：gpt-5.6 调研范围内；
             # gpt-4o/gpt-5.2 无数据，不得臆造参数）。
+            # /effort 扩展（2026-08-12）：effort 命中厂商档位全集（effort_options）
+            # 时直接透传；否则走抽象映射（fast/balanced/deep），未知档位保持
+            # A21 现状默认 "medium"。
             effort = str(model_config.get("effort") or "balanced")
-            preset = caps.effort_presets.get(effort, "medium")
-            # §7.2 问 5 / ③：Chat Completions 顶层参数 reasoning_effort
-            # （不是 extra_body，也不是 DeepSeek 式 thinking.type）。
-            kwargs["reasoning_effort"] = preset
+            options = caps.effort_options or ()
+            if effort in options:
+                kwargs["reasoning_effort"] = effort
+            else:
+                preset = caps.effort_presets.get(effort, "medium")
+                # §7.2 �?5 / ③：Chat Completions 顶层参数 reasoning_effort
+                # （不�?extra_body，也不是 DeepSeek �?thinking.type）�?/
+                kwargs["reasoning_effort"] = preset
         return kwargs

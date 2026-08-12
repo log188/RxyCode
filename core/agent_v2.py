@@ -1603,7 +1603,16 @@ class AgentV2:
         model_config = dict(model_config)
         # A21: effort 档位默认 balanced（= 现状行为，无额外注入）；
         # fast path 可在入口置 effort="fast"（见 _effort_for）。
-        model_config.setdefault("effort", "balanced")
+        # /effort 扩展（2026-08-12）：未显式传入时读取全局档位
+        # （model_manager.get_effort，厂商档位值或抽象档位），
+        # 再回退默认 balanced。优先级：显式传入 > 全局设置 > balanced。
+        if "effort" not in model_config:
+            from RxyCode.RxyCode1_1_0.config.model_manager import get_effort
+
+            try:
+                model_config["effort"] = get_effort() or "balanced"
+            except Exception:
+                model_config["effort"] = "balanced"
         api_key = str(model_config.get("api_key") or "").strip()
         if not api_key:
             env_name = model_config.get("api_key_env") or "the configured environment variable"

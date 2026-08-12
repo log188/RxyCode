@@ -117,3 +117,50 @@ def test_credentials_never_echo_key(isolated_config):
     assert "api_key" not in model_routes.upsert_credential({"id": "x", "api_key": "sk-secret"}).get(
         "message", ""
     )
+
+def test_set_active_with_effort_updates_global(isolated_config, monkeypatch):
+    """models/set_active 带 effort → 切换模型并设置全局档位。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(model_manager, "set_active_model", lambda name: name == "demo")
+    recorded = {}
+    monkeypatch.setattr(
+        model_manager, "set_effort", lambda v: recorded.__setitem__("effort", v) or True
+    )
+
+    result = model_routes.set_active({"id": "demo", "effort": "medium"})
+    assert result == {"ok": True, "id": "demo"}
+    assert recorded.get("effort") == "medium"
+
+
+def test_set_active_invalid_effort_rejected(isolated_config, monkeypatch):
+    """effort 非空字符串校验失败 → 返回 invalid 错误（后端拒绝）。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(model_manager, "set_active_model", lambda name: True)
+    monkeypatch.setattr(model_manager, "set_effort", lambda v: False)
+
+    result = model_routes.set_active({"id": "demo", "effort": "  "})
+    assert result["ok"] is False
+    assert result["error_code"] == "invalid"
+
+
+def test_set_active_without_effort_keeps_unset(isolated_config, monkeypatch):
+    """不带 effort 参数 → 不改动全局档位（optional_field 语义）。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(model_manager, "set_active_model", lambda name: True)
+    touched = []
+    monkeypatch.setattr(
+        model_manager, "set_effort", lambda v: touched.append(v) or True
+    )
+
+    result = model_routes.set_active({"id": "demo"})
+    assert result == {"ok": True, "id": "demo"}
+    assert touched == []
+
+
+def test_list_models_exposes_effort_key(isolated_config):
+    """models/list 返回 effort 键（全局档位），未设置时为 None。"""
+    result = model_routes.list_models()
+    assert "effort" in result

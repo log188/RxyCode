@@ -938,6 +938,28 @@ uvicorn.run(app, host="127.0.0.1", port={port}, log_level="info")
                 results["checks"]["w23_i18n_models"],
             )
 
+        # --- W27 /effort（2026-08-12）：设置/查询思考强度 ---
+        effort_query = _cmd(port, "/effort")
+        effort_set = _cmd(port, "/effort medium")
+        effort_get = _cmd(port, "/effort")
+        results["checks"]["w27_effort"] = {
+            "query": {k: effort_query[k] for k in ("ok", "action", "message_excerpt", "error")},
+            "set": {k: effort_set[k] for k in ("ok", "action", "message_excerpt", "error")},
+            "get": {k: effort_get[k] for k in ("ok", "action", "message_excerpt", "error")},
+        }
+        if effort_set["ok"] and effort_get["ok"] and "medium" in effort_get["message_excerpt"]:
+            results["windows"]["W27"] = _window(
+                "PASS",
+                "/effort set+query roundtrip",
+                results["checks"]["w27_effort"],
+            )
+        else:
+            results["windows"]["W27"] = _window(
+                "PARTIAL" if effort_query["ok"] else "FAIL",
+                "/effort partial",
+                results["checks"]["w27_effort"],
+            )
+
         # --- W11 RAG ---
         rag_local: dict[str, Any] = {"ok": False}
         try:

@@ -461,3 +461,27 @@ class TestCommandEndpoint:
         assert response.status_code == 200
         assert len(api_server._state["chat_history"]) == 202
         assert api_server._state["chat_history"][0]["content"] == "old-0"
+
+    def test_effort_command_sets_global(self, client):
+        """POST /command /effort <档位> → effort_changed + agent 即时生效。"""
+        from RxyCode.RxyCode1_1_0 import api_server
+
+        client.post("/command", json={"command": "/effort medium"})
+        payload = client.post("/command", json={"command": "/effort medium"}).json()
+        assert payload["action"] == "effort_changed"
+        assert "medium" in payload["message"]
+        # agent.model_config["effort"] 即时写入（下次请求生效）
+        agent = api_server._state.get("agent")
+        if agent is not None:
+            assert agent.model_config.get("effort") == "medium"
+
+    def test_effort_command_query_current(self, client):
+        """POST /command /effort（无参数）→ 返回当前档位。"""
+        payload = client.post("/command", json={"command": "/effort"}).json()
+        assert payload["action"] == "effort_info"
+        assert "思考强度" in payload["message"]
+
+    def test_effort_command_blank_means_query(self, client):
+        """空白参数（split 归一为空）→ 视为查询当前档位（非错误）。"""
+        payload = client.post("/command", json={"command": "/effort   "}).json()
+        assert payload["action"] == "effort_info"

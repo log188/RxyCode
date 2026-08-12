@@ -932,7 +932,7 @@
       "type": "object"
     },
     "ModelsSetActiveRequest": {
-      "description": "Switch the active model.\n\nMaps ``models/set_active``.",
+      "description": "Switch the active model.\n\nMaps ``models/set_active``.\n\n``effort``（optional_field，2026-08-12）：同时设置全局思考强度档位\n（/effort 命令与设置页共用；厂商档位值或 fast/balanced/deep 抽象档位）。\n缺失 = 不改动当前档位。",
       "properties": {
         "method": {
           "const": "models/set_active",
@@ -943,6 +943,18 @@
         "id": {
           "title": "Id",
           "type": "string"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effort"
         }
       },
       "required": [

@@ -157,6 +157,15 @@ class ModelCapabilities:
     #: A21 的延迟旋钮与 fast path 用它；为空表示该模型不支持档位控制。
     effort_presets: dict[str, str] = field(default_factory=dict)
 
+    #: 该模型支持的**厂商档位全集**（/effort 命令与设置页的选择列表）。
+    #: 值 = 厂商 reasoning_effort 合法取值（如 deepseek ("low","high","max")、
+    #: glm-5.2+ ("max","xhigh","high","medium","low","minimal","none")）。
+    #: 空元组 = 不支持档位选择（Anthropic 走 thinking content block、
+    #: MiMo/MiniMax Chat 走 reasoning.effort 差异路径、Qwen 走 enable_thinking，
+    #: 均不提供档位列表）。A21 的 effort_presets 抽象映射保留给 Phase F
+    #: 难度路由；本字段供用户直接选择厂商档位（/effort，2026-08-12 新增）。
+    effort_options: tuple[str, ...] = ()
+
     #: 该模型是否**默认开启 thinking（推理）模式**（API 层行为）。
     #: True = 确认支持后默认打开（§7 各批第 5 问结论）；False = 不主动发
     #: thinking 参数（保持现状行为）。

@@ -125,14 +125,21 @@ class BaseProvider:
         # 默认注入 thinking enabled（extra_body）；effort_presets 非空时按档位注入
         # reasoning_effort（顶层）。各 provider 覆写传输位置时调用 super() 继承；
         # 若 provider 已显式设置 thinking，不覆盖其传输位置。
+        # /effort 扩展（2026-08-12）：effort 值命中 caps.effort_options（厂商
+        # 档位全集，用户经 /effort 直接选择）时**直接透传**该值；否则仍走
+        # effort_presets 抽象映射（fast/balanced/deep，Phase F 难度路由用）。
         if caps.supports_reasoning and caps.thinking_default_on:
             body = kwargs.setdefault("extra_body", {})
             if "thinking" not in body:
                 body["thinking"] = {"type": "enabled"}
             effort = str(model_config.get("effort") or "balanced")
-            preset = (caps.effort_presets or {}).get(effort)
-            if preset is not None:
-                kwargs["reasoning_effort"] = preset
+            options = caps.effort_options or ()
+            if effort in options:
+                kwargs["reasoning_effort"] = effort
+            else:
+                preset = (caps.effort_presets or {}).get(effort)
+                if preset is not None:
+                    kwargs["reasoning_effort"] = preset
         return kwargs
 
     def supports_prompt_cache(self, caps: ModelCapabilities) -> bool:

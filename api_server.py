@@ -826,6 +826,7 @@ async def get_status():
         "mode": mode,
         "model": model_name,
         "language": i18n.lang,
+        "effort": _current_effort(),
         "runs": run_monitor.snapshot(),
         "agent_runtime": agent_runtime,
         "active_run": {
@@ -992,6 +993,16 @@ async def _execute_explicit_command_tool(name: str, args: dict) -> tuple[str, bo
     return result, status == "succeeded" and not missing
 
 
+def _current_effort() -> str | None:
+    """全局思考强度档位（/effort 命令设置；未设置返回 None，消费方回退 balanced）。"""
+    try:
+        from .config.model_manager import get_effort
+
+        return get_effort()
+    except Exception:
+        return None
+
+
 async def _execute_command(req: CommandRequest):
     cmd = req.command.strip()
     parts = cmd.split(None, 1)
@@ -1079,6 +1090,29 @@ async def _execute_command(req: CommandRequest):
             return {"action": "model_changed", "message": f"Model switched: {args}"}
         else:
             return {"action": "error", "message": f"Model not found: {args}"}
+
+    if c == "/effort":
+        # /effort 扩展（2026-08-12）：设置全局思考强度档位（厂商档位值或
+        # fast/balanced/deep 抽象档位）；无参数 = 查询当前档位。
+        from .config.model_manager import get_effort, set_effort
+
+        value = args.strip()
+        if not value:
+            return {
+                "action": "effort_info",
+                "message": f"当前思考强度: {get_effort() or 'balanced'}",
+            }
+        if not set_effort(value):
+            return {"action": "error", "message": "effort 参数无效（必须为非空字符串）"}
+        # 即时生效：更新当前 agent 的 model_config.effort（后续请求生效；
+        # 失败不影响已持久化的全局设置）。
+        agent = _state.get("agent")
+        if agent is not None:
+            try:
+                agent.model_config["effort"] = value
+            except Exception:
+                pass
+        return {"action": "effort_changed", "message": f"思考强度已切换: {value}"}
 
     if c == "/plan":
         _state["mode"] = "plan"
@@ -1210,6 +1244,7 @@ async def _execute_command(req: CommandRequest):
             "/clear - 清除上下文\n"
             "/models - 列出模型\n"
             "/model <name> - 切换模型\n"
+            "/effort [档位] - 设置/查看思考强度（档位随当前模型）\n"
             "/addmodel - 打开安全模型接入向导（密钥不写入命令）\n"
             "/plan - 规划模式\n"
             "/build - 构建模式\n"
@@ -1294,6 +1329,7 @@ async def _execute_command(req: CommandRequest):
             "/clear - 清除上下文\n"
             "/models - 列出模型\n"
             "/model <name> - 切换模型\n"
+            "/effort [档位] - 设置/查看思考强度（档位随当前模型）\n"
             "/addmodel - 打开安全模型接入向导（密钥不写入命令）\n"
             "/plan - 规划模式\n"
             "/build - 构建模式\n"

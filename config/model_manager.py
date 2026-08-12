@@ -450,6 +450,33 @@ def set_active_model(name: str) -> bool:
     return True
 
 
+#: /effort 全局思考强度档位的配置键（2026-08-12）。
+#: 值 = 厂商档位（如 "medium"）或抽象档位（"fast"/"balanced"/"deep"，A21
+#: 兼容）；未设置 = None（agent_v2 保持默认 balanced 现状行为）。
+EFFORT_CONFIG_KEY = "effort"
+
+
+def get_effort() -> str | None:
+    """返回全局思考强度档位；未设置返回 None（调用方回退默认 balanced）。"""
+    value = load_config().get(EFFORT_CONFIG_KEY)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def set_effort(value: str) -> bool:
+    """持久化全局思考强度档位。
+
+    校验：非空字符串。不校验模型档位集——档位在模型间切换后可能失效，
+    由消费方（providers.llm_kwargs）在注入时回退（effort_options 不命中
+    且 presets 无映射 → 不注入，保持现状行为）。
+    """
+    if not isinstance(value, str) or not value.strip():
+        return False
+    cfg = load_config()
+    cfg[EFFORT_CONFIG_KEY] = value.strip()
+    save_config(cfg)
+    return True
+
+
 def backfill_missing_api_key_secrets(cfg: Optional[dict] = None) -> int:
     """Persist ``api_key_secret`` for models that only reference an env var.
 

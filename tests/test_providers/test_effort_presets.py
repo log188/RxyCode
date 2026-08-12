@@ -179,3 +179,72 @@ def _new_agent():
     agent._capabilities = DEFAULT_CAPABILITIES
     agent._is_simple_query = AgentV2._is_simple_query.__get__(agent, AgentV2)
     return agent
+
+
+# ---- /effort 扩展（2026-08-12）：effort_options 厂商档位全集 + 直传 ---------
+
+
+def test_effort_options_s71_deepseek():
+    """§7.1：DeepSeek v4 档位集 low/high/max（/effort 选择列表）。"""
+    p, cfg, caps = _resolve("https://api.deepseek.com/v1", "deepseek-v4-flash")
+    assert caps.effort_options == ("low", "high", "max")
+
+
+def test_effort_options_s72_openai():
+    """§7.2：OpenAI gpt-5.6 档位集 low/medium/high。"""
+    p, cfg, caps = _resolve("https://api.openai.com/v1", "gpt-5.6-sol")
+    assert caps.effort_options == ("low", "medium", "high")
+
+
+def test_effort_options_kimi_k3():
+    """§7.3：kimi-k3 档位集 low/high/max（无 medium）。"""
+    p, cfg, caps = _resolve("https://api.moonshot.cn/v1", "kimi-k3")
+    assert caps.effort_options == ("low", "high", "max")
+
+
+def test_effort_options_glm52():
+    """§7.4：glm-5.2 档位集 max/xhigh/high/medium/low/minimal/none。"""
+    p, cfg, caps = _resolve("https://open.bigmodel.cn/api/paas/v4/", "glm-5.2")
+    assert caps.effort_options == (
+        "max", "xhigh", "high", "medium", "low", "minimal", "none",
+    )
+
+
+@pytest.mark.parametrize("u,model", [
+    ("https://api.minimaxi.com/v1", "MiniMax-M3"),
+    ("https://api.xiaomimimo.com/v1", "mimo-v2.5-pro"),
+    ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.7-plus"),
+    ("https://api.anthropic.com/v1", "claude-opus-5"),
+])
+def test_chat_path_no_effort_options(u, model):
+    """§7.5/7.6/7.7/7.8：Chat 差异路径 → effort_options 空（不提供档位列表）。"""
+    p, cfg, caps = _resolve(u, model)
+    assert caps.effort_options == ()
+
+
+def test_vendor_effort_direct_passthrough_deepseek():
+    """/effort：厂商档位命中 effort_options → 直接透传 reasoning_effort。"""
+    p, cfg, caps = _resolve("https://api.deepseek.com/v1", "deepseek-v4-flash", effort="high")
+    kwargs = p.llm_kwargs(cfg, caps)
+    assert kwargs.get("reasoning_effort") == "high"
+
+
+def test_vendor_effort_invalid_falls_back_safely():
+    """厂商档位不在 effort_options 且不在 presets keys → 不注入（安全回退）。"""
+    p, cfg, caps = _resolve("https://api.deepseek.com/v1", "deepseek-v4-flash", effort="medium")
+    kwargs = p.llm_kwargs(cfg, caps)
+    assert "reasoning_effort" not in kwargs
+
+
+def test_openai_vendor_effort_direct():
+    """OpenAI 覆写路径：厂商档位直传（修复 unknown→medium 误判）。"""
+    p, cfg, caps = _resolve("https://api.openai.com/v1", "gpt-5.6-sol", effort="high")
+    kwargs = p.llm_kwargs(cfg, caps)
+    assert kwargs.get("reasoning_effort") == "high"
+
+
+def test_openai_abstract_effort_still_maps():
+    """OpenAI 抽象档位（fast/balanced/deep）仍走 presets 映射（A21 兼容）。"""
+    p, cfg, caps = _resolve("https://api.openai.com/v1", "gpt-5.6-sol", effort="deep")
+    kwargs = p.llm_kwargs(cfg, caps)
+    assert kwargs.get("reasoning_effort") == "high"
