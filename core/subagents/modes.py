@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import os
 
 from protocol.subagents import AgentMode
 
@@ -147,12 +148,45 @@ class SubagentConfig:
     # Default task permission — deny all unless explicitly allowed
     default_task_permission_deny: bool = True
 
+    # Aggregate token budget for one child task. Worker bootstrap resolves
+    # this from active-model metadata; this is the unknown-model fallback.
+    default_max_tokens: int = 131072
+
     # Feature flags
     flags: SubagentFeatureFlags = field(default_factory=SubagentFeatureFlags)
 
     @property
     def capability(self) -> SubagentCapability:
         return build_capability(self.flags)
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def subagent_config_from_env(*, default_max_tokens: int | None = None) -> SubagentConfig:
+    """Build worker-local feature flags from explicit environment switches.
+
+    The master switch is authoritative: feature-specific switches cannot
+    accidentally enable subagents on their own.
+    """
+    enabled = _env_enabled("RXYCODE_SUBAGENTS")
+    flags = SubagentFeatureFlags(
+        subagents_enabled=enabled,
+        subagents_task=enabled and _env_enabled("RXYCODE_SUBAGENTS_TASK"),
+        subagents_mention=enabled and _env_enabled("RXYCODE_SUBAGENTS_MENTION"),
+        subagents_child_tasks=(
+            enabled and _env_enabled("RXYCODE_SUBAGENTS_CHILD_TASKS")
+        ),
+    )
+    return SubagentConfig(
+        flags=flags,
+        default_max_tokens=(
+            default_max_tokens
+            if isinstance(default_max_tokens, int) and default_max_tokens > 0
+            else 131072
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

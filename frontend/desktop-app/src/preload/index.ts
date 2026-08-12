@@ -32,6 +32,8 @@ const api = {
       repoRoot: string
       protocolVersion: string
       appVersion: string
+      appserverPid: number | null
+      appserverStatus: string
     }> => ipcRenderer.invoke('appserver:get-info')
   },
   update: {

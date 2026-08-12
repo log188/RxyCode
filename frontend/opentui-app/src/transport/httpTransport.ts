@@ -16,7 +16,13 @@ import {
   httpSendCommand,
   type CommandResult,
 } from "./httpAdmin.ts";
-import type { ChatApiCallbacks, ChatTransport, SubagentResult } from "./types.ts";
+import type {
+  ChatApiCallbacks,
+  ChatTransport,
+  ChildNavigationEntry,
+  ChildNavigationResult,
+  SubagentResult,
+} from "./types.ts";
 
 function newId(suffix: string): string {
   return `${Date.now()}-${suffix}-${Math.random().toString(36).slice(2, 7)}`;
@@ -68,6 +74,29 @@ export const httpTransport: ChatTransport = {
         },
       };
     }
+  },
+
+  async listChildSessions(): Promise<ChildNavigationEntry[]> {
+    const result = await httpSendCommand("/children");
+    return Array.isArray(result.children)
+      ? result.children.filter((item): item is ChildNavigationEntry =>
+          typeof item === "object" && item !== null && typeof (item as { session_id?: unknown }).session_id === "string",
+        )
+      : [];
+  },
+
+  async openChildSession(target: string): Promise<ChildNavigationResult> {
+    const result = await httpSendCommand(`/child ${target}`);
+    return {
+      ok: result.ok,
+      entry: result.ok ? { session_id: target } : undefined,
+      message: String(result.message ?? result.error ?? `child session ${target}`),
+    };
+  },
+
+  async openParentSession(): Promise<ChildNavigationResult> {
+    const result = await httpSendCommand("/parent");
+    return { ok: result.ok, message: String(result.message ?? result.error ?? "parent session") };
   },
 
   async sendChatMessage(

@@ -28,10 +28,12 @@ class PromptResult:
     status: str
     detail: str = ""
     thinking: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_hit_tokens: int = 0
-    cache_hit_rate: float = 0.0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cache_hit_rate: float | None = None
+    reporting_status: str = "not_reported"
 
 
 def thinking_cursor(agent: Any) -> tuple[tuple[str, ...], str]:
@@ -118,6 +120,7 @@ class Session:
         *,
         mode: str,
         run_id: str,
+        tui: Any | None = None,
     ) -> PromptResult:
         """Run one user turn through AgentV2 and emit terminal protocol events."""
         previous_input = token_stats.input_tokens
@@ -129,6 +132,8 @@ class Session:
             answer = await agent.run(text, mode=mode)
         except Exception as exc:
             detail = str(exc)
+            if tui is not None and hasattr(tui, "exhaust_active_recovery"):
+                tui.exhaust_active_recovery(detail)
             self.emit(
                 ErrorNotification(
                     session_id=self.session_id,
@@ -150,28 +155,26 @@ class Session:
         )
         thinking = thinking_since(agent, cursor)
 
-        if delta_input or delta_output:
-            self.emit(
-                TokenUsage(
-                    session_id=self.session_id,
-                    input_tokens=max(delta_input, 0),
-                    output_tokens=max(delta_output, 0),
-                    cache_hit_tokens=max(delta_cache_hit_tokens, 0),
-                    cache_hit_rate=cache_hit_rate,
-                )
-            )
+        usage_reported = bool(delta_input or delta_output or delta_cache_hit_tokens)
+        usage_kwargs = {
+            "input_tokens": max(delta_input, 0) if usage_reported else None,
+            "output_tokens": max(delta_output, 0) if usage_reported else None,
+            "cache_hit_tokens": max(delta_cache_hit_tokens, 0) if usage_reported else None,
+            "cache_hit_rate": cache_hit_rate if usage_reported else None,
+            "reporting_status": "reported" if usage_reported else "not_reported",
+        }
+        self.emit(TokenUsage(session_id=self.session_id, **usage_kwargs))
 
         if status == "succeeded":
+            if tui is not None and hasattr(tui, "resolve_active_recovery"):
+                tui.resolve_active_recovery()
             self.emit(
                 FinalAnswer(
                     session_id=self.session_id,
                     run_id=run_id,
                     text=answer,
                     thinking=thinking or None,
-                    input_tokens=delta_input,
-                    output_tokens=delta_output,
-                    cache_hit_tokens=delta_cache_hit_tokens,
-                    cache_hit_rate=cache_hit_rate,
+                    **usage_kwargs,
                     session_schema_version=self.session_schema_version,
                 )
             )
@@ -180,12 +183,11 @@ class Session:
                 status=status,
                 detail=detail,
                 thinking=thinking,
-                input_tokens=delta_input,
-                output_tokens=delta_output,
-                cache_hit_tokens=delta_cache_hit_tokens,
-                cache_hit_rate=cache_hit_rate,
-            )
+                    **usage_kwargs,
+                )
 
+        if tui is not None and hasattr(tui, "exhaust_active_recovery"):
+            tui.exhaust_active_recovery(detail)
         self.emit(
             ErrorNotification(
                 session_id=self.session_id,
@@ -199,10 +201,7 @@ class Session:
             status=status,
             detail=detail,
             thinking=thinking,
-            input_tokens=delta_input,
-            output_tokens=delta_output,
-            cache_hit_tokens=delta_cache_hit_tokens,
-            cache_hit_rate=cache_hit_rate,
+            **usage_kwargs,
         )
 
     def interrupt(self, agent: Any) -> bool:

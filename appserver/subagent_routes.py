@@ -39,6 +39,7 @@ def capability() -> dict[str, Any]:
             "task": False,
             "mention": False,
             "child_tasks": False,
+            "active_lease_count": 0,
         }
     cap = manager.capability
     return {
@@ -47,6 +48,7 @@ def capability() -> dict[str, Any]:
         "task": cap.task,
         "mention": cap.mention,
         "child_tasks": cap.child_tasks,
+        "active_lease_count": manager.active_lease_count,
     }
 
 

@@ -129,7 +129,7 @@ class TestSingleAgentPathIntegrity:
         """Protocol module must remain importable."""
         from protocol import PROTOCOL_VERSION
         assert isinstance(PROTOCOL_VERSION, str)
-        assert PROTOCOL_VERSION == "1.0.0"
+        assert PROTOCOL_VERSION == "1.1.0"
 
     def test_appserver_structure_importable(self):
         """Appserver core modules must remain importable."""

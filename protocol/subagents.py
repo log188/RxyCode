@@ -345,6 +345,7 @@ class UsageRecord:
     steps: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_hit_tokens: int = 0
     wall_time_ms: int = 0
     retry_count: int = 0
 

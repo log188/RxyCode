@@ -99,6 +99,136 @@ class WarmSessionRequest(BaseModel):
     )
 
 
+class SessionSetModelRequest(BaseModel):
+    """Select a model for one task without changing the global CLI default.
+
+    Maps ``session/set_model``. The worker rejects this request while its
+    prompt is active; the selected model is persisted on the task summary.
+    """
+
+    method: Literal["session/set_model"] = "session/set_model"
+    session_id: str
+    model_id: str
+
+
+class SessionsListRequest(BaseModel):
+    """List persisted Desktop tasks without exposing workspace contents."""
+
+    method: Literal["sessions/list"] = "sessions/list"
+    include_trashed: bool = False
+
+
+class SessionEventsRequest(BaseModel):
+    """Replay persisted task events after a cursor."""
+
+    method: Literal["session/events"] = "session/events"
+    session_id: str
+    cursor: int = Field(default=0, ge=0)
+
+
+class SessionRenameRequest(BaseModel):
+    """Rename a Desktop task; workspace files are never touched."""
+
+    method: Literal["session/rename"] = "session/rename"
+    session_id: str
+    title: str
+
+
+class SessionTrashRequest(BaseModel):
+    """Soft-delete a Desktop task into Recently Deleted."""
+
+    method: Literal["session/trash"] = "session/trash"
+    session_id: str
+
+
+class SessionRestoreRequest(BaseModel):
+    """Restore a soft-deleted Desktop task."""
+
+    method: Literal["session/restore"] = "session/restore"
+    session_id: str
+
+
+class SessionPurgeRequest(BaseModel):
+    """Permanently delete only a previously trashed task."""
+
+    method: Literal["session/purge"] = "session/purge"
+    session_id: str
+
+
+class SubagentCapabilityRequest(BaseModel):
+    """Discover worker-owned isolated-subagent feature flags."""
+
+    method: Literal["subagents/capability"] = "subagents/capability"
+    root_session_id: str | None = None
+
+
+class SubagentsListRequest(BaseModel):
+    """List visible AgentDefinitions for mention/autocomplete UI."""
+
+    method: Literal["subagents/list"] = "subagents/list"
+    root_session_id: str
+
+
+class AgentInvokeRequest(BaseModel):
+    """Explicit user ``@agent`` invocation in a Primary/Child tree."""
+
+    method: Literal["agent/invoke"] = "agent/invoke"
+    root_session_id: str
+    parent_session_id: str | None = None
+    request_id: str | None = None
+    agent_id: str
+    prompt: str
+    output_schema: str | None = None
+    requested_budget: JsonObject | None = None
+    requested_workspace: JsonObject | None = None
+
+
+class TaskStartRequest(BaseModel):
+    """Start a model-driven isolated child task asynchronously."""
+
+    method: Literal["task/start"] = "task/start"
+    root_session_id: str
+    parent_session_id: str | None = None
+    request_id: str | None = None
+    agent_id: str
+    prompt: str
+    output_schema: str | None = None
+    requested_budget: JsonObject | None = None
+    requested_workspace: JsonObject | None = None
+
+
+class ChildSessionsListRequest(BaseModel):
+    """Return the current persisted child-session tree for a Primary."""
+
+    method: Literal["child_sessions/list"] = "child_sessions/list"
+    root_session_id: str
+
+
+class ChildSessionEventsRequest(BaseModel):
+    """Replay child events after a monotonic cursor for reconnect recovery."""
+
+    method: Literal["child_sessions/events"] = "child_sessions/events"
+    root_session_id: str
+    cursor: int = Field(default=0, ge=0)
+
+
+class ChildSessionCancelRequest(BaseModel):
+    """Cancel one child subtree, or all children when session_id is omitted."""
+
+    method: Literal["child_sessions/cancel"] = "child_sessions/cancel"
+    root_session_id: str
+    session_id: str | None = None
+
+
+class ChildSessionRetryRequest(BaseModel):
+    """Retry a terminal child with its immutable original request snapshot."""
+
+    method: Literal["child_sessions/retry"] = "child_sessions/retry"
+    root_session_id: str
+    session_id: str
+    request_id: str | None = None
+
+
 class ShutdownRequest(BaseModel):
     """Graceful appserver shutdown (future ``appserver`` lifespan teardown).
 
@@ -226,6 +356,21 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InterruptRequest,
     SetThinkingExpandedRequest,
     WarmSessionRequest,
+    SessionSetModelRequest,
+    SessionsListRequest,
+    SessionEventsRequest,
+    SessionRenameRequest,
+    SessionTrashRequest,
+    SessionRestoreRequest,
+    SessionPurgeRequest,
+    SubagentCapabilityRequest,
+    SubagentsListRequest,
+    AgentInvokeRequest,
+    TaskStartRequest,
+    ChildSessionsListRequest,
+    ChildSessionEventsRequest,
+    ChildSessionCancelRequest,
+    ChildSessionRetryRequest,
     ShutdownRequest,
     ModelsListRequest,
     ModelsPresetsRequest,
@@ -247,6 +392,21 @@ ClientRequest = Annotated[
         InterruptRequest,
         SetThinkingExpandedRequest,
         WarmSessionRequest,
+        SessionSetModelRequest,
+        SessionsListRequest,
+        SessionEventsRequest,
+        SessionRenameRequest,
+        SessionTrashRequest,
+        SessionRestoreRequest,
+        SessionPurgeRequest,
+        SubagentCapabilityRequest,
+        SubagentsListRequest,
+        AgentInvokeRequest,
+        TaskStartRequest,
+        ChildSessionsListRequest,
+        ChildSessionEventsRequest,
+        ChildSessionCancelRequest,
+        ChildSessionRetryRequest,
         ShutdownRequest,
     ],
     Field(discriminator="method"),

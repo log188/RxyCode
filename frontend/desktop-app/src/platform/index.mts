@@ -23,6 +23,8 @@ export interface AppserverInfo {
   repoRoot: string
   protocolVersion: string
   appVersion: string
+  appserverPid?: number | null
+  appserverStatus?: string
 }
 
 export interface AppserverPlatform {

@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from appserver.agent_host import AsyncRpcPipe, AgentHost
+from protocol.version import PROTOCOL_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -237,6 +238,47 @@ async def test_reader_exception_surfaces_and_sets_degraded():
         assert pipe._reader_task is not None
         assert pipe._reader_task.done()
         assert pipe.failure_exc is not None
+    finally:
+        reader.finish()
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_reader_ignores_blank_stdout_lines_without_losing_protocol_response():
+    reader = _QueueReader()
+    writer = _FakeWriter()
+    pipe = AsyncRpcPipe(writer, reader)
+    await pipe.start()
+    try:
+        task = asyncio.create_task(pipe.request("bootstrap", {}, timeout=5.0))
+        await asyncio.sleep(0.05)
+        import json as _json
+        request_id = _json.loads(bytes(writer.written).decode("utf-8").strip())["id"]
+        reader.push(b"\n")
+        reader.push(_json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"ok": True}}).encode() + b"\n")
+        assert await task == {"ok": True}
+        assert pipe.degraded is False
+    finally:
+        reader.finish()
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_reader_ignores_non_protocol_stdout_without_losing_protocol_response():
+    reader = _QueueReader()
+    writer = _FakeWriter()
+    pipe = AsyncRpcPipe(writer, reader)
+    await pipe.start()
+    try:
+        task = asyncio.create_task(pipe.request("bootstrap", {}, timeout=5.0))
+        await asyncio.sleep(0.05)
+        import json as _json
+        request_id = _json.loads(bytes(writer.written).decode("utf-8").strip())["id"]
+        reader.push(b"provider diagnostic that is not json\n")
+        reader.push(b"42\n")
+        reader.push(_json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"ok": True}}).encode() + b"\n")
+        assert await task == {"ok": True}
+        assert pipe.degraded is False
     finally:
         reader.finish()
         await pipe.close()
@@ -867,9 +909,9 @@ def test_appserver_stdio_smoke(switch: str):
         client = _AppserverClient(proc)
         init = client.request(
             "initialize",
-            {"client_name": "pytest", "client_version": "0.0.0", "protocol_version": "1.0.0"},
+            {"client_name": "pytest", "client_version": "0.0.0", "protocol_version": PROTOCOL_VERSION},
         )
-        assert init["protocol_version"] == "1.0.0"
+        assert init["protocol_version"] == PROTOCOL_VERSION
         session = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
         result = client.request(
             "session/prompt",

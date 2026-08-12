@@ -156,6 +156,7 @@ export interface UsageRecord {
   steps?: number;
   input_tokens?: number;
   output_tokens?: number;
+  cache_hit_tokens?: number;
   wall_time_ms?: number;
   retry_count?: number;
   [k: string]: unknown;
@@ -216,6 +217,7 @@ export interface ChildSessionEvent {
   event_name: string;
   session_id: string;
   parent_session_id: string;
+  root_session_id: string;
   request_id?: string;
   seq?: number;
   timestamp?: number;

@@ -123,6 +123,7 @@ async def retry_with_backoff(
     *,
     max_attempts: int = 3,
     wait_multiplier: float = 1.0,
+    on_retry: Callable[[int, BaseException], None] | None = None,
 ) -> T:
     """Run ``fn`` retrying TRANSIENT errors with exponential backoff + jitter.
 
@@ -144,10 +145,20 @@ async def retry_with_backoff(
     initial = max(0.0, 2.0 * wait_multiplier)
     max_wait = max(initial, 30.0 * wait_multiplier)
 
+    def _before_sleep(state: object) -> None:
+        if on_retry is None:
+            return
+        attempt_number = int(getattr(state, "attempt_number", 1))
+        outcome = getattr(state, "outcome", None)
+        exception = outcome.exception() if outcome is not None else None
+        if isinstance(exception, BaseException):
+            on_retry(attempt_number, exception)
+
     async for attempt in AsyncRetrying(
         retry=retry_if_exception(_is_transient),
         wait=wait_exponential_jitter(initial=initial, max=max_wait),
         stop=stop_after_attempt(max_attempts),
+        before_sleep=_before_sleep,
         reraise=True,
     ):
         with attempt:

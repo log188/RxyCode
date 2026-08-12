@@ -14,6 +14,7 @@ export interface SettingsPageProps {
   onClose: () => void
   onPickWorkspace: () => void
   onClearWorkspace: () => void
+  onModelSelected?: (modelId: string) => void
   models: UseModelsResult
 }
 
@@ -89,7 +90,7 @@ function ApiKeyRow({
   )
 }
 
-function AddModelPanel({ models }: { models: UseModelsResult }): React.JSX.Element {
+function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; onModelSelected?: (modelId: string) => void }): React.JSX.Element {
   const [presets, setPresets] = useState<Array<{ id: string; name: string; base_url: string; category?: string }>>([])
   const [selectedPreset, setSelectedPreset] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
@@ -155,6 +156,10 @@ function AddModelPanel({ models }: { models: UseModelsResult }): React.JSX.Eleme
           apiKey: apiKey.trim(),
           baseUrl: baseUrl.trim()
         })
+        if (result.ok && result.id !== undefined) {
+          await models.setActive(result.id)
+          onModelSelected?.(result.id)
+        }
         setNotice(result.ok ? `已添加 ${ids[0]}` : result.message ?? '添加失败')
       } else {
         const result = await models.onboardBatch({
@@ -163,6 +168,11 @@ function AddModelPanel({ models }: { models: UseModelsResult }): React.JSX.Eleme
           modelIds: ids
         })
         if (result.ok) {
+          const selectedModelId = result.active ?? result.onboarded?.[0] ?? result.added?.[0]
+          if (selectedModelId !== undefined) {
+            await models.setActive(selectedModelId)
+            onModelSelected?.(selectedModelId)
+          }
           const failed = result.failed ?? []
           setNotice(failed.length > 0 ? `已添加 ${ids.length - failed.length} 个，失败 ${failed.length} 个` : `已添加 ${ids.length} 个模型`)
         } else {
@@ -326,7 +336,9 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                           <button
                             type="button"
                             className="model-activate"
-                            onClick={() => void props.models.setActive(model.id)}
+                            onClick={() => void props.models.setActive(model.id).then((ok) => {
+                              if (ok) props.onModelSelected?.(model.id)
+                            })}
                           >
                             设为当前
                           </button>
@@ -350,7 +362,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   ))}
                 </div>
               )}
-              {props.models.supported && <AddModelPanel models={props.models} />}
+              {props.models.supported && <AddModelPanel models={props.models} onModelSelected={props.onModelSelected} />}
             </section>
           )}
           {tab === 'apikey' && (

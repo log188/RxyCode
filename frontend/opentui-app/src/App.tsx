@@ -8,12 +8,23 @@ import {
   useSelectionHandler,
   useTerminalDimensions,
 } from "@opentui/react";
-import { cancelActiveRequest, fetchStatus, invokeSubagent, respondApproval, sendChatMessage, sendCommand } from "./chatApi.ts";
+import {
+  cancelActiveRequest,
+  fetchStatus,
+  invokeSubagent,
+  listChildSessions,
+  openChildSession,
+  openParentSession,
+  respondApproval,
+  sendChatMessage,
+  sendCommand,
+} from "./chatApi.ts";
 import { resolveTransportKind } from "./transport/config.ts";
 import { warmStdioBootstrap } from "./transport/stdioTransport.ts";
 import { ApprovalDialog, type ApprovalInfo } from "./ApprovalDialog.tsx";
 import { classifyInput, formatCommandResult } from "./commandRouter.ts";
 import { parseMention } from "./mention.ts";
+import { formatChildNavigation } from "./childNavigation.ts";
 import { filterCommands, resolveSlashSubmit, AVAILABLE_COMMANDS, type Command, isBareModelPickerCommand } from "./commands.ts";
 import { APP_VERSION, formatHeaderLine, formatInputHint, formatMessageLine, messageFg } from "./format.ts";
 import { CHAT_PROMPT_KEY_BINDINGS } from "./promptKeyBindings.ts";
@@ -608,6 +619,48 @@ export default function App() {
         }
         if (name === "/thinking") {
           await toggleThinking();
+          clearInput();
+          return;
+        }
+        if (name === "/children") {
+          try {
+            const children = await listChildSessions();
+            pushSystem(
+              children.length === 0
+                ? "No child sessions are active."
+                : children.map((child, index) =>
+                    `${index + 1}. @${child.agent_id ?? "child"} · ${child.status ?? "unknown"} · ${child.session_id}`,
+                  ).join("\n"),
+            );
+          } catch (error) {
+            pushSystem(`Unable to list child sessions: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          clearInput();
+          return;
+        }
+        if (name === "/child") {
+          if (!args) {
+            pushSystem("Usage: /child <session_id|index>");
+          } else {
+            try {
+              const result = await openChildSession(args);
+              pushSystem(result.ok && result.entry
+                ? formatChildNavigation(result.entry, result.events)
+                : result.message);
+            } catch (error) {
+              pushSystem(`Unable to open child session: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          clearInput();
+          return;
+        }
+        if (name === "/parent") {
+          try {
+            const result = await openParentSession();
+            pushSystem(result.message);
+          } catch (error) {
+            pushSystem(`Unable to return to parent session: ${error instanceof Error ? error.message : String(error)}`);
+          }
           clearInput();
           return;
         }

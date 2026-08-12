@@ -10,6 +10,8 @@ AgentRuntime.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .definitions import AgentDefinitionRegistry
 from .manager import ChildSessionManager
 from .modes import SubagentConfig
@@ -23,6 +25,7 @@ def init_manager(
     *,
     manager: ChildSessionManager | None = None,
     load_builtins: bool = True,
+    workspace_root: Path | None = None,
 ) -> ChildSessionManager:
     """Initialize the process-wide manager singleton.
 
@@ -48,6 +51,7 @@ def init_manager(
     _manager = ChildSessionManager(
         registry=reg,
         config=config or SubagentConfig(),
+        workspace_root=workspace_root,
     )
     return _manager
 

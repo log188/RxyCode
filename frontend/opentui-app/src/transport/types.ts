@@ -29,7 +29,24 @@ export interface ChatTransport {
     signal?: AbortSignal,
   ): Promise<void>;
   invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult>;
+  listChildSessions(): Promise<ChildNavigationEntry[]>;
+  openChildSession(target: string): Promise<ChildNavigationResult>;
+  openParentSession(): Promise<ChildNavigationResult>;
   shutdown?(): Promise<void>;
+}
+
+export interface ChildNavigationEntry {
+  session_id: string;
+  parent_session_id?: string | null;
+  agent_id?: string;
+  status?: string;
+}
+
+export interface ChildNavigationResult {
+  ok: boolean;
+  entry?: ChildNavigationEntry;
+  events?: Array<Record<string, unknown>>;
+  message: string;
 }
 
 /** Phase B result of `agent/invoke` (mirrors appserver/subagent_routes._result_to_dict). */

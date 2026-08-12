@@ -9,6 +9,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from protocol.subagents import (
+    AgentDefinition,
+    AgentMode,
+    PermissionSpec,
+    PermissionVerdict,
+    TaskPermissionSpec,
+    WorkspaceMode,
+)
+
 from .definitions import AgentDefinitionRegistry, load_agent_definitions
 
 # Default built-in agent directory (repo-relative)
@@ -37,6 +46,22 @@ def load_builtin_agents(
         builtin_dir=builtin_dir or str(_DEFAULT_BUILTIN_DIR),
         registry=reg,
     )
+    # ``primary`` is a reserved id and therefore cannot be supplied by user
+    # configuration. Register its immutable server policy explicitly so
+    # model-driven Task calls can reach only the shipped built-in children.
+    reg.register_builtin(AgentDefinition(
+        id="primary",
+        description="Primary policy for built-in isolated subagents",
+        mode=AgentMode.PRIMARY,
+        permission=PermissionSpec(),
+        task_permission=TaskPermissionSpec(
+            allowed_agents=("explore", "general", "reviewer", "scout"),
+            default_verdict=PermissionVerdict.DENY,
+        ),
+        hidden=True,
+        subagent_depth=1,
+        workspace_scope=WorkspaceMode.READ_ONLY,
+    ))
     return reg
 
 

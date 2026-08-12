@@ -165,3 +165,83 @@ def test_model_limit_error_not_retryable():
     import httpx
     assert _is_transport_retryable(httpx.ConnectError("boom"))
     assert _is_transport_retryable(TimeoutError("slow"))
+
+
+def test_llm_transport_retry_emits_structured_recovery_and_resolves(monkeypatch):
+    """模型请求的瞬态网络错误只重试一次，并完整闭环恢复事件。"""
+    import asyncio
+
+    import httpx
+
+    from RxyCode.RxyCode1_1_0.appserver.tui import ProtocolTui
+    from RxyCode.RxyCode1_1_0.core import agent_v2 as agent_v2_module
+
+    class FlakyLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ConnectError("gateway reset")
+            return {"content": "recovered"}
+
+    emitted = []
+    tui = ProtocolTui("transport-session", emitted.append, run_id="transport-run")
+    monkeypatch.setattr(agent_v2_module, "get_tui", lambda: tui)
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(agent_v2_module.asyncio, "sleep", no_sleep)
+
+    agent = agent_v2_module.UsageTrackingLLM(FlakyLlm())
+    agent._transport_retries = 1
+
+    result = asyncio.run(agent._call_with_transport_retry(["prompt"], {}))
+
+    assert result == {"content": "recovered"}
+    assert agent._llm.calls == 2
+    assert [item.method for item in emitted] == [
+        "event/recovery_started",
+        "event/recovery_attempt",
+        "event/recovery_resolved",
+    ]
+    assert emitted[0].recovery_kind == "transport_retry"
+    assert emitted[1].attempt == 1
+    assert emitted[-1].attempts == 1
+
+
+def test_llm_transport_retry_exhaustion_is_structured(monkeypatch):
+    """传输重试耗尽后才发出 exhausted，且原始异常仍传播给上层。"""
+    import asyncio
+
+    import httpx
+
+    from RxyCode.RxyCode1_1_0.appserver.tui import ProtocolTui
+    from RxyCode.RxyCode1_1_0.core import agent_v2 as agent_v2_module
+
+    class BrokenLlm:
+        async def ainvoke(self, messages, **kwargs):
+            raise httpx.ReadError("gateway unavailable")
+
+    emitted = []
+    tui = ProtocolTui("transport-session", emitted.append, run_id="transport-run")
+    monkeypatch.setattr(agent_v2_module, "get_tui", lambda: tui)
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(agent_v2_module.asyncio, "sleep", no_sleep)
+
+    agent = agent_v2_module.UsageTrackingLLM(BrokenLlm())
+    agent._transport_retries = 1
+
+    with pytest.raises(httpx.ReadError):
+        asyncio.run(agent._call_with_transport_retry(["prompt"], {}))
+
+    assert [item.method for item in emitted] == [
+        "event/recovery_started",
+        "event/recovery_attempt",
+        "event/recovery_exhausted",
+    ]
+    assert emitted[-1].attempts == 1
+    assert "gateway" not in emitted[-1].final_error.lower()

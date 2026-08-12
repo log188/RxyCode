@@ -116,10 +116,12 @@ async def test_cancelled_prompt_returns_a_terminal_cancelled_result(monkeypatch)
             "status": "cancelled",
             "text": "",
             "thinking": None,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_hit_tokens": 0,
-            "cache_hit_rate": 0.0,
+            "input_tokens": None,
+            "output_tokens": None,
+            "cache_hit_tokens": None,
+            "cache_write_tokens": None,
+            "cache_hit_rate": None,
+            "reporting_status": "not_reported",
         },
     }
 

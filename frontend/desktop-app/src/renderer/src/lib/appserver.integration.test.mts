@@ -74,10 +74,10 @@ test('stub appserver supports initialize, session/new and session/prompt over pr
     }>('initialize', {
       client_name: 'rxycode-desktop-test',
       client_version: '0.0.0-test',
-      protocol_version: '1.0.0',
+      protocol_version: '1.1.0',
       capabilities: {}
     })
-    assert.equal(initialized.protocol_version, '1.0.0')
+    assert.equal(initialized.protocol_version, '1.1.0')
     assert.equal(initialized.server_name, 'rxycode-appserver')
 
     const created = await client.requestWithTimeout<{
@@ -120,7 +120,7 @@ test('EOF shutdown while a prompt is pending never resolves the pending prompt',
     await client.requestWithTimeout('initialize', {
       client_name: 'rxycode-desktop-test',
       client_version: '0.0.0-test',
-      protocol_version: '1.0.0',
+      protocol_version: '1.1.0',
       capabilities: {}
     })
     const created = await client.requestWithTimeout<{ session_id: string }>('session/new', {
@@ -213,7 +213,7 @@ test('fake appserver approval round trip resolves an approved decision', async (
     await client.requestWithTimeout('initialize', {
       client_name: 'rxycode-desktop-test',
       client_version: '0.0.0-test',
-      protocol_version: '1.0.0',
+      protocol_version: '1.1.0',
       capabilities: {}
     })
     const created = await client.requestWithTimeout<{ session_id: string }>('session/new', {
@@ -258,7 +258,7 @@ test('fake appserver preserves an asynchronously resolved approval decision', as
     await client.requestWithTimeout('initialize', {
       client_name: 'rxycode-desktop-test',
       client_version: '0.0.0-test',
-      protocol_version: '1.0.0',
+      protocol_version: '1.1.0',
       capabilities: {}
     })
     const created = await client.requestWithTimeout<{ session_id: string }>('session/new', {

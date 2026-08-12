@@ -169,15 +169,17 @@ def appserver_proc():
 
 def test_appserver_full_conversation_round_trip(appserver_proc):
     client = AppserverClient(appserver_proc)
+    from protocol.version import PROTOCOL_VERSION
+
     init = client.request(
         "initialize",
         {
             "client_name": "pytest",
             "client_version": "0.0.0",
-            "protocol_version": "1.0.0",
+            "protocol_version": PROTOCOL_VERSION,
         },
     )
-    assert init["protocol_version"] == "1.0.0"
+    assert init["protocol_version"] == PROTOCOL_VERSION
 
     session = client.request(
         "session/new",

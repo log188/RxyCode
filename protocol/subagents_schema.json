@@ -275,6 +275,9 @@
         "output_tokens": {
           "type": "integer"
         },
+        "cache_hit_tokens": {
+          "type": "integer"
+        },
         "wall_time_ms": {
           "type": "integer"
         },
@@ -353,7 +356,8 @@
       "required": [
         "event_name",
         "session_id",
-        "parent_session_id"
+        "parent_session_id",
+        "root_session_id"
       ],
       "properties": {
         "event_id": {
@@ -366,6 +370,9 @@
           "type": "string"
         },
         "parent_session_id": {
+          "type": "string"
+        },
+        "root_session_id": {
           "type": "string"
         },
         "request_id": {

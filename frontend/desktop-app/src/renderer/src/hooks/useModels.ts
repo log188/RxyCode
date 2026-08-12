@@ -49,6 +49,8 @@ export interface OnboardResult {
   error_code?: string
   message?: string
   id?: string
+  active?: string | null
+  added?: string[]
   onboarded?: string[]
   failed?: Array<{ id: string; reason: string }>
 }

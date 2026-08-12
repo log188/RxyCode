@@ -8,12 +8,21 @@ reimplements business logic. Uses an isolated config dir per test.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 from pathlib import Path
 
 import pytest
 
 from RxyCode.RxyCode1_1_0.appserver import model_routes
+
+
+def test_source_tree_top_level_appserver_can_import_model_manager(monkeypatch):
+    top_level_routes = importlib.import_module("appserver.model_routes")
+    manager = importlib.import_module("config.model_manager")
+    monkeypatch.setattr(manager, "set_active_model", lambda model_id: model_id == "demo")
+
+    assert top_level_routes.set_active({"id": "demo"}) == {"ok": True, "id": "demo"}
 
 
 @pytest.fixture

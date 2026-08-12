@@ -58,6 +58,7 @@ class TestCapability:
         try:
             cap = capability()
             assert cap["subagents_enabled"] is False
+            assert cap["active_lease_count"] == 0
             assert cap["task"] is False
         finally:
             reset_manager()
@@ -65,6 +66,7 @@ class TestCapability:
     def test_capability_enabled(self, manager_with_builtins):
         cap = capability()
         assert cap["subagents_enabled"] is True
+        assert cap["active_lease_count"] == 0
         assert cap["task"] is True
         assert cap["mention"] is True
         assert cap["protocol_version"] == 1

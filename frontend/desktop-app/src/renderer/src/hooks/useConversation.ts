@@ -22,9 +22,18 @@ import {
   applyPromptResult,
   applyProtocolNotification,
   beginAssistantMessage,
+  beginMentionDispatch,
   createInitialState,
+  hydrateChildSessions,
+  hydrateSessions,
+  parseLeadingAgentMentions,
+  purgeSession,
+  renameSession,
   removeApprovalRequest,
+  restoreSession,
   selectSession as selectSessionReducer,
+  setSessionModel,
+  trashSession,
   updateApprovalRequestStatus,
   type ConversationState
 } from '../lib/conversationStore.mts'
@@ -53,6 +62,11 @@ export interface UseConversationResult {
   approvalRules: ApprovalRule[]
   createSession: () => Promise<void>
   selectSession: (sessionId: string) => void
+  renameSession: (sessionId: string, title: string) => Promise<boolean>
+  trashSession: (sessionId: string) => Promise<boolean>
+  restoreSession: (sessionId: string) => Promise<boolean>
+  purgeSession: (sessionId: string) => Promise<boolean>
+  setSessionModel: (sessionId: string, modelId: string, providerId?: string | null) => Promise<boolean>
   sendMessage: (text: string) => Promise<void>
   interrupt: () => Promise<void>
   resolveApproval: (requestId: string, decision: 'approved' | 'rejected') => void
@@ -206,10 +220,82 @@ export function useConversation(
     if (status === 'running' && info !== null) {
       void connection
         .attach(info)
-        .then(() => {
+        .then(async () => {
           if (connectionRef.current !== connection) return
-          setProtocolClient(connection.client)
+          const client = connection.client
+          setProtocolClient(client)
           setConnectionError(null)
+          if (client === null) return
+          let sessionsForReplay: Array<{ sessionId: string }> = stateRef.current.sessions
+            .map((session) => ({ sessionId: session.sessionId }))
+          try {
+            const taskList = await client.requestWithTimeout<{
+              sessions: Array<Record<string, unknown>>
+            }>('sessions/list', { include_trashed: true }, 10_000)
+            sessionsForReplay = taskList.sessions
+              .filter((item) => typeof item.session_id === 'string' && String(item.session_id) !== '')
+              .map((item) => ({ sessionId: String(item.session_id) }))
+            setState((current) =>
+              hydrateSessions(
+                current,
+                taskList.sessions.map((item) => ({
+                  session_id: String(item.session_id ?? ''),
+                  title: typeof item.title === 'string' ? item.title : undefined,
+                  workspace_root: String(item.workspace_root ?? ''),
+                  model_id: typeof item.model_id === 'string' ? item.model_id : null,
+                  provider_id: typeof item.provider_id === 'string' ? item.provider_id : null,
+                  status: typeof item.status === 'string' ? item.status as never : undefined,
+                  created_at: typeof item.created_at === 'string' ? item.created_at : undefined,
+                  updated_at: typeof item.updated_at === 'string' ? item.updated_at : undefined,
+                  trashed_at: item.trashed_at === null || typeof item.trashed_at === 'string'
+                    ? item.trashed_at
+                    : null
+                }))
+              )
+            )
+          } catch {
+            // Desktop task persistence is a minor-version extension. A
+            // pre-extension appserver still keeps the in-memory task created
+            // by the renderer, so attachment remains usable.
+          }
+          for (const session of sessionsForReplay) {
+            const rootSessionId = session.sessionId
+            const cursor = stateRef.current.childEventCursorByRoot[rootSessionId] ?? 0
+            try {
+              const replay = await client.requestWithTimeout<{
+                events: Record<string, unknown>[]
+                next_cursor: number
+                gap_detected: boolean
+              }>('child_sessions/events', {
+                root_session_id: rootSessionId,
+                cursor
+              }, 10_000)
+              setState((current) =>
+                replay.events.reduce((next, event) => {
+                  const method = typeof event.event_name === 'string' ? event.event_name : ''
+                  return method.startsWith('child_session/')
+                    ? applyProtocolNotification(next, method, event)
+                    : next
+                }, current)
+              )
+              if (replay.gap_detected) {
+                const snapshot = await client.requestWithTimeout<{
+                  sessions: Record<string, unknown>[]
+                }>('child_sessions/list', { root_session_id: rootSessionId }, 10_000)
+                setState((current) =>
+                  hydrateChildSessions(
+                    current,
+                    rootSessionId,
+                    snapshot.sessions,
+                    replay.next_cursor
+                  )
+                )
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              setConnectionError(`child session recovery failed: ${message}`)
+            }
+          }
         })
         .catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error)
@@ -239,11 +325,15 @@ export function useConversation(
       const created = await client.requestWithTimeout<{
         session_id: string
         workspace_root: string
+        model_id?: string | null
+        provider_id?: string | null
       }>('session/new', { workspace_root: workspaceRootOverride ?? info.repoRoot }, 10_000)
       setState((current) =>
         addSession(current, {
           sessionId: created.session_id,
-          workspaceRoot: created.workspace_root
+          workspaceRoot: created.workspace_root,
+          modelId: created.model_id ?? null,
+          providerId: created.provider_id ?? null
         })
       )
     } catch (error) {
@@ -255,12 +345,115 @@ export function useConversation(
     setState((current) => selectSessionReducer(current, sessionId))
   }, [])
 
+  const renameTask = useCallback(async (sessionId: string, title: string): Promise<boolean> => {
+    const client = connectionRef.current?.client
+    if (client === null || client === undefined) return false
+    try {
+      await client.requestWithTimeout('session/rename', { session_id: sessionId, title }, 10_000)
+      setState((current) => renameSession(current, sessionId, title))
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const trashTask = useCallback(async (sessionId: string): Promise<boolean> => {
+    const client = connectionRef.current?.client
+    if (client === null || client === undefined) return false
+    try {
+      await client.requestWithTimeout('session/trash', { session_id: sessionId }, 10_000)
+      setState((current) => trashSession(current, sessionId))
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const restoreTask = useCallback(async (sessionId: string): Promise<boolean> => {
+    const client = connectionRef.current?.client
+    if (client === null || client === undefined) return false
+    try {
+      await client.requestWithTimeout('session/restore', { session_id: sessionId }, 10_000)
+      setState((current) => restoreSession(current, sessionId))
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const purgeTask = useCallback(async (sessionId: string): Promise<boolean> => {
+    const client = connectionRef.current?.client
+    if (client === null || client === undefined) return false
+    try {
+      await client.requestWithTimeout('session/purge', { session_id: sessionId }, 10_000)
+      setState((current) => purgeSession(current, sessionId))
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const setTaskModel = useCallback(
+    async (sessionId: string, modelId: string, providerId: string | null = null): Promise<boolean> => {
+      const client = connectionRef.current?.client
+      if (client === null || client === undefined) return false
+      if (stateRef.current.runningBySession[sessionId] === true) return false
+      try {
+        const result = await client.requestWithTimeout<{ ok?: boolean; provider_id?: string | null }>(
+          'session/set_model',
+          { session_id: sessionId, model_id: modelId },
+          30_000
+        )
+        if (result.ok !== true) return false
+        setState((current) => setSessionModel(current, sessionId, modelId, result.provider_id ?? providerId))
+        return true
+      } catch {
+        return false
+      }
+    },
+    []
+  )
+
   const sendMessage = useCallback(async (text: string): Promise<void> => {
     const client = connectionRef.current?.client
     const trimmed = text.trim()
     const sessionId = stateRef.current.activeSessionId
     if (client === null || client === undefined || sessionId === null || trimmed === '') return
     if (stateRef.current.runningBySession[sessionId] === true) return
+    const mention = parseLeadingAgentMentions(trimmed)
+    if (mention !== null) {
+      if (mention.prompt === '') {
+        setState((current) => applyError(current, sessionId, 'An @agent mention requires a task prompt.'))
+        return
+      }
+      setState((current) =>
+        beginMentionDispatch(
+          beginAssistantMessage(addUserMessage(current, sessionId, trimmed), sessionId),
+          sessionId,
+          mention.agentIds
+        )
+      )
+      try {
+        await Promise.all(
+          mention.agentIds.map(async (agentId) =>
+            client.requestWithTimeout(
+              'agent/invoke',
+              {
+                agent_id: agentId,
+                prompt: mention.prompt,
+                parent_session_id: sessionId,
+                request_id: crypto.randomUUID()
+              },
+              10_000
+            )
+          )
+        )
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        setState((current) => applyError(current, sessionId, message))
+      }
+      return
+    }
     setState((current) => addUserMessage(current, sessionId, trimmed))
     setState((current) => beginAssistantMessage(current, sessionId))
     try {
@@ -268,7 +461,10 @@ export function useConversation(
         run_id: string
         status: string
         text: string
-      }>('session/prompt', { session_id: sessionId, text: trimmed }, 120_000)
+      // Complex agent runs routinely exceed two minutes. The appserver owns
+      // stall detection and cancellation; this is only a final transport
+      // safety net so the renderer cannot retain a request forever.
+      }>('session/prompt', { session_id: sessionId, text: trimmed }, 15 * 60_000)
       setState((current) =>
         applyPromptResult(current, sessionId, {
           runId: result.run_id,
@@ -302,6 +498,11 @@ export function useConversation(
     approvalRules,
     createSession,
     selectSession,
+    renameSession: renameTask,
+    trashSession: trashTask,
+    restoreSession: restoreTask,
+    purgeSession: purgeTask,
+    setSessionModel: setTaskModel,
     sendMessage,
     interrupt,
     resolveApproval,

@@ -22,7 +22,8 @@ All entries share the same fixed execution order:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from typing import Callable
 
 from protocol.subagents import (
@@ -56,6 +57,8 @@ from .runtime import (
     create_child_runtime,
 )
 from .context import ContextBuilder
+from .events import EventStore, TERMINAL_EVENTS, build_event
+from .workspace import LeaseManager, WorkspaceError
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +148,13 @@ class ChildSessionManager:
     registry: AgentDefinitionRegistry
     config: SubagentConfig = field(default_factory=SubagentConfig)
     primary_agent_id: str = "primary"  # AgentDefinition id governing Primary task_permission
+    workspace_root: Path | None = None
     _trees: dict[str, SessionTree] = field(default_factory=dict)
     _event_emitter: EventEmitter | None = field(default=None, repr=False)
+    _event_store: EventStore | None = field(default=None, repr=False)
+    _request_ids_by_session: dict[str, str] = field(default_factory=dict, repr=False)
+    _requests_by_session: dict[str, TaskRequest] = field(default_factory=dict, repr=False)
+    _lease_manager: LeaseManager = field(default_factory=LeaseManager, repr=False)
 
     # -- event wiring --------------------------------------------------------
 
@@ -154,13 +162,65 @@ class ChildSessionManager:
         """Attach an event emitter (B12 persists events)."""
         self._event_emitter = emitter
 
+    def set_event_store(self, store: EventStore | None) -> None:
+        """Attach the authoritative append-only event store for this tree."""
+        self._event_store = store
+
     def _emit(self, event_name: str, payload: dict) -> None:
+        session_id = str(payload.get("session_id", ""))
+        if (
+            self._event_store is not None
+            and event_name in TERMINAL_EVENTS
+            and self._event_store.has_terminal_event(session_id)
+        ):
+            return
+        session = self._find_session(session_id)
+        parent_session_id = (
+            session.parent_session_id
+            if session is not None
+            else str(payload.get("parent_session_id", ""))
+        )
+        root_session_id = (
+            session.root_session_id
+            if session is not None
+            else str(payload.get("root_session_id", parent_session_id))
+        )
+        request_id = self._request_ids_by_session.get(
+            session_id, str(payload.get("request_id", ""))
+        )
+        event = build_event(
+            event_name,
+            session_id,
+            parent_session_id,
+            root_session_id=root_session_id,
+            request_id=request_id,
+            definition_version=(
+                session.definition_version if session is not None else ""
+            ),
+            payload=dict(payload),
+        )
+        if self._event_store is not None:
+            event = self._event_store.append(event)
         if self._event_emitter is not None:
             try:
-                self._event_emitter(event_name, payload)
+                self._event_emitter(event_name, event.to_dict())
             except Exception:
                 # Event emission must never block dispatch
                 pass
+
+    def _find_session(self, session_id: str) -> ChildSession | None:
+        if not session_id:
+            return None
+        for tree in self._trees.values():
+            try:
+                return tree.get(session_id)
+            except KeyError:
+                continue
+        return None
+
+    def _root_for_parent(self, parent_session_id: str) -> str:
+        parent = self._find_session(parent_session_id)
+        return parent.root_session_id if parent is not None else parent_session_id
 
     # -- tree management -----------------------------------------------------
 
@@ -179,11 +239,70 @@ class ChildSessionManager:
 
     def cancel_session(self, root_session_id: str, session_id: str) -> None:
         """Cancel a session and all its descendants."""
-        self._tree_for(root_session_id).cancel_session(session_id)
+        tree = self._tree_for(root_session_id)
+        active_before = {
+            session.session_id for session in tree.list_active()
+        }
+        tree.cancel_session(session_id)
+        for session in tree.list_all():
+            if (
+                session.session_id in active_before
+                and session.status == ChildStatus.CANCELLED
+            ):
+                self._emit(
+                    "child_session/cancelled",
+                    {"session_id": session.session_id, "status": "cancelled"},
+                )
+                self._lease_manager.release_all_for_session(session.session_id)
 
     def cancel_root(self, root_session_id: str) -> None:
         """Cancel all children under a Primary session."""
-        self._tree_for(root_session_id).cancel_all()
+        tree = self._tree_for(root_session_id)
+        active_before = {
+            session.session_id for session in tree.list_active()
+        }
+        tree.cancel_all()
+        for session in tree.list_all():
+            if (
+                session.session_id in active_before
+                and session.status == ChildStatus.CANCELLED
+            ):
+                self._emit(
+                    "child_session/cancelled",
+                    {"session_id": session.session_id, "status": "cancelled"},
+                )
+                self._lease_manager.release_all_for_session(session.session_id)
+
+    @property
+    def active_lease_count(self) -> int:
+        """Return the unique active lease count without exposing paths."""
+        return len({
+            lease.lease_id
+            for lease in self._lease_manager._leases.values()
+            if lease.is_active
+        })
+
+    async def retry_session(
+        self,
+        root_session_id: str,
+        session_id: str,
+        *,
+        request_id: str,
+    ) -> TaskResult:
+        """Retry a terminal child from its immutable original request."""
+        session = self.get_session(root_session_id, session_id)
+        if not session.is_terminal:
+            raise DispatchError(
+                f"Child session '{session_id}' is still active",
+                code="retry_active_session",
+            )
+        original = self._requests_by_session.get(session_id)
+        if original is None:
+            raise DispatchError(
+                f"Original request for child session '{session_id}' is unavailable",
+                code="retry_request_unavailable",
+            )
+        return await self.dispatch(replace(original, request_id=request_id))
 
     # -- capability ----------------------------------------------------------
 
@@ -257,10 +376,14 @@ class ChildSessionManager:
 
         # 7. Create Child Session
         session = create_child_session(request, policy, definition=definition)
-        session.root_session_id = request.parent_session_id or session.session_id
+        session.root_session_id = (
+            self._root_for_parent(request.parent_session_id) or session.session_id
+        )
 
         tree = self._tree_for(session.root_session_id)
         tree.add(session)
+        self._request_ids_by_session[session.session_id] = request.request_id
+        self._requests_by_session[session.session_id] = request
 
         self._emit("child_session/created", {
             "session_id": session.session_id,
@@ -376,9 +499,15 @@ class ChildSessionManager:
             request.requested_budget.max_steps if request.requested_budget else 2**31,
             definition.steps if definition.steps else 12,
         )
+        definition_max_tokens = definition.extra.get("max_tokens")
+        server_max_tokens = (
+            definition_max_tokens
+            if isinstance(definition_max_tokens, int) and definition_max_tokens > 0
+            else self.config.default_max_tokens
+        )
         max_tokens = min(
             request.requested_budget.max_tokens if request.requested_budget else 2**31,
-            definition.extra.get("max_tokens", 8000) if isinstance(definition.extra.get("max_tokens"), int) else 8000,
+            server_max_tokens,
         )
         max_wall = request.requested_budget.max_wall_time_seconds if request.requested_budget else 300
         max_concurrent = request.requested_budget.max_concurrent_children if request.requested_budget else 3
@@ -489,10 +618,75 @@ class ChildSessionManager:
             # Session was cancelled while queued
             return self._terminal_result(request, session, ChildStatus.CANCELLED, "Cancelled before start")
 
+        active_siblings = [
+            child
+            for child in self._tree_for(session.root_session_id).list_active()
+            if child.session_id != session.session_id
+        ]
+        concurrent_limit = session.policy.budget.max_concurrent_children
+        if len(active_siblings) >= concurrent_limit:
+            from protocol.subagents import ErrorRecord
+
+            message = (
+                f"Concurrency limit exceeded: {len(active_siblings)}/"
+                f"{concurrent_limit} active"
+            )
+            transition(session, ChildStatus.FAILED)
+            self._emit("child_session/failed", {
+                "session_id": session.session_id,
+                "status": "failed",
+                "error": {"code": "budget.concurrency", "message": message},
+            })
+            return self._terminal_result(
+                request,
+                session,
+                ChildStatus.FAILED,
+                message,
+                error=ErrorRecord(code="budget.concurrency", message=message),
+            )
+
         self._emit("child_session/started", {"session_id": session.session_id})
 
+        # The manager owns leases for its entire Primary tree.  A child never
+        # self-asserts a lease id: requested paths are acquired atomically here
+        # and the authoritative id is frozen into the policy snapshot.
+        if session.policy.workspace.mode == WorkspaceMode.LEASED_WRITE:
+            try:
+                paths = session.policy.workspace.leased_paths
+                if not paths:
+                    raise WorkspaceError(
+                        "leased_write requires at least one leased path",
+                        code="workspace.no_scope",
+                    )
+                lease = self._lease_manager.acquire(session.session_id, paths)
+                session.policy = replace(
+                    session.policy,
+                    workspace=replace(session.policy.workspace, lease_id=lease.lease_id),
+                )
+            except WorkspaceError as exc:
+                from protocol.subagents import ErrorRecord
+
+                transition(session, ChildStatus.FAILED)
+                self._emit("child_session/failed", {
+                    "session_id": session.session_id,
+                    "status": "failed",
+                    "error": {"code": exc.code, "message": str(exc)},
+                })
+                return self._terminal_result(
+                    request,
+                    session,
+                    ChildStatus.FAILED,
+                    str(exc),
+                    error=ErrorRecord(code=exc.code, message=str(exc)),
+                )
+
         # Build isolated runtime (via ChildRuntime facade for shutdown semantics)
-        child_rt = create_child_runtime(definition, session)
+        child_rt = create_child_runtime(
+            definition,
+            session,
+            self._lease_manager,
+            self.workspace_root,
+        )
 
         try:
             # Construct prompt from the context task
@@ -513,6 +707,26 @@ class ChildSessionManager:
             self._emit(f"child_session/{terminal_status.value}", {
                 "session_id": session.session_id,
                 "status": terminal_status.value,
+                "summary": result.summary,
+                "artifacts": [asdict(item) for item in result.artifacts],
+                "evidence": [asdict(item) for item in result.evidence],
+                "error": (
+                    {
+                        "code": result.error.code,
+                        "message": result.error.message,
+                        "details": dict(result.error.details),
+                    }
+                    if result.error is not None
+                    else None
+                ),
+                "usage": {
+                    "steps": result.usage.steps,
+                    "input_tokens": result.usage.input_tokens,
+                    "output_tokens": result.usage.output_tokens,
+                    "cache_hit_tokens": result.usage.cache_hit_tokens,
+                    "wall_time_ms": result.usage.wall_time_ms,
+                    "retry_count": result.usage.retry_count,
+                },
             })
 
             # Reconstruct TaskResult with correct request/session ids
@@ -548,6 +762,8 @@ class ChildSessionManager:
                 f"Runtime failure: {exc}",
                 error=ErrorRecord(code="internal_error", message=str(exc)),
             )
+        finally:
+            self._lease_manager.release_all_for_session(session.session_id)
 
     def _status_from_result(self, status: ChildStatus) -> ChildStatus:
         """Map a runtime status to a terminal session status."""
