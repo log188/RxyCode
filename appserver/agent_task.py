@@ -226,7 +226,8 @@ class AgentTask:
     async def _run_main(self, task: str) -> Any:
         try:
             result = await self._run_target(task)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            self._last_error = exc
             raise
         except Exception as exc:
             self._last_error = exc
@@ -253,7 +254,8 @@ class AgentTask:
                 # run targets with the plain (task,) signature (E2 tests,
                 # legacy paths) do not consume the checkpoint
                 result = await self._run_target(self._task)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            self._last_error = exc
             raise
         except Exception as exc:
             self._last_error = exc
