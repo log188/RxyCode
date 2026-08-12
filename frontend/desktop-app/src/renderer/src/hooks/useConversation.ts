@@ -48,6 +48,7 @@ import {
   type ApprovalRiskLevel,
   type ApprovalRule
 } from '../lib/approvalPolicy.mts'
+import type { PermissionMode } from '../lib/desktopPreferences.mts'
 import {
   createConversationConnection,
   type AppserverInfo,
@@ -69,7 +70,7 @@ export interface UseConversationResult {
   restoreSession: (sessionId: string) => Promise<boolean>
   purgeSession: (sessionId: string) => Promise<boolean>
   setSessionModel: (sessionId: string, modelId: string, providerId?: string | null) => Promise<boolean>
-  sendMessage: (text: string) => Promise<void>
+  sendMessage: (text: string, permissionMode?: PermissionMode) => Promise<void>
   interrupt: () => Promise<void>
   resolveApproval: (requestId: string, decision: 'approved' | 'rejected') => void
   saveAlwaysAllowRule: (
@@ -177,9 +178,11 @@ export function useConversation(
       if (entry === undefined) return
       pendingApprovalsRef.current.delete(requestId)
       entry.resolve({ request_id: requestId, decision })
-      // Keep the modal visible in "submitting" until event/done removes it,
-      // so the user can see the decision was sent and is being processed.
-      setState((current) => updateApprovalRequestStatus(current, requestId, 'submitting'))
+      // The approval decision is complete as soon as the server-request
+      // future is resolved. The agent may continue running, but the modal is
+      // not a job-progress indicator and must not trap the user in a fake
+      // "submitting" state while waiting for event/done.
+      setState((current) => removeApprovalRequest(current, requestId))
     },
     []
   )
@@ -212,7 +215,9 @@ export function useConversation(
   }, [])
 
   const dismissApproval = useCallback((requestId: string): void => {
+    const entry = pendingApprovalsRef.current.get(requestId)
     pendingApprovalsRef.current.delete(requestId)
+    entry?.reject(new Error('approval dismissed'))
     setState((current) => removeApprovalRequest(current, requestId))
   }, [])
 
@@ -412,11 +417,14 @@ export function useConversation(
   const renameTask = useCallback(async (sessionId: string, title: string): Promise<boolean> => {
     const client = connectionRef.current?.client
     if (client === null || client === undefined) return false
+    const previous = stateRef.current.sessions.find((session) => session.sessionId === sessionId)?.title ?? ''
+    setState((current) => renameSession(current, sessionId, title))
     try {
       await client.requestWithTimeout('session/rename', { session_id: sessionId, title }, 10_000)
-      setState((current) => renameSession(current, sessionId, title))
+      setState((current) => ({ ...current }))
       return true
     } catch {
+      setState((current) => renameSession(current, sessionId, previous))
       return false
     }
   }, [])
@@ -424,11 +432,19 @@ export function useConversation(
   const trashTask = useCallback(async (sessionId: string): Promise<boolean> => {
     const client = connectionRef.current?.client
     if (client === null || client === undefined) return false
+    // The server persists the soft-delete before cleaning up its worker. The
+    // task list must reflect that durable intent immediately; process cleanup
+    // is deliberately decoupled from this UI mutation.
+    setState((current) => trashSession(current, sessionId))
     try {
       await client.requestWithTimeout('session/trash', { session_id: sessionId }, 10_000)
-      setState((current) => trashSession(current, sessionId))
+      // The optimistic mutation already changed the list. This shallow
+      // reconciliation render refreshes diagnostics that read the live
+      // ProtocolClient pending count after the response leaves the map.
+      setState((current) => ({ ...current }))
       return true
     } catch {
+      setState((current) => restoreSession(current, sessionId))
       return false
     }
   }, [])
@@ -436,11 +452,13 @@ export function useConversation(
   const restoreTask = useCallback(async (sessionId: string): Promise<boolean> => {
     const client = connectionRef.current?.client
     if (client === null || client === undefined) return false
+    setState((current) => restoreSession(current, sessionId))
     try {
       await client.requestWithTimeout('session/restore', { session_id: sessionId }, 10_000)
-      setState((current) => restoreSession(current, sessionId))
+      setState((current) => ({ ...current }))
       return true
     } catch {
+      setState((current) => trashSession(current, sessionId))
       return false
     }
   }, [])
@@ -477,7 +495,7 @@ export function useConversation(
     },
     []
   )
-  const sendMessage = useCallback(async (text: string): Promise<void> => {
+  const sendMessage = useCallback(async (text: string, permissionMode?: PermissionMode): Promise<void> => {
     const client = connectionRef.current?.client
     const trimmed = text.trim()
     const sessionId = stateRef.current.activeSessionId
@@ -531,7 +549,11 @@ export function useConversation(
       // Complex agent runs routinely exceed two minutes. The appserver owns
       // stall detection and cancellation; this is only a final transport
       // safety net so the renderer cannot retain a request forever.
-      }>('session/prompt', { session_id: sessionId, text: trimmed }, 15 * 60_000)
+      }>('session/prompt', {
+        session_id: sessionId,
+        text: trimmed,
+        ...(permissionMode === undefined ? {} : { permission_mode: permissionMode })
+      }, 15 * 60_000)
       trace.mark(sessionId, 'rpc_received')
       trace.mark(sessionId, 'final')
       trace.mark(sessionId, 'renderer_paint')

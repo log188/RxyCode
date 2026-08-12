@@ -468,6 +468,7 @@ class AppServer:
         timeout_seconds: float | None,
         mode: str = "build",
         thinking_expanded: bool | None = None,
+        permission_mode: str | None = None,
     ) -> None:
         record = self._sessions.get(session_id)
         if record is None:
@@ -524,6 +525,7 @@ class AppServer:
                         emit=emit_message,
                         mode=mode,
                         thinking_expanded=expand,
+                        permission_mode=permission_mode,
                     )
 
                 try:
@@ -650,6 +652,15 @@ class AppServer:
             thinking_expanded = None
         else:
             thinking_expanded = bool(thinking_raw)
+        permission_mode_raw = params.get("permission_mode")
+        permission_mode = (
+            str(permission_mode_raw).strip().lower()
+            if permission_mode_raw is not None
+            else None
+        )
+        if permission_mode not in {None, "confirm_all", "auto_edit", "full_auto"}:
+            await self._respond_error(request_id, -32602, "invalid permission_mode")
+            return
         await self._run_prompt(
             session_id=session_id,
             text=text,
@@ -658,6 +669,7 @@ class AppServer:
             timeout_seconds=timeout_seconds,
             mode=mode,
             thinking_expanded=thinking_expanded,
+            permission_mode=permission_mode,
         )
 
     async def _handle_set_thinking_expanded(
@@ -867,8 +879,13 @@ class AppServer:
         except KeyError:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
-        await self._kill_session_host(session_id)
         await self._respond(request_id, self._session_summary(record))
+        # Do not make a reversible UI operation wait for process teardown.
+        # The host is owned by this session and can be cleaned up in the
+        # background after the client has received the durable trash result.
+        cleanup = asyncio.create_task(self._kill_session_host(session_id))
+        self._prompt_tasks.add(cleanup)
+        cleanup.add_done_callback(self._prompt_tasks.discard)
 
     async def _handle_session_restore(self, params: dict[str, Any], request_id: Any) -> None:
         session_id = str(params.get("session_id", ""))

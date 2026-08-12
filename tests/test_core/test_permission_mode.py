@@ -10,6 +10,7 @@ from RxyCode.RxyCode1_1_0.core.safety.approval import (
 )
 from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import permission_mode_override
 
 
 class _RecordingBroker:
@@ -124,3 +125,29 @@ async def test_confirm_all_asks_write(tmp_path):
         cfg,
     )
     assert len(broker.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_request_local_permission_mode_overrides_process_config(tmp_path):
+    broker = _RecordingBroker()
+    set_approval_broker(broker)
+    orch = ToolOrchestrator()
+    orch.register("write", _FakeTool())
+    cfg = {
+        "safety": {
+            "enabled": True,
+            "permission_mode": "confirm_all",
+            "auto_approve": [],
+            "allowed_write_paths": [str(tmp_path)],
+        }
+    }
+
+    with permission_mode_override("auto_edit"):
+        out = await orch._execute_tool_gated(
+            "write",
+            {"filePath": str(tmp_path / "request-local.py"), "content": "x\n"},
+            cfg,
+        )
+
+    assert "wrote" in out
+    assert broker.requests == []

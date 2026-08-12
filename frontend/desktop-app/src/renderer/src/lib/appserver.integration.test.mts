@@ -277,3 +277,33 @@ test('fake appserver preserves an asynchronously resolved approval decision', as
     await delay(300)
   }
 })
+
+test('fake appserver reports an explicit rejection as a failed run', async () => {
+  const { child, client } = startFakeAppserver()
+  client.onServerRequest = async (method, params) => {
+    assert.equal(method, 'approval/request')
+    const request = params as { request_id: string }
+    return { request_id: request.request_id, decision: 'rejected' }
+  }
+  try {
+    await client.requestWithTimeout('initialize', {
+      client_name: 'rxycode-desktop-test',
+      client_version: '0.0.0-test',
+      protocol_version: '1.1.0',
+      capabilities: {}
+    })
+    const created = await client.requestWithTimeout<{ session_id: string }>('session/new', {
+      workspace_root: appRoot
+    })
+    const result = await client.requestWithTimeout<StubPromptResult>(
+      'session/prompt',
+      { session_id: created.session_id, text: 'approval reject' },
+      30_000
+    )
+    assert.equal(result.status, 'failed')
+  } finally {
+    client.rejectAllPending(new Error('test teardown'))
+    child.kill()
+    await delay(300)
+  }
+})

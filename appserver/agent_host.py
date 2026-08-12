@@ -819,6 +819,7 @@ class AgentHost:
         emit: EmitFn,
         mode: str = "build",
         thinking_expanded: bool = False,
+        permission_mode: str | None = None,
     ) -> dict[str, Any]:
         self._emit = emit
         return await self._pipe_request(
@@ -829,6 +830,7 @@ class AgentHost:
                 "run_id": run_id,
                 "mode": mode,
                 "thinking_expanded": thinking_expanded,
+                "permission_mode": permission_mode,
             },
             timeout=timeout,
         )

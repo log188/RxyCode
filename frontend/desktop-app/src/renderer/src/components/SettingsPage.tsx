@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useDiagnostics, type UpdateStatus } from '../../../platform/index.mts'
 import type { UseModelsResult } from '../hooks/useModels'
 import type { ModelEntry } from '../hooks/useModels'
 import { groupModelsByProvider } from '../lib/modelPresentation.mts'
+import type { DesktopLanguage, PermissionMode, ThemePreference } from '../lib/desktopPreferences.mts'
 
-export type SettingsTab = 'model' | 'apikey' | 'workspace' | 'diagnostics'
+export type SettingsTab = 'general' | 'model' | 'apikey' | 'workspace' | 'diagnostics'
 
 export interface SettingsPageProps {
   appVersion: string
@@ -17,9 +18,16 @@ export interface SettingsPageProps {
   onClearWorkspace: () => void
   onModelSelected?: (modelId: string) => void
   models: UseModelsResult
+  permissionMode: PermissionMode
+  onPermissionModeChange: (mode: PermissionMode) => void
+  theme: ThemePreference
+  onThemeChange: (theme: ThemePreference) => void
+  language: DesktopLanguage
+  onLanguageChange: (language: DesktopLanguage) => void
 }
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
+  { id: 'general', label: 'General' },
   { id: 'model', label: '模型' },
   { id: 'apikey', label: 'API Key' },
   { id: 'workspace', label: '工作区' },
@@ -268,15 +276,28 @@ function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; o
 }
 
 function SettingsPage(props: SettingsPageProps): React.JSX.Element {
-  const [tab, setTab] = useState<SettingsTab>('model')
+  const [tab, setTab] = useState<SettingsTab>('general')
   const diagnostics = useDiagnostics()
   const updateStatus = diagnostics.updateStatus?.status ?? null
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        props.onClose()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [props.onClose])
+
   return (
-    <div className="settings-overlay">
-      <div className="settings-page">
+    <div className="settings-overlay" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) props.onClose()
+    }}>
+      <div className="settings-page" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header className="settings-header">
-          <div className="settings-title">设置</div>
+          <div id="settings-title" className="settings-title">Settings</div>
           <button type="button" className="settings-close" onClick={props.onClose}>
             关闭
           </button>
@@ -295,6 +316,34 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           ))}
         </nav>
         <div className="settings-content">
+          {tab === 'general' && (
+            <section className="settings-panel" data-testid="general-settings">
+              <h2>General</h2>
+              <div className="settings-option-row">
+                <div><strong>Approval mode</strong><p className="settings-hint">The mode applies to this task window. Full access always requires confirmation.</p></div>
+                <select aria-label="Approval mode" value={props.permissionMode} onChange={(event) => props.onPermissionModeChange(event.target.value as PermissionMode)}>
+                  <option value="confirm_all">Ask before changes</option>
+                  <option value="auto_edit">Auto-edit</option>
+                  <option value="full_auto">Full access</option>
+                </select>
+              </div>
+              <div className="settings-option-row">
+                <div><strong>Theme</strong><p className="settings-hint">Choose the canvas and panel appearance.</p></div>
+                <select aria-label="Theme" value={props.theme} onChange={(event) => props.onThemeChange(event.target.value as ThemePreference)}>
+                  <option value="system">System</option>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </div>
+              <div className="settings-option-row">
+                <div><strong>Language</strong><p className="settings-hint">UI language preference for the Desktop shell.</p></div>
+                <select aria-label="Language" value={props.language} onChange={(event) => props.onLanguageChange(event.target.value as DesktopLanguage)}>
+                  <option value="zh-CN">简体中文</option>
+                  <option value="en-US">English</option>
+                </select>
+              </div>
+            </section>
+          )}
           {tab === 'model' && (
             <section className="settings-panel">
               <h2>模型</h2>
