@@ -240,9 +240,13 @@ async def bench_budget(bus: EventBus, metrics: Metrics) -> None:
 
 
 async def bench_passthrough(bus: EventBus, metrics: Metrics, tag: str | None) -> None:
-    """⑦ event payload passthrough (F14 gate data source)."""
+    """⑦ event payload passthrough (F14 gate data source).
+
+    Without ``--tag`` this stays None (untested) instead of pretending a
+    pass: the E1-tagged run is the only valid evidence for the assertion.
+    """
     if tag is None:
-        metrics.passthrough_ok = True
+        metrics.passthrough_ok = None
         return
     evt = ProtocolAgentEvent(
         method="event/agent_routed",
@@ -268,40 +272,51 @@ async def bench_passthrough(bus: EventBus, metrics: Metrics, tag: str | None) ->
     )
 
 
-def _rb_demo_records(metrics: Metrics) -> list[dict[str, Any]]:
-    """RB1-RB5 demonstration record (trace/contract assertions)."""
+def _rb_demo_records(metrics: Metrics, contract_evidence: str) -> list[dict[str, Any]]:
+    """RB1-RB5 demonstration record (measured values + contract evidence).
+
+    RB2/RB4 are evidenced by the contract test results (E6 isolation tests,
+    EB8 oversized-payload rejection / dead-letter tests) passed in via
+    ``contract_evidence`` — never self-assigned by this script.
+    """
+    rb2_pass = "test_messages_isolated_between_agents" in contract_evidence and "passed" in contract_evidence
+    rb4_pass = (
+        "test_oversized_payload_rejected_eb8" in contract_evidence
+        and "passed" in contract_evidence
+        and "test_send_to_dead_letter_does_not_block_publisher" in contract_evidence
+    )
     return [
         {
             "rb": "RB1",
-            "demo": "speedup_n2 >= 1.5",
+            "demo": "speedup_n2 >= 1.5 (measured)",
             "value": metrics.speedup_n2,
             "pass": metrics.rb1_real_parallelism,
         },
         {
             "rb": "RB2",
-            "demo": "per-agent AgentContext slices are distinct; contract "
-            "test test_messages_isolated_between_agents",
-            "value": "isolated",
-            "pass": metrics.rb2_independent_state,
+            "demo": "AgentContext slices isolated (E6 contract test "
+            "test_messages_isolated_between_agents)",
+            "value": contract_evidence,
+            "pass": rb2_pass,
         },
         {
             "rb": "RB3",
             "demo": "bus replay by seq matches live order after concurrent "
-            "publish (bench_event_bus)",
+            "publish (bench_event_bus measured)",
             "value": metrics.rb3_bus_replay_ok,
             "pass": metrics.rb3_bus_replay_ok,
         },
         {
             "rb": "RB4",
-            "demo": "data plane stays explicit: runtime never embeds payload "
-            "blobs in bus events (EB8), delegation via checkpoint refs; "
-            "contract test_route_dead_letter_does_not_block_publisher",
-            "value": "explicit",
-            "pass": metrics.rb4_explicit_delegation,
+            "demo": "data plane stays explicit (EB8 oversized payload "
+            "rejection + dead-letter contract tests)",
+            "value": contract_evidence,
+            "pass": rb4_pass,
         },
         {
             "rb": "RB5",
-            "demo": "interrupt fan-out latency < 2s with real task cancel",
+            "demo": "interrupt fan-out latency < 2s with real task cancel "
+            "(measured)",
             "value_ms": metrics.interrupt_fanout_ms,
             "pass": metrics.rb5_cancel_reachable,
         },
@@ -335,14 +350,14 @@ async def main() -> int:
     bus = EventBus(AppendOnlyLog())
     metrics = Metrics()
     if args.smoke:
-        await bench_throughput(bus, metrics)
-        await bench_interrupt(bus, metrics)
+        await _run_all(bus, metrics, None, duration_s=1.0)
     elif args.stress:
         await bench_deadlock(bus, metrics, duration_s=float(args.duration))
     else:
         await _run_all(bus, metrics, args.tag, duration_s=2.0)
 
-    rb_records = _rb_demo_records(metrics)
+    contract_evidence = _run_contract_evidence()
+    rb_records = _rb_demo_records(metrics, contract_evidence)
     payload = {
         "schema_version": 1,
         "env": _env(),
@@ -355,6 +370,35 @@ async def main() -> int:
         json.dump(payload, fh, indent=2, ensure_ascii=False)
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     return 0 if metrics.rb1_real_parallelism and metrics.rb5_cancel_reachable else 1
+
+
+def _run_contract_evidence() -> str:
+    """Live contract-test output backing RB2/RB4 (never self-assigned)."""
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/contract/test_agent_context.py",
+                "tests/contract/test_eventbus.py",
+                "-v",
+                "-k",
+                "isolated or oversized or dead_letter or readonly",
+                "--timeout=120",
+            ],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+        )
+        return (r.stdout + r.stderr).strip()
+    except Exception as exc:  # noqa: BLE001
+        return f"(contract evidence unavailable: {exc})"
 
 
 if __name__ == "__main__":

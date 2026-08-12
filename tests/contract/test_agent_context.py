@@ -19,6 +19,7 @@ from appserver.agent_context import (
     ReadonlyMemoryIndex,
     SegmentAlreadyMountedError,
     SegmentClosedError,
+    SessionCacheCounter,
     SessionSharedSegment,
     SharedReadonlySegment,
 )
@@ -157,16 +158,23 @@ def test_tail_retention_default_limit():
 
 
 def test_cache_counters_accumulate_across_agent_switches():
-    a = AgentContext(agent_id="A")
-    b = AgentContext(agent_id="B")
+    counter = SessionCacheCounter()
+    a = AgentContext(agent_id="A", session_cache=counter)
+    b = AgentContext(agent_id="B", session_cache=counter)
     a.record_cache(hit=True)
     b.record_cache(hit=True)
     a.record_cache(hit=False)
-    assert a.session_cache_hits == 1
-    assert b.session_cache_hits == 1
-    assert a.session_cache_misses == 1
-    assert b.session_cache_misses == 0
-    assert a.session_cache_hits + b.session_cache_hits == 2  # never reset
+    assert counter.hits == 2  # session-level, shared across agents
+    assert counter.misses == 1
+    assert a.session_cache is b.session_cache  # same session counter
+
+
+def test_cache_counter_defaults_to_per_context_when_isolated():
+    a = AgentContext(agent_id="A")
+    b = AgentContext(agent_id="B")
+    a.record_cache(hit=True)
+    assert a.session_cache.hits == 1
+    assert b.session_cache is None  # untouched agents have no counter
 
 
 # ---------------------------------------------------------------------------

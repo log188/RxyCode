@@ -80,6 +80,26 @@ class SessionSharedSegment:
             self._segment = None
 
 
+class SessionCacheCounter:
+    """Session-level cache accounting (reasonix-style, PHASE-E §4.4).
+
+    One counter object per session/runtime; every AgentContext in the
+    session shares it, so counts never reset when the active agent
+    switches (shared mutable state is explicit and confined to this
+    accounting object).
+    """
+
+    def __init__(self) -> None:
+        self.hits: int = 0
+        self.misses: int = 0
+
+    def record(self, hit: bool) -> None:
+        if hit:
+            self.hits += 1
+        else:
+            self.misses += 1
+
+
 class ReadonlyMemoryIndex:
     """Read-only facade over the session memory index (EB2 no-write path).
 
@@ -118,8 +138,7 @@ class AgentContext:
     memory_refs: list[str] = field(default_factory=list)
     shared_segment: SharedReadonlySegment | None = None
     memory_index: ReadonlyMemoryIndex | None = None
-    session_cache_hits: int = 0
-    session_cache_misses: int = 0
+    session_cache: SessionCacheCounter | None = None
 
     def add_message(self, message: dict[str, Any]) -> None:
         """Append to this agent's slice, applying tail retention."""
@@ -133,8 +152,11 @@ class AgentContext:
         self.tool_results[tool] = result
 
     def record_cache(self, hit: bool) -> None:
-        """Session-level cache accounting (never reset on agent switch)."""
-        if hit:
-            self.session_cache_hits += 1
-        else:
-            self.session_cache_misses += 1
+        """Session-level cache accounting via the shared counter.
+
+        All agents of the session share the same SessionCacheCounter, so
+        counts accumulate across agent switches (reasonix-style).
+        """
+        if self.session_cache is None:
+            self.session_cache = SessionCacheCounter()
+        self.session_cache.record(hit)

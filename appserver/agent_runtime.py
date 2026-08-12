@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
 
+from .agent_context import AgentContext, SessionCacheCounter
 from .agent_task import AgentTask, LifecycleState
 from .eventbus import BusEvent, EventBus
 
@@ -177,6 +178,9 @@ class AgentRuntime:
         self._checkpoints: dict[str, object] = {}
         self._resolved_models: dict[str, str] = {}
         self._cancel_process_trees_calls = 0
+        self.contexts: dict[str, AgentContext] = {}
+        self._provider_bindings: dict[str, str | None] = {}
+        self._session_cache = SessionCacheCounter()
 
     # -- lifecycle --------------------------------------------------------
 
@@ -213,6 +217,22 @@ class AgentRuntime:
         self.agents[config.agent_id] = task
         self.configs[config.agent_id] = config
         self.quotas[config.agent_id] = sem
+        # E6 integration: every spawned agent carries its own context slice
+        # (EB2); the session shares one cache counter (reasonix-style) and
+        # any mounted shared readonly segment is referenced explicitly.
+        ctx = AgentContext(
+            agent_id=config.agent_id,
+            scope=config.memory_scope,
+            session_cache=self._session_cache,
+        )
+        self.contexts[config.agent_id] = ctx
+        task.context = ctx
+        # mechanical agents never bind a provider (F4: no LLM slot);
+        # non-mechanical agents record the opaque model identifier only.
+        if config.mechanical:
+            self._provider_bindings[config.agent_id] = None
+        else:
+            self._provider_bindings[config.agent_id] = config.model
         task._run_target = self._make_guarded(config, raw_target)
         await task.spawn("")
         return task
@@ -296,6 +316,19 @@ class AgentRuntime:
         raise BudgetExceededError(
             f"agent {agent_id} budget exceeded: {used}+{est} > {budget}"
         )
+
+    def cache_key_for(self, agent_id: str, base: str) -> str:
+        """Application cache key for an agent (DC8/F17): the namespace, if
+        set, enters the final key; None keeps the legacy base byte-identical."""
+        config = self.configs.get(agent_id)
+        if config is None:
+            raise KeyError(f"unknown agent {agent_id}")
+        return build_cache_key(base, config.cache_namespace)
+
+    def is_mechanical(self, agent_id: str) -> bool:
+        """F4: mechanical agents have no provider binding (zero LLM)."""
+        config = self.configs.get(agent_id)
+        return bool(config and config.mechanical)
 
     # -- model metadata ---------------------------------------------------
 

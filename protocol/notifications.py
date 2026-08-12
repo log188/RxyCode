@@ -119,7 +119,21 @@ class AgentEvent(BaseModel):
             value = getattr(self, name)
             if value is not None and value < 0:
                 raise ValueError(f"{name} must be non-negative")
+        if self.experiment_tag is not None:
+            _check_text_field("experiment_tag", self.experiment_tag, 256)
+        if self.routing_reason is not None:
+            _check_text_field("routing_reason", self.routing_reason, 256)
         return self
+
+
+def _check_text_field(name: str, value: str, max_len: int) -> None:
+    """Non-empty, length-capped, control-character-free text (PHASE-E §4.1)."""
+    if not value:
+        raise ValueError(f"{name} must be a non-empty string")
+    if len(value) > max_len:
+        raise ValueError(f"{name} must be at most {max_len} characters")
+    if any(ch < " " and ch not in "\t" for ch in value):
+        raise ValueError(f"{name} must not contain control characters")
 
 
 class MessageDelta(BaseModel):

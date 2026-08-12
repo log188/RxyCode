@@ -385,6 +385,46 @@ async def test_spawn_rejects_invalid_namespace_before_start():
 
 
 @pytest.mark.asyncio
+async def test_spawn_mounts_agent_context_with_session_cache():
+    rt = AgentRuntime(_bus(), run_factory=_ok_run, parallel_limit=2)
+    await rt.spawn(AgentConfig(agent_id="A", tools=()))
+    await rt.spawn(AgentConfig(agent_id="B", tools=()))
+
+    assert rt.contexts["A"].agent_id == "A"
+    assert rt.contexts["B"].agent_id == "B"
+    assert rt.contexts["A"].session_cache is rt.contexts["B"].session_cache
+    assert rt.agents["A"].context is rt.contexts["A"]
+    # shared cache counts across agents (reasonix-style)
+    rt.contexts["A"].record_cache(hit=True)
+    rt.contexts["B"].record_cache(hit=True)
+    assert rt.contexts["A"].session_cache.hits == 2
+
+
+@pytest.mark.asyncio
+async def test_mechanical_never_binds_provider():
+    rt = AgentRuntime(_bus(), run_factory=_ok_run, parallel_limit=2)
+    await rt.spawn(AgentConfig(agent_id="M", tools=(), mechanical=True))
+    await rt.spawn(AgentConfig(agent_id="N", tools=(), model="model-x"))
+
+    assert rt.is_mechanical("M") is True
+    assert rt._provider_bindings["M"] is None  # no provider binding (F4)
+    assert rt.is_mechanical("N") is False
+    assert rt._provider_bindings["N"] == "model-x"
+
+
+@pytest.mark.asyncio
+async def test_cache_key_for_applies_namespace_at_runtime():
+    rt = AgentRuntime(_bus(), run_factory=_ok_run, parallel_limit=2)
+    await rt.spawn(AgentConfig(agent_id="A", tools=(), cache_namespace="team-a"))
+    await rt.spawn(AgentConfig(agent_id="B", tools=()))
+
+    base = "https://api.example.com|model|digest"
+    assert rt.cache_key_for("A", base) == f"{base}|team-a"
+    assert rt.cache_key_for("B", base) == base  # byte-identical legacy key
+    assert rt.cache_key_for("A", base) != rt.cache_key_for("B", base)
+
+
+@pytest.mark.asyncio
 async def test_spawn_stores_namespace_for_cache_key_building():
     rt = AgentRuntime(_bus(), run_factory=_ok_run)
     await rt.spawn(

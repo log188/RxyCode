@@ -8,18 +8,18 @@
   },
   "duration_s": null,
   "metrics": {
-    "throughput_serial_s": 0.051144199998816475,
-    "throughput_n1_s": 0.05098080000607297,
-    "throughput_n2_s": 0.050391600001603365,
-    "throughput_n4_s": 0.051065599982393906,
-    "speedup_n2": 2.023384850032579,
-    "speedup_n4": 3.993357565456967,
+    "throughput_serial_s": 0.05118680000305176,
+    "throughput_n1_s": 0.050944199989316985,
+    "throughput_n2_s": 0.05033909998019226,
+    "throughput_n4_s": 0.050720300001557916,
+    "speedup_n2": 2.024040954620278,
+    "speedup_n4": 4.0176576232989305,
     "event_drop_rate": 0.5,
     "publisher_blocked": false,
-    "interrupt_fanout_ms": 0.1765000051818788,
-    "deadlock_pressure_rounds": 9,
+    "interrupt_fanout_ms": 0.09259997750632465,
+    "deadlock_pressure_rounds": 10,
     "deadlock_hang": false,
-    "budget_breaker_ms": 0.4104000108782202,
+    "budget_breaker_ms": 0.301199994282797,
     "rb1_real_parallelism": true,
     "rb2_independent_state": true,
     "rb3_bus_replay_ok": true,
@@ -29,32 +29,32 @@
     "rb_demonstrations": [
       {
         "rb": "RB1",
-        "demo": "speedup_n2 >= 1.5",
-        "value": 2.023384850032579,
+        "demo": "speedup_n2 >= 1.5 (measured)",
+        "value": 2.024040954620278,
         "pass": true
       },
       {
         "rb": "RB2",
-        "demo": "per-agent AgentContext slices are distinct; contract test test_messages_isolated_between_agents",
-        "value": "isolated",
+        "demo": "AgentContext slices isolated (E6 contract test test_messages_isolated_between_agents)",
+        "value": "============================= test session starts =============================\nplatform win32 -- Python 3.13.9, pytest-8.4.2, pluggy-1.5.0 -- D:\\Anaconda3\\python.exe\ncachedir: .pytest_cache\nrootdir: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\.worktrees\\phasee\nconfigfile: pytest.ini\nplugins: anyio-4.10.0, langsmith-0.9.0, asyncio-1.4.0, base-url-2.1.0, cov-7.1.0, playwright-0.8.0, timeout-2.4.0, xdist-3.8.0\nasyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function\ntimeout: 120.0s\ntimeout method: thread\ntimeout func_only: False\ncollecting ... collected 34 items / 30 deselected / 4 selected\n\ntests/contract/test_agent_context.py::test_messages_isolated_between_agents PASSED [ 25%]\ntests/contract/test_agent_context.py::test_readonly_memory_index_exposes_no_write_path PASSED [ 50%]\ntests/contract/test_eventbus.py::test_send_to_dead_letter_does_not_block_publisher PASSED [ 75%]\ntests/contract/test_eventbus.py::test_oversized_payload_rejected_eb8 PASSED [100%]\n\n====================== 4 passed, 30 deselected in 0.23s =======================",
         "pass": true
       },
       {
         "rb": "RB3",
-        "demo": "bus replay by seq matches live order after concurrent publish (bench_event_bus)",
+        "demo": "bus replay by seq matches live order after concurrent publish (bench_event_bus measured)",
         "value": true,
         "pass": true
       },
       {
         "rb": "RB4",
-        "demo": "data plane stays explicit: runtime never embeds payload blobs in bus events (EB8), delegation via checkpoint refs; contract test_route_dead_letter_does_not_block_publisher",
-        "value": "explicit",
+        "demo": "data plane stays explicit (EB8 oversized payload rejection + dead-letter contract tests)",
+        "value": "============================= test session starts =============================\nplatform win32 -- Python 3.13.9, pytest-8.4.2, pluggy-1.5.0 -- D:\\Anaconda3\\python.exe\ncachedir: .pytest_cache\nrootdir: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\.worktrees\\phasee\nconfigfile: pytest.ini\nplugins: anyio-4.10.0, langsmith-0.9.0, asyncio-1.4.0, base-url-2.1.0, cov-7.1.0, playwright-0.8.0, timeout-2.4.0, xdist-3.8.0\nasyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function\ntimeout: 120.0s\ntimeout method: thread\ntimeout func_only: False\ncollecting ... collected 34 items / 30 deselected / 4 selected\n\ntests/contract/test_agent_context.py::test_messages_isolated_between_agents PASSED [ 25%]\ntests/contract/test_agent_context.py::test_readonly_memory_index_exposes_no_write_path PASSED [ 50%]\ntests/contract/test_eventbus.py::test_send_to_dead_letter_does_not_block_publisher PASSED [ 75%]\ntests/contract/test_eventbus.py::test_oversized_payload_rejected_eb8 PASSED [100%]\n\n====================== 4 passed, 30 deselected in 0.23s =======================",
         "pass": true
       },
       {
         "rb": "RB5",
-        "demo": "interrupt fan-out latency < 2s with real task cancel",
-        "value_ms": 0.1765000051818788,
+        "demo": "interrupt fan-out latency < 2s with real task cancel (measured)",
+        "value_ms": 0.09259997750632465,
         "pass": true
       }
     ]

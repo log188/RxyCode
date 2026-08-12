@@ -301,6 +301,26 @@ def test_sse_and_stdio_envelopes_carry_identical_fields():
     assert stdio_envelope["params"]["budget_used"] == sse_envelope["budget_used"]
 
 
+def test_routing_reason_empty_rejected():
+    with pytest.raises(ValidationError):
+        _evt("event/agent_routed", experiment_tag="E0", routing_reason="")
+
+
+def test_routing_reason_too_long_rejected():
+    with pytest.raises(ValidationError):
+        _evt("event/agent_routed", experiment_tag="E0", routing_reason="x" * 257)
+
+
+def test_routing_reason_control_chars_rejected():
+    with pytest.raises(ValidationError):
+        _evt("event/agent_routed", experiment_tag="E0", routing_reason="bad\x00reason")
+
+
+def test_routing_reason_256_chars_accepted():
+    evt = _evt("event/agent_routed", experiment_tag="E0", routing_reason="y" * 256)
+    assert len(evt.routing_reason) == 256
+
+
 def test_round_trip_preserves_payload_json_types():
     payload: JsonObject = {"reasoning": ["a", 1, {"k": None}]}
     evt = _evt("event/agent_done", payload=payload)
