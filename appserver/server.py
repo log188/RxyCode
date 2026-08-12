@@ -427,23 +427,15 @@ class AppServer:
             await self._respond_error(request_id, -32602, "workspace_root is required")
             return
         model_id = str(params.get("model") or "").strip() or None
-        provider_id: str | None = None
-        if model_id is None:
-            try:
-                from .model_routes import list_models
-
-                models = list_models()
-                model_id = str(models.get("active") or "").strip() or None
-                for item in models.get("models", []):
-                    if isinstance(item, dict) and item.get("id") == model_id:
-                        value = item.get("provider_id")
-                        provider_id = str(value) if value else None
-                        break
-            except Exception:
-                # Session creation must remain usable when model discovery is
-                # unavailable; the worker will report the provider error on
-                # the first prompt or explicit task-level switch.
-                model_id = None
+        provider_value = str(params.get("provider_id") or "").strip()
+        provider_id: str | None = provider_value or None
+        # Do not synchronously discover every configured model while creating
+        # a task.  Model discovery can load provider metadata and used to make
+        # the ``+`` button look frozen before the session response was sent.
+        # The renderer already has the shared model snapshot; callers that
+        # need a task-specific model may pass ``model`` explicitly.  The
+        # background worker still resolves the configured active model when it
+        # bootstraps.
         record = self._sessions.create(
             Path(workspace), model_id=model_id, provider_id=provider_id
         )
@@ -640,13 +632,13 @@ class AppServer:
         if (
             self._watchdog.degraded
             and self._watchdog.degrade_reason.startswith(
-                ("job stalled", "transport degraded")
+                ("job stalled", "transport degraded", "prompt timed out")
             )
         ):
-            # Stall handling kills the affected worker before returning the
-            # error. Admit the next prompt, even when another session still
-            # has an active job, so one stalled session cannot block unrelated
-            # concurrent work.
+            # Timeout/stall handling kills the affected worker before returning
+            # the error. Admit the next prompt, even when another session still
+            # has an active job, so one failed session cannot block unrelated
+            # concurrent work. A fresh host is created by _host_for_session.
             self._watchdog.recover()
         if self._watchdog.degraded:
             await self._respond_error(

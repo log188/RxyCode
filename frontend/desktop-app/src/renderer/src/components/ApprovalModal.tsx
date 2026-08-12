@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ApprovalActionScope, ApprovalExpiryHours } from '../lib/approvalPolicy.mts'
 import type { ApprovalRequestItem } from '../lib/conversationStore.mts'
 
@@ -32,6 +32,16 @@ function ApprovalModal({
   const [formOpen, setFormOpen] = useState(false)
   const [scope, setScope] = useState<ApprovalActionScope>('exact')
   const [expiresInHours, setExpiresInHours] = useState<ApprovalExpiryHours>(24)
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onDismiss()
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [onDismiss])
 
   if (item.status === 'error') {
     return (

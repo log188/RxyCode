@@ -5,6 +5,7 @@ import {
   addApprovalRequest,
   addUserMessage,
   applyError,
+  applyTransportRecovery,
   applyFinalAnswer,
   applyMessageDelta,
   applyProtocolNotification,
@@ -353,6 +354,29 @@ test('applyError finalizes every running tool when the prompt transport fails', 
   assert.equal(tool?.status, 'error')
   assert.equal(tool?.summary, 'RPC timeout: session/prompt')
   assert.equal(state.runningBySession['s1'], false)
+})
+
+test('applyTransportRecovery shows a recoverable row without finalizing the task as failed', () => {
+  let state = beginAssistantMessage(baseState(), 's1')
+  state = applyTransportRecovery(state, 's1', 'appserver degraded')
+  const recovery = state.timelineBySession.s1?.find((item) => item.kind === 'recovery')
+  assert.equal(recovery?.kind, 'recovery')
+  assert.equal(recovery?.state, 'recovered')
+  assert.equal(state.runningBySession.s1, false)
+  assert.equal(state.runStateBySession.s1, 'queued')
+  assert.equal(state.errorBySession.s1, null)
+  assert.equal(state.timelineBySession.s1?.some((item) => item.kind === 'error'), false)
+})
+
+test('transport recovery after a prior final answer creates a new recovery row', () => {
+  let state = addUserMessage(baseState(), 's1', 'first prompt')
+  state = applyPromptResult(state, 's1', { runId: 'run-1', status: 'succeeded', text: 'first answer' })
+  state = addUserMessage(state, 's1', 'second prompt')
+  state = beginAssistantMessage(state, 's1')
+  const recovered = applyTransportRecovery(state, 's1', 'connection lost')
+  assert.equal(recovered.timelineBySession.s1?.at(-1)?.kind, 'recovery')
+  assert.equal(recovered.timelineBySession.s1?.some((item) => item.kind === 'final_answer' && item.runId === 'run-1'), true)
+  assert.equal(recovered.errorBySession.s1, null)
 })
 
 test('applyError does not append a duplicate message when the last one already errored', () => {

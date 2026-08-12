@@ -1,4 +1,4 @@
-import { Activity, Menu, PanelRight, Settings, ShieldCheck, X } from 'lucide-react'
+import { Activity, Menu, Settings, ShieldCheck, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import ApprovalModal from './components/ApprovalModal'
 import ApprovalRulesModal from './components/ApprovalRulesModal'
@@ -134,9 +134,25 @@ function App(): React.JSX.Element {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
   }, [])
 
+  useEffect(() => {
+    if (!settingsOpen) return
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setSettingsOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape, true)
+    return () => window.removeEventListener('keydown', closeOnEscape, true)
+  }, [settingsOpen])
+
   const handleCreate = async (): Promise<void> => {
     showToast('正在创建任务…')
-    const created = await conversation.createSession()
+    const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
+    const created = await conversation.createSession({
+      modelId: selectedTaskModel || undefined,
+      providerId: selected?.provider_id ?? null
+    })
     showToast(created ? '任务已创建' : '任务创建失败，请检查连接')
   }
 
@@ -146,13 +162,15 @@ function App(): React.JSX.Element {
       showToast(decision.message ?? '当前任务无法删除')
       return
     }
-    showToast('正在删除…')
-    showToast((await conversation.trashSession(sessionId)) ? '删除成功' : '删除失败，请重试')
+    const operation = conversation.trashSession(sessionId)
+    showToast('已删除任务')
+    if (!(await operation)) showToast('删除未保存，请重试')
   }
 
   const handleRestore = async (sessionId: string): Promise<void> => {
-    showToast('正在恢复…')
-    showToast((await conversation.restoreSession(sessionId)) ? '恢复成功' : '恢复失败，请重试')
+    const operation = conversation.restoreSession(sessionId)
+    showToast('已恢复任务')
+    if (!(await operation)) showToast('恢复未保存，请重试')
   }
 
   return (
@@ -196,14 +214,6 @@ function App(): React.JSX.Element {
             title="Settings"
           >
             <Settings aria-hidden="true" size={17} />
-          </button>
-          <button
-            type="button"
-            className="icon-button inspector-toggle"
-            aria-label="Open task inspector"
-            onClick={() => setInspectorOpen(true)}
-          >
-            <PanelRight aria-hidden="true" size={18} />
           </button>
         </div>
       </header>

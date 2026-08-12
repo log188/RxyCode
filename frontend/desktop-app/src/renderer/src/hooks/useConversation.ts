@@ -21,6 +21,7 @@ import {
   applyError,
   applyPromptResult,
   applyProtocolNotification,
+  applyTransportRecovery,
   beginAssistantMessage,
   beginMentionDispatch,
   createInitialState,
@@ -64,7 +65,7 @@ export interface UseConversationResult {
   connectionError: string | null
   protocolClient: ProtocolClient | null
   approvalRules: ApprovalRule[]
-  createSession: () => Promise<boolean>
+  createSession: (model?: { modelId?: string; providerId?: string | null }) => Promise<boolean>
   selectSession: (sessionId: string) => void
   renameSession: (sessionId: string, title: string) => Promise<boolean>
   trashSession: (sessionId: string) => Promise<boolean>
@@ -239,6 +240,64 @@ export function useConversation(
     })
   }, [])
 
+  const replayCurrentSession = useCallback(async (client: ProtocolClient, sessionId: string): Promise<void> => {
+    const sessionCursor = stateRef.current.sessionEventCursorBySession[sessionId] ?? 0
+    try {
+      let replay = await client.requestWithTimeout<{
+        events: Array<{ seq: number; method: string; params: Record<string, unknown> }>
+        next_cursor: number
+        gap_detected: boolean
+      }>('session/events', { session_id: sessionId, cursor: sessionCursor }, 10_000)
+      if (replay.gap_detected) {
+        replay = await client.requestWithTimeout<{
+          events: Array<{ seq: number; method: string; params: Record<string, unknown> }>
+          next_cursor: number
+          gap_detected: boolean
+        }>('session/events', { session_id: sessionId, cursor: 0 }, 10_000)
+      }
+      setState((current) => replaySessionEvents(
+        current,
+        sessionId,
+        replay.events,
+        replay.next_cursor,
+        replay.gap_detected
+      ))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setConnectionError(`session event recovery failed: ${message}`)
+    }
+
+    const childCursor = stateRef.current.childEventCursorByRoot[sessionId] ?? 0
+    try {
+      const replay = await client.requestWithTimeout<{
+        events: Record<string, unknown>[]
+        next_cursor: number
+        gap_detected: boolean
+      }>('child_sessions/events', { root_session_id: sessionId, cursor: childCursor }, 10_000)
+      setState((current) => replay.events.reduce((next, event) => {
+        const method = typeof event.event_name === 'string' ? event.event_name : ''
+        return method.startsWith('child_session/')
+          ? applyProtocolNotification(next, method, event)
+          : next
+      }, current))
+      if (replay.gap_detected) {
+        const snapshot = await client.requestWithTimeout<{ sessions: Record<string, unknown>[] }>(
+          'child_sessions/list',
+          { root_session_id: sessionId },
+          10_000
+        )
+        setState((current) => hydrateChildSessions(current, sessionId, snapshot.sessions, replay.next_cursor))
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // Older appservers may not expose Phase-B child replay. Ordinary task
+      // recovery remains valid, so keep this diagnostic non-fatal.
+      if (!message.toLowerCase().includes('method not found')) {
+        setConnectionError(`child session recovery failed: ${message}`)
+      }
+    }
+  }, [])
+
   useEffect(() => {
     if (connectionRef.current === null) {
       connectionRef.current = createConversationConnection({
@@ -393,7 +452,7 @@ export function useConversation(
     }
   }, [])
 
-  const createSession = useCallback(async (): Promise<boolean> => {
+  const createSession = useCallback(async (model?: { modelId?: string; providerId?: string | null }): Promise<boolean> => {
     const client = connectionRef.current?.client
     if (client === null || client === undefined || info === null) return false
     try {
@@ -402,7 +461,11 @@ export function useConversation(
         workspace_root: string
         model_id?: string | null
         provider_id?: string | null
-      }>('session/new', { workspace_root: workspaceRootOverride ?? info.repoRoot }, 10_000)
+      }>('session/new', {
+        workspace_root: workspaceRootOverride ?? info.repoRoot,
+        ...(model?.modelId ? { model: model.modelId } : {}),
+        ...(model?.providerId ? { provider_id: model.providerId } : {})
+      }, 10_000)
       setState((current) =>
         addSession(current, {
           sessionId: created.session_id,
@@ -529,8 +592,15 @@ export function useConversation(
           }
           await connection.attach(serverInfo)
         }
-        setProtocolClient(connection.client)
+        const reconnectedClient = connection.client
+        setProtocolClient(reconnectedClient)
         setConnectionError(null)
+        if (reconnectedClient !== null) {
+          const activeSessionId = stateRef.current.activeSessionId
+          if (activeSessionId !== null) {
+            await replayCurrentSession(reconnectedClient, activeSessionId)
+          }
+        }
         return true
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -542,7 +612,7 @@ export function useConversation(
     })()
     reconnectingRef.current = reconnect
     return reconnect
-  }, [platform])
+  }, [platform, replayCurrentSession])
 
   const sendMessage = useCallback(async (text: string, permissionMode?: PermissionMode): Promise<void> => {
     const client = connectionRef.current?.client
@@ -617,7 +687,24 @@ export function useConversation(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (isRecoverableConnectionError(message)) {
-        await reconnectTransport()
+        const recovered = await reconnectTransport()
+        if (recovered) {
+          setState((current) => {
+            const timeline = current.timelineBySession[sessionId] ?? []
+            const latestPromptIndex = timeline.findLastIndex((item) => item.kind === 'user_prompt')
+            const hasTerminal = timeline.slice(latestPromptIndex + 1).some(
+              (item) => item.kind === 'final_answer' || item.kind === 'error'
+            )
+            return hasTerminal
+              ? {
+                  ...current,
+                  runningBySession: { ...current.runningBySession, [sessionId]: false },
+                  errorBySession: { ...current.errorBySession, [sessionId]: null }
+                }
+              : applyTransportRecovery(current, sessionId, message)
+          })
+          return
+        }
       }
       setState((current) => applyError(current, sessionId, message))
     }

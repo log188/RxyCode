@@ -99,19 +99,48 @@ function validate(file: ResultFile, expectedRounds: number, strictScenarioGate =
 }
 
 const deterministic = readResult('deterministic-results.json')
-const real = readResult('real-results.json', realArtifactRoot)
+const realResultPath = resolve(realArtifactRoot, 'real-results.json')
+const real = existsSync(realResultPath)
+  ? readResult('real-results.json', realArtifactRoot)
+  : (() => {
+      // A real-provider run can be intentionally stopped during a long
+      // external request. Preserve that partial evidence instead of
+      // fabricating 30 empty records or refusing to generate the report.
+      const roundResults = resolve(realArtifactRoot, 'real', 'round-1', 'results.json')
+      if (!existsSync(roundResults)) {
+        throw new Error(`missing real result file and partial round evidence: ${realResultPath}`)
+      }
+      return {
+        mode: 'real' as const,
+        rounds: 1,
+        results: JSON.parse(readFileSync(roundResults, 'utf8')) as Array<Record<string, any>>,
+        cleanup: []
+      }
+    })()
 validate(deterministic, 3)
 // Real providers and approval policy are external variables. Preserve their
 // raw outcomes in the report; deterministic remains the hard product gate.
-validate(real, 1, false)
+if (real.results.length === 30) validate(real, 1, false)
 const realResults = real.results
 const primary = reportedTotals(realResults, 'usage')
 const child = reportedTotals(realResults, 'child_usage')
+const deterministicPrimary = reportedTotals(deterministic.results, 'usage')
+const deterministicChild = reportedTotals(deterministic.results, 'child_usage')
+const deterministicInput = deterministicPrimary.input !== null && deterministicChild.input !== null
+  ? deterministicPrimary.input + deterministicChild.input
+  : null
+const deterministicCache = deterministicPrimary.cache !== null && deterministicChild.cache !== null
+  ? deterministicPrimary.cache + deterministicChild.cache
+  : null
+const deterministicCacheRate = deterministicInput !== null && deterministicCache !== null && deterministicInput > 0
+  ? deterministicCache / deterministicInput
+  : weightedCacheRate(deterministic.results)
 const combinedInput = primary.input !== null && child.input !== null ? primary.input + child.input : null
 const combinedCache = primary.cache !== null && child.cache !== null ? primary.cache + child.cache : null
 const combinedCacheRate = combinedInput !== null && combinedCache !== null && combinedInput > 0
   ? combinedCache / combinedInput
   : weightedCacheRate(realResults)
+const deterministicWall = deterministic.results.reduce((sum, result) => sum + Number(result.timing?.wall_ms ?? 0), 0)
 const totalWall = realResults.reduce((sum, result) => sum + Number(result.timing?.wall_ms ?? 0), 0)
 const parallel = realResults.find((result) => result.id === 'DTS-19')
 const realFailures = realResults.filter((result) => result.error)
@@ -128,7 +157,14 @@ const failureCounts = realFailures.reduce<Record<string, number>>((counts, resul
   return counts
 }, {})
 
-const rows = realResults.map((result) => {
+const deterministicFinalRound = deterministic.results.filter((result) => result.round === 3)
+const rows = deterministicFinalRound.map((result) => {
+  const metric = (usage: Record<string, any>) => usage.input_tokens === null
+    ? 'not_reported'
+    : `${usage.input_tokens}/${usage.output_tokens}/${usage.cache_hit_tokens ?? 'not_reported'}`
+  return `| ${result.id} | ${result.status} | ${result.model} | ${result.sessions.length}/${result.child_sessions.length} | ${result.tools.length}/${result.mcp.length}/${result.skills.length} | ${metric(result.usage)} | ${metric(result.child_usage)} | ${result.timing.wall_ms} |`
+}).join('\n')
+const realRows = realResults.map((result) => {
   const metric = (usage: Record<string, any>) => usage.input_tokens === null
     ? 'not_reported'
     : `${usage.input_tokens}/${usage.output_tokens}/${usage.cache_hit_tokens ?? 'not_reported'}`
@@ -147,7 +183,7 @@ const issueRows = [
   ['P2', '紧凑布局 Diagnostics 与 Composer 叠压', 'Diagnostics 提升到 Composer 上方', '760/1024 截图矩阵']
 ].map((row) => `| ${row.join(' | ')} |`).join('\n')
 
-const appendix = realResults.map((result) => `
+const appendix = deterministicFinalRound.concat(realResults).map((result) => `
 ### ${result.id} — ${result.title}
 
 Prompt：
@@ -156,7 +192,7 @@ Prompt：
 
 Final answer：
 
-${result.final_answer}
+${result.final_answer || result.error || 'not available'}
 
 - Primary sessions：${result.sessions.join(', ') || 'none'}
 - Child sessions：${result.child_sessions.join(', ') || 'none'}
@@ -175,16 +211,18 @@ const realRoundSection = `
 ## 3.1 Real-round gate result
 
 - Deterministic 30 scenarios × 3 rounds: enforced as the hard product gate and passed.
-- Real 30 scenarios × 1 round: raw provider, approval, timeout, prompt, usage and final-answer evidence is retained. Cleanup passed, but ${realFailures.length}/30 records have scenario errors; the real-model gate is therefore not claimed as passed.
+- Real-provider plan: 30 scenarios × 1 round; observed ${realResults.length}/30 records before the run stopped at the external/provider timeout boundary. Raw provider, approval, timeout, prompt, usage and final-answer evidence is retained for every observed record.
+- Observed real records with scenario errors: ${realFailures.length}/${realResults.length}. The real-model 30-scenario gate is not claimed as passed.
 - Real failure classification: ${JSON.stringify(failureCounts)}.
 - After the FIFO and replay-order fixes, targeted deterministic DTS-26/DTS-29 passed. Historical real running-tool records remain as pre-fix evidence and are not used to claim the post-fix result.
 `
 
+const reportDate = reportPath.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? new Date().toISOString().slice(0, 10)
 const markdown = `# RxyCode Desktop Phase C/D 联合 GUI 压力测试报告
 
-- 执行日期：2026-08-12
+- 执行日期：${reportDate}
 - 确定性门禁：30 场景 × 3 个连续轮次，共 ${deterministic.results.length} 条
-- 真实模型：30 场景 × 1 轮，共 ${realResults.length} 条
+- 真实模型计划：30 场景 × 1 轮；实际观测 ${realResults.length} 条后因外部/provider 超时停止，未宣称全量通过
 - 确定性原始工件：\`${artifactRoot}\`；真实轮原始工件：\`${realArtifactRoot}\`（均不提交 Git）
 
 ## 1. 改造结果
@@ -195,10 +233,15 @@ Phase 4 Desktop 已从两栏聊天壳改造成任务指挥台：左侧持续显�
 
 ## 2. Token 与时间汇总
 
-- Primary input/output/cache-hit：${primary.reported === 0 ? 'not_reported' : `${primary.input}/${primary.output}/${primary.cache}`}（覆盖 ${primary.reported}/30）
-- Child input/output/cache-hit：${child.reported === 0 ? 'not_reported' : `${child.input}/${child.output}/${child.cache}`}（覆盖 ${child.reported}/30）
-- 加权缓存命中率：${combinedCacheRate === null ? 'not_reported' : `${(combinedCacheRate * 100).toFixed(2)}%`}
-- 真实任务累计墙钟：${totalWall} ms
+- 确定性 Primary input/output/cache-hit：${deterministicPrimary.input === null ? 'not_reported' : `${deterministicPrimary.input}/${deterministicPrimary.output}/${deterministicPrimary.cache}`}（有报告 ${deterministicPrimary.reported}/90）
+- 确定性 Child input/output/cache-hit：${deterministicChild.input === null ? 'not_reported' : `${deterministicChild.input}/${deterministicChild.output}/${deterministicChild.cache}`}（有报告 ${deterministicChild.reported}/90）
+- 确定性加权缓存命中率：${deterministicCacheRate === null ? 'not_reported' : `${(deterministicCacheRate * 100).toFixed(2)}%`}
+- 确定性任务累计墙钟：${deterministicWall} ms
+- 真实 Provider Primary input/output/cache-hit：${primary.reported === 0 ? 'not_reported' : `${primary.input}/${primary.output}/${primary.cache}`}（有报告 ${primary.reported}/${realResults.length}）
+- 真实 Provider Child input/output/cache-hit：${child.reported === 0 ? 'not_reported' : `${child.input}/${child.output}/${child.cache}`}（有报告 ${child.reported}/${realResults.length}）
+- 真实 Provider 加权缓存命中率：${combinedCacheRate === null ? 'not_reported' : `${(combinedCacheRate * 100).toFixed(2)}%`}
+- 真实观测任务累计墙钟：${totalWall} ms
+- DTS-19 确定性并发：overlap=${deterministic.results.find((result) => result.id === 'DTS-19')?.timing?.overlap_ms ?? 'not_reported'} ms，串行等效基线=${deterministic.results.find((result) => result.id === 'DTS-19')?.timing?.serial_baseline_ms ?? 'not_reported'} ms
 - DTS-19 真实并发：overlap=${parallel?.timing?.overlap_ms ?? 'not_reported'} ms，串行等效基线=${parallel?.timing?.serial_baseline_ms ?? 'not_reported'} ms
 - 未上报指标全部保留为 \`null/not_reported\`，不进入合计或缓存命中率。
 
@@ -207,6 +250,10 @@ Phase 4 Desktop 已从两栏聊天壳改造成任务指挥台：左侧持续显�
 | ID | 状态 | 模型 | Primary/Child | Tool/MCP/Skill | Primary in/out/cache | Child in/out/cache | wall ms |
 |---|---|---|---:|---:|---|---|---:|
 ${rows}
+
+### Real Provider observed rows
+
+${realRows}
 
 ${realRoundSection}
 
@@ -251,5 +298,5 @@ ${issueRows}
 ${appendix}
 `
 
-writeFileSync(reportPath, markdown)
+writeFileSync(reportPath, `${markdown.trimEnd()}\n`)
 console.log(`DESKTOP_CD_REPORT_OK ${reportPath}`)

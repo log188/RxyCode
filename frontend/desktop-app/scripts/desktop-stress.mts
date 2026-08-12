@@ -6,16 +6,16 @@
  * MCP, approvals, cancellation, errors, multi-session navigation and scroll.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = resolve(process.argv[2] ?? join(appDir, '..', '..', 'artifacts', 'desktop-stress'))
-const port = 9342
 const vite = join(appDir, 'node_modules', 'electron-vite', 'bin', 'electron-vite.js')
 const profile = mkdtempSync(join(tmpdir(), 'rxycode-desktop-stress-'))
+const dataDir = mkdtempSync(join(tmpdir(), 'rxycode-desktop-stress-data-'))
 const cases = [
   '审计一个 Python 服务的启动链路：读取配置、检索调用点、列出风险，并给出可执行验证命令。',
   '为订单缓存模块实现 TTL 策略：分析现有测试，读取代码，写出修复，并运行回归测试。',
@@ -44,16 +44,33 @@ async function waitFor<T>(probe: () => Promise<T | null>, timeout: number, label
 async function main(): Promise<void> {
   if (!existsSync(vite)) throw new Error(`missing electron-vite: ${vite}`)
   mkdirSync(outDir, { recursive: true })
-  const dev = spawn(process.execPath, [vite, 'dev', '--', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`], {
+  const dev = spawn(process.execPath, [vite, 'dev', '--', '--port=0', '--remote-debugging-port=0', `--user-data-dir=${profile}`], {
     cwd: appDir,
-    env: { ...process.env, RXYCODE_DESKTOP_FAKE_APPSERVER: '1', RXYCODE_DESKTOP_WIDTH: '1100', RXYCODE_DESKTOP_HEIGHT: '760' },
+    env: {
+      ...process.env,
+      RXYCODE_DESKTOP_FAKE_APPSERVER: '1',
+      RXYCODE_DESKTOP_WIDTH: '1100',
+      RXYCODE_DESKTOP_HEIGHT: '760',
+      RXYCODE_DATA_DIR: dataDir,
+      RXYCODE_DESKTOP_USER_DATA: profile,
+      RXYCODE_REPO_DIR: resolve(appDir, '..', '..')
+    },
     windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
   })
   let ws: WebSocket | null = null
   try {
+    const activePortFile = join(profile, 'DevToolsActivePort')
+    const debugPort = await waitFor(async () => {
+      if (!existsSync(activePortFile)) return null
+      const value = Number(readFileSync(activePortFile, 'utf8').split(/\r?\n/)[0])
+      return Number.isInteger(value) && value > 0 ? value : null
+    }, 90_000, 'Electron DevTools port')
     const target = await waitFor(async () => {
-      try { const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as Array<{ type: string; webSocketDebuggerUrl?: string }>; return pages.find((p) => p.type === 'page')?.webSocketDebuggerUrl ?? null } catch { return null }
-    }, 90_000, 'Electron CDP')
+      try {
+        const pages = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json() as Array<{ type: string; webSocketDebuggerUrl?: string }>
+        return pages.find((p) => p.type === 'page' && p.webSocketDebuggerUrl !== undefined)?.webSocketDebuggerUrl ?? null
+      } catch { return null }
+    }, 30_000, 'Electron CDP')
     ws = new WebSocket(target)
     await new Promise<void>((ok, bad) => { ws!.onopen = () => ok(); ws!.onerror = () => bad(new Error('CDP websocket')) })
     let id = 0
@@ -63,48 +80,75 @@ async function main(): Promise<void> {
     const evalJs = async (expression: string): Promise<any> => { const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails)); return r.result?.value }
     const exists = (selector: string): Promise<boolean> => evalJs(`Boolean(document.querySelector(${JSON.stringify(selector)}))`)
     const waitSel = (selector: string, label: string): Promise<true> => waitFor(async () => (await exists(selector)) ? true : null, 30_000, label)
+    const openNavigation = async (): Promise<void> => {
+      await evalJs(`document.querySelector('.nav-toggle:not(:disabled)')?.click()`)
+      await waitSel('.nav-sheet.open .new-session:not(:disabled)', 'task navigation')
+    }
+    const closeNavigation = async (): Promise<void> => {
+      if (await exists('.nav-sheet.open')) await evalJs(`document.querySelector('.nav-sheet.open .sheet-close')?.click()`)
+    }
     const typePrompt = async (text: string): Promise<void> => { await evalJs(`(() => { const e=document.querySelector('.composer textarea'); const s=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set; s.call(e,${JSON.stringify(text)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`); await delay(100) }
     const shot = async (name: string): Promise<void> => { const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(outDir, name), Buffer.from(r.data, 'base64')) }
     await send('Runtime.enable')
-    await waitSel('.new-session:not(:disabled)', 'renderer ready')
+    await waitSel('.nav-toggle:not(:disabled)', 'renderer ready')
     const results: Array<Record<string, unknown>> = []
     for (let idx = 0; idx < cases.length; idx += 1) {
-      const number = String(idx + 1).padStart(2, '0'); const prompt = `[DTS-${number}] ${cases[idx]}`; const started = Date.now()
+      const number = String(idx + 1).padStart(2, '0'); const prompt = `[DTS-${number}] ${cases[idx]}`; const executionPrompt = [8, 9].includes(idx) ? `${prompt} demo` : prompt; const started = Date.now()
       console.log(`DTS-${number} START`)
-      await evalJs(`document.querySelector('.new-session').click()`)
-      await waitFor(async () => (await evalJs(`document.querySelectorAll('.session-item').length`)) === idx + 1 ? true : null, 20_000, `DTS-${number} session`)
-      await typePrompt(prompt); await evalJs(`document.querySelector('.send').click()`)
+      await openNavigation()
+      await evalJs(`document.querySelector('.nav-sheet.open .new-session')?.click()`)
+      await waitFor(async () => (await evalJs(`document.querySelectorAll('.nav-sheet .session-item').length`)) === idx + 1 ? true : null, 20_000, `DTS-${number} session`)
+      await closeNavigation()
+      await waitSel('[data-testid="composer-input"]:not(:disabled)', `DTS-${number} composer ready`)
+      await typePrompt(executionPrompt)
+      try {
+        await waitFor(async () => (await evalJs(`Boolean(document.querySelector('[data-testid="composer-send"]:not(:disabled)'))`)) ? true : null, 20_000, `DTS-${number} send button`)
+      } catch (error) {
+        const debug = await evalJs(`(() => ({
+          status: document.querySelector('.connection-status')?.textContent ?? '',
+          input: document.querySelector('[data-testid="composer-input"]')?.value ?? '',
+          inputDisabled: document.querySelector('[data-testid="composer-input"]')?.disabled ?? null,
+          sendDisabled: document.querySelector('[data-testid="composer-send"]')?.disabled ?? null,
+          active: document.querySelector('.session-item.active .session-id')?.textContent ?? '',
+          runState: document.querySelector('.task-status')?.textContent ?? document.querySelector('.session-item.active .session-state')?.textContent ?? ''
+        }))()`)
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; composer=${JSON.stringify(debug)}`)
+      }
+      await evalJs(`document.querySelector('[data-testid="composer-send"]')?.click()`)
       let status = 'succeeded'
-      if (prompt.includes('approval')) { await waitSel('.approval-dialog', `DTS-${number} approval`); await evalJs(`document.querySelector('.approve, .save-rule')?.click()`); await waitFor(async () => !(await exists('.approval-dialog')) ? true : null, 20_000, `DTS-${number} approval completion`) }
-      else if (prompt.includes('slow demo')) { await waitFor(async () => (await exists('.tool-card.running')) ? true : null, 5_000, `DTS-${number} running tool`); await evalJs(`document.querySelector('.stop').click()`); await waitFor(async () => !(await exists('.running-indicator')) ? true : null, 5_000, `DTS-${number} cancel`); status = 'cancelled' }
-      else if (prompt.includes('fail demo')) { await waitSel('.error-banner', `DTS-${number} error state`); status = 'failed' }
-      else { await waitFor(async () => !(await exists('.running-indicator')) ? true : null, 30_000, `DTS-${number} completion`) }
+      if (executionPrompt.includes('approval demo')) { await waitSel('.approval-dialog', `DTS-${number} approval`); await evalJs(`document.querySelector('.approve, .save-rule')?.click()`); await waitFor(async () => !(await exists('.approval-dialog')) ? true : null, 20_000, `DTS-${number} approval completion`) }
+      else if (prompt.includes('slow demo')) { await waitFor(async () => (await exists('.tool-activity.running')) ? true : null, 5_000, `DTS-${number} running tool`); await evalJs(`document.querySelector('[data-testid="composer-stop"]')?.click()`); await waitFor(async () => !(await exists('.running-indicator')) ? true : null, 5_000, `DTS-${number} cancel`); status = 'cancelled' }
+      else if (prompt.includes('fail demo')) { await waitSel('.timeline-error, [role="alert"]', `DTS-${number} error state`); status = 'failed' }
+      else { await waitFor(async () => (await exists('[data-testid="final-answer"]')) ? true : null, 30_000, `DTS-${number} completion`) }
       await delay(150)
-      const snapshot = await evalJs(`(() => ({ final: Array.from(document.querySelectorAll('.message.assistant .message-text')).at(-1)?.textContent ?? '', tools: Array.from(document.querySelectorAll('.tool-card')).map(x=>({name:x.querySelector('.tool-name')?.textContent,status:Array.from(x.classList).at(-1)})), scrollTop: document.querySelector('.chat-area')?.scrollTop ?? 0, scrollHeight: document.querySelector('.chat-area')?.scrollHeight ?? 0, pageScrollY: window.scrollY, pageHeight: document.documentElement.scrollHeight, viewportHeight: window.innerHeight, topbarHeight: document.querySelector('.topbar')?.getBoundingClientRect().height ?? 0, composerHeight: document.querySelector('.composer')?.getBoundingClientRect().height ?? 0 }))()`)
-      if (status === 'succeeded' && !prompt.includes('approval')) {
+      const snapshot = await evalJs(`(() => ({ final: document.querySelector('[data-testid="final-answer"] .timeline-prose')?.textContent ?? '', error: document.querySelector('.timeline-error')?.textContent ?? '', tools: Array.from(document.querySelectorAll('.tool-activity')).map(x=>({name:x.querySelector('.activity-label')?.textContent,status:Array.from(x.classList).find((name) => ['running','ok','error','recovering'].includes(name)) ?? 'unknown'})), scrollTop: document.querySelector('.chat-area')?.scrollTop ?? 0, scrollHeight: document.querySelector('.chat-area')?.scrollHeight ?? 0, pageScrollY: window.scrollY, pageHeight: document.documentElement.scrollHeight, viewportHeight: window.innerHeight, topbarHeight: document.querySelector('.topbar')?.getBoundingClientRect().height ?? 0, composerHeight: document.querySelector('.composer')?.getBoundingClientRect().height ?? 0 }))()`)
+      if (status === 'succeeded' && !executionPrompt.includes('approval demo')) {
         if (!String(snapshot.final).includes(`DTS-${number}`)) throw new Error(`DTS-${number} final answer belongs to another session`)
-        if (!Array.isArray(snapshot.tools) || snapshot.tools.length !== 3) throw new Error(`DTS-${number} expected exactly three session-local tool cards`)
+        if (!Array.isArray(snapshot.tools) || snapshot.tools.length !== 3) throw new Error(`DTS-${number} expected exactly three session-local tool activities`)
         if (snapshot.tools.some((tool: { status: string }) => tool.status !== 'ok')) throw new Error(`DTS-${number} left a tool card unfinished`)
       }
       if (status === 'cancelled') {
         if (String(snapshot.final).includes(`DTS-${number} 已完成`)) throw new Error(`DTS-${number} rendered a completed answer after cancellation`)
         if (!Array.isArray(snapshot.tools) || !snapshot.tools.some((tool: { status: string }) => tool.status === 'error')) throw new Error(`DTS-${number} did not mark its interrupted tool card`)
       }
-      if (status === 'failed' && !String(snapshot.final).includes('demo failure')) throw new Error(`DTS-${number} did not retain its error result`)
+      if (status === 'failed' && !String(snapshot.error).includes('demo failure')) throw new Error(`DTS-${number} did not retain its error result`)
       if (Number(snapshot.pageScrollY) !== 0 || Number(snapshot.pageHeight) > Number(snapshot.viewportHeight)) throw new Error(`DTS-${number} allowed the desktop shell to scroll instead of keeping its panes fixed`)
       if (Number(snapshot.topbarHeight) < 40 || Number(snapshot.composerHeight) < 80) throw new Error(`DTS-${number} let session growth collapse the fixed desktop chrome`)
       results.push({ id: `DTS-${number}`, prompt, status, duration_ms: Date.now() - started, token_usage: { input: null, output: null, cache_hit: null, note: 'deterministic UI transport has no provider usage payload' }, ...snapshot })
       console.log(`DTS-${number} ${status}`)
       if ([4, 9, 14].includes(idx)) await shot(`DTS-${number}.png`)
     }
-    await evalJs(`document.querySelectorAll('.session-item')[0]?.click()`)
-    await waitFor(async () => (await evalJs(`document.querySelector('.message.user .message-text')?.textContent?.includes('[DTS-01]') ?? false`)) ? true : null, 10_000, 'DTS session isolation')
-    if (await evalJs(`document.querySelector('.message.user .message-text')?.textContent?.includes('[DTS-15]') ?? false`)) throw new Error('DTS session isolation leaked the final session into the first session')
+    await openNavigation()
+    await evalJs(`document.querySelectorAll('.nav-sheet .session-item')[0]?.click()`)
+    await waitFor(async () => (await evalJs(`document.querySelector('.timeline-prompt')?.textContent?.includes('[DTS-01]') ?? false`)) ? true : null, 10_000, 'DTS session isolation')
+    if (await evalJs(`document.querySelector('.timeline-prompt')?.textContent?.includes('[DTS-15]') ?? false`)) throw new Error('DTS session isolation leaked the final session into the first session')
     writeFileSync(join(outDir, 'desktop-stress-results.json'), JSON.stringify({ generated_at: new Date().toISOString(), transport: 'electron-vite + deterministic appserver', results }, null, 2))
     console.log(`DESKTOP_STRESS_OK ${outDir}`)
   } finally {
     ws?.close(); if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(dev.pid), '/T', '/F'], { stdio: 'ignore' }); else { try { process.kill(dev.pid, 'SIGKILL') } catch {} }
-    await delay(400); try { rmSync(profile, { recursive: true, force: true, maxRetries: 3 }) } catch {}
+    await delay(400)
+    try { rmSync(profile, { recursive: true, force: true, maxRetries: 3 }) } catch {}
+    try { rmSync(dataDir, { recursive: true, force: true, maxRetries: 3 }) } catch {}
   }
 }
 void main()

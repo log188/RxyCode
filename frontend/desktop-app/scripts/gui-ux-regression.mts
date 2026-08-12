@@ -108,7 +108,44 @@ async function main(): Promise<void> {
       if (layout.inspector) throw new Error('inspector is open by default')
       if (layout.columns.trim().split(/\\s+/).length > 1) throw new Error(`default layout reserves extra columns: ${layout.columns}`)
     })
-    await check('UX-09 non-active task delete and restore give immediate feedback', async () => {
+    await check('UX-09 timeline keeps tool results before Final Answer', async () => {
+      const order = await harness.evaluate<string[]>(`Array.from(document.querySelectorAll('[data-testid="task-timeline"] > *')).map((node) => {
+        if (node.classList.contains('timeline-prompt')) return 'prompt'
+        if (node.classList.contains('tool-activity')) return 'tool'
+        if (node.classList.contains('final-answer')) return 'final'
+        if (node.classList.contains('timeline-assistant')) return 'assistant'
+        return 'other'
+      })`)
+      const promptIndex = order.indexOf('prompt')
+      const toolIndex = order.indexOf('tool')
+      const finalIndex = order.lastIndexOf('final')
+      if (promptIndex < 0 || toolIndex < 0 || finalIndex < 0 || !(promptIndex < toolIndex && toolIndex < finalIndex)) {
+        throw new Error(`timeline order is not chronological: ${order.join(' > ')}`)
+      }
+    })
+    await check('UX-10 narrow window keeps drawers out of the default grid', async () => {
+      await harness.setViewport(800, 700)
+      const layout = await harness.evaluate<{ columns: string; navigation: string }>(`(() => {
+        const node = document.querySelector('.command-layout')
+        const nav = document.querySelector('.desktop-navigation-panel')
+        if (!(node instanceof HTMLElement) || !(nav instanceof HTMLElement)) throw new Error('responsive shell missing')
+        return { columns: getComputedStyle(node).gridTemplateColumns, navigation: getComputedStyle(nav).display }
+      })()`)
+      if (layout.columns.trim().split(/\\s+/).length > 1) throw new Error(`narrow layout reserves a column: ${layout.columns}`)
+      if (layout.navigation !== 'none') throw new Error(`narrow layout keeps permanent navigation: ${layout.navigation}`)
+      await harness.setViewport(1440, 900)
+    })
+    await check('UX-11 usage reports unknown values explicitly', async () => {
+      const tool = await harness.evaluate<string>(`document.querySelector('.activity-inspect-button')?.textContent ?? ''`)
+      if (tool === '') throw new Error('tool inspector affordance missing')
+      await harness.evaluate(`document.querySelector('.activity-inspect-button')?.click()`)
+      await harness.waitForSelector('[data-testid="usage-panel"]', 2_000)
+      const usage = await harness.evaluate<string>(`document.querySelector('[data-testid="usage-panel"]')?.textContent ?? ''`)
+      if (!usage.includes('not reported')) throw new Error(`unknown usage was not explicit: ${usage}`)
+      await harness.evaluate(`document.querySelector('[data-testid="inspector"] .inspector-header button')?.click()`)
+      await waitFor(async () => (await harness.has('.contextual-inspector-slot')) ? null : true, 2_000, 'usage inspector close')
+    })
+    await check('UX-12 non-active task delete and restore give immediate feedback', async () => {
       await harness.evaluate(`document.querySelector('.nav-toggle')?.click()`)
       await harness.waitForSelector('.nav-sheet.open', 2_000)
       const originalId = await harness.evaluate<string>(`document.querySelector('.nav-sheet .session-item.active .session-id')?.textContent ?? ''`)
@@ -121,14 +158,14 @@ async function main(): Promise<void> {
       await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="session-${originalId}"]')?.click()`)
       await harness.waitForSelector('.nav-sheet .session-item.active', 2_000)
       await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="trash-task-${secondId}"]')?.click()`)
-      await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('删除成功') ? true : null, 2_000, 'delete success toast')
+      await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('已删除任务') ? true : null, 2_000, 'delete success toast')
       await harness.evaluate(`document.querySelector('.nav-sheet .trash-toggle')?.click()`)
       await harness.waitForSelector(`.nav-sheet [data-testid="restore-task-${secondId}"]`, 2_000)
       await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="restore-task-${secondId}"]')?.click()`)
-      await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('恢复成功') ? true : null, 2_000, 'restore success toast')
+      await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('已恢复任务') ? true : null, 2_000, 'restore success toast')
       await harness.evaluate(`document.querySelector('.nav-sheet .sheet-close')?.click()`)
     })
-    await check('UX-10 inspector opens only on demand from a tool activity', async () => {
+    await check('UX-13 inspector opens only on demand from a tool activity', async () => {
       await harness.evaluate(`(() => { const details = document.querySelector('.tool-activity'); if (details instanceof HTMLDetailsElement) details.open = true; const button = details?.querySelector('.activity-inspect-button'); if (button instanceof HTMLElement) button.click(); })()`)
       await harness.waitForSelector('.contextual-inspector-slot', 2_000)
       if (!(await harness.has('[data-testid="inspector"]'))) throw new Error('task inspector content missing')

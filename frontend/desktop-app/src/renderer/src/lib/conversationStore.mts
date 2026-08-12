@@ -844,6 +844,39 @@ export function applyError(
   }
 }
 
+/**
+ * Finish the renderer-side transport leg without presenting a recoverable
+ * disconnect as the task's final answer. The server remains authoritative and
+ * replaySessionEvents() may replace this local row with the real terminal
+ * event immediately after reconnect.
+ */
+export function applyTransportRecovery(
+  state: ConversationState,
+  sessionId: string,
+  message: string
+): ConversationState {
+  const recoveryId = `transport:${sessionId}:${timelineFor(state, sessionId).length}`
+  let next = applyRecoveryEvent(state, 'event/recovery_started', {
+    session_id: sessionId,
+    recovery_id: recoveryId,
+    recovery_kind: 'transport_retry',
+    error_kind: 'transport',
+    max_attempts: 1
+  })
+  next = applyRecoveryEvent(next, 'event/recovery_resolved', {
+    session_id: sessionId,
+    recovery_id: recoveryId,
+    attempts: 1,
+    display_summary: `已重新连接，任务状态正在恢复（${message}）`
+  })
+  return {
+    ...next,
+    runningBySession: { ...next.runningBySession, [sessionId]: false },
+    runStateBySession: { ...next.runStateBySession, [sessionId]: 'queued' },
+    errorBySession: { ...next.errorBySession, [sessionId]: null }
+  }
+}
+
 export function setRunning(
   state: ConversationState,
   sessionId: string,

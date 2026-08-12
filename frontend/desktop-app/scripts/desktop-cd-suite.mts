@@ -293,7 +293,9 @@ async function runOne(
         `${scenario.id} parallel completion`
       )
     } else {
-      const executionPrompt = scenario.kind === 'child-approval' ? `${prompt}\napproval demo` : prompt
+      const executionPrompt = scenario.kind === 'approval' || scenario.kind === 'child-approval'
+        ? `${prompt}\napproval demo`
+        : prompt
       sessionIds.push(await createSessionAndSubmit(harness, executionPrompt))
       if (scenario.kind === 'approval' || scenario.kind === 'child-approval') {
         await harness.waitForSelector('.approval-dialog .approve', mode === 'real' ? 120_000 : 30_000)
@@ -344,6 +346,12 @@ async function runOne(
       })()`)
       await harness.evaluate(`document.querySelector('[data-testid="rename-save-${taskId}"]')?.click()`)
       await waitFor(async () => (await harness.evaluate<boolean>(`document.querySelector('[data-testid="session-${taskId}"] .session-title')?.textContent === 'Theme diagnostics renamed'`)) ? true : null, 5_000, 'task rename')
+      await harness.evaluate(`document.querySelector('[data-testid="trash-task-${taskId}"]')?.click()`)
+      await harness.waitForSelector('[data-testid="task-toast"]', 5_000)
+      const activeDeleteMessage = await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)
+      if (!activeDeleteMessage.includes('删不掉')) throw new Error('active task deletion was not rejected')
+      const replacementTaskId = await createSessionOnly(harness)
+      sessionIds.push(replacementTaskId)
       await harness.evaluate(`document.querySelector('[data-testid="trash-task-${taskId}"]')?.click()`)
       await waitFor(async () => (await harness.has('.trash-toggle')) ? true : null, 5_000, 'recently deleted section')
       await harness.evaluate(`document.querySelector('.trash-toggle')?.click()`)

@@ -496,11 +496,7 @@ async function runPrompt(requestId, sessionId, text) {
     return
   }
 
-  if (
-    text.includes('approval demo') ||
-    text.includes('approval reject') ||
-    text.includes('approval auto')
-  ) {
+  if (text.includes('approval demo') || text.includes('approval reject') || text.includes('approval auto')) {
     await runApprovalPrompt(requestId, sessionId, text)
     return
   }
@@ -660,7 +656,9 @@ rl.on('line', (line) => {
   if (method === 'session/new') {
     sessionCounter += 1
     const sessionId = `demo-${sessionCounter}`
-    const requestedModel = typeof params.model_id === 'string' && params.model_id !== '' ? params.model_id : activeModel
+    const requestedModel = typeof (params.model ?? params.model_id) === 'string' && (params.model ?? params.model_id) !== ''
+      ? (params.model ?? params.model_id)
+      : activeModel
     const task = ensureTask(sessionId, {
       workspace_root: String(params.workspace_root ?? process.cwd()),
       model_id: requestedModel,

@@ -196,6 +196,28 @@ def test_appserver_full_conversation_round_trip(appserver_proc):
     assert result["text"] == "stub:hello appserver"
 
 
+def test_appserver_session_new_preserves_explicit_model_metadata(appserver_proc):
+    client = AppserverClient(appserver_proc)
+    client.request(
+        "initialize",
+        {
+            "client_name": "pytest",
+            "client_version": "0.0.0",
+            "protocol_version": "1.0.0",
+        },
+    )
+    session = client.request(
+        "session/new",
+        {
+            "workspace_root": str(PROJECT_ROOT),
+            "model": "deepseek-v4-flash",
+            "provider_id": "deepseek",
+        },
+    )
+    assert session["model_id"] == "deepseek-v4-flash"
+    assert session["provider_id"] == "deepseek"
+
+
 def test_appserver_stdout_only_jsonrpc(appserver_proc):
     client = AppserverClient(appserver_proc)
     client.request(
@@ -403,6 +425,40 @@ def test_appserver_prompt_timeout(appserver_proc):
             },
             timeout=5.0,
         )
+
+
+def test_appserver_prompt_timeout_does_not_block_next_prompt(appserver_proc):
+    """An explicit prompt timeout is recoverable for the next user turn."""
+    client = AppserverClient(appserver_proc)
+    client.request(
+        "initialize",
+        {
+            "client_name": "pytest",
+            "client_version": "0.0.0",
+            "protocol_version": "1.0.0",
+        },
+    )
+    session = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+    with pytest.raises(AssertionError, match="timed out"):
+        client.request(
+            "session/prompt",
+            {
+                "session_id": session["session_id"],
+                "text": "hang:forever",
+                "timeout_seconds": 0.2,
+            },
+            timeout=5.0,
+        )
+
+    recovered = client.request(
+        "session/prompt",
+        {
+            "session_id": session["session_id"],
+            "text": "hello after explicit timeout",
+        },
+        timeout=10.0,
+    )
+    assert recovered["status"] == "succeeded"
 
 
 

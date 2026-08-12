@@ -2857,13 +2857,17 @@ details[open] .activity-chevron {
 :root,
 :root[data-theme='system'],
 :root[data-theme='dark'] {
-  --cc-canvas: #0b0e12;
-  --cc-surface: #11151a;
-  --cc-surface-raised: #171c23;
-  --cc-surface-hover: #1e252e;
-  --cc-border: #2a333e;
-  --cc-border-strong: #465363;
-  --cc-shadow: rgba(0, 0, 0, 0.42);
+  --cc-canvas: #090a0c;
+  --cc-surface: #111316;
+  --cc-surface-raised: #191b1f;
+  --cc-surface-hover: #23262b;
+  --cc-border: #25282e;
+  --cc-border-strong: #3b4049;
+  --cc-shadow: rgba(0, 0, 0, 0.58);
+  --cc-text: #f1f2f4;
+  --cc-muted: #a4a8b1;
+  --cc-dim: #777d88;
+  --cc-accent: #c4d0ff;
 }
 
 .command-layout {
@@ -2995,5 +2999,38 @@ details[open] .activity-chevron {
   .task-toast {
     right: 12px;
     bottom: 12px;
+  }
+}
+
+/* The compact layout keeps navigation and inspection as drawers. It must
+ * never reserve a permanent rail or a blank inspector column. */
+@media (max-width: 1279px) {
+  .command-layout,
+  .command-layout.inspector-open {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .desktop-navigation-panel {
+    display: none !important;
+  }
+
+  .nav-toggle {
+    display: inline-grid !important;
+  }
+}
+
+@media (max-width: 959px) {
+  .command-layout,
+  .command-layout.inspector-open {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .task-header {
+    padding-inline: 20px;
+  }
+
+  .chat-area,
+  .composer {
+    padding-inline: 16px;
   }
 }
