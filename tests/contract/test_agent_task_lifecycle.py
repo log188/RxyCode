@@ -23,7 +23,7 @@ from appserver.agent_task import (
     LifecycleState,
     ResumeError,
 )
-from appserver.eventbus import AgentEvent, AppendOnlyLog, EventBus
+from appserver.eventbus import BusEvent, AppendOnlyLog, EventBus
 
 
 class FakeRuntime:
@@ -79,8 +79,8 @@ def _make_task(
     )
 
 
-async def _drain(sub, count: int, timeout: float = 2.0) -> list[AgentEvent]:
-    got: list[AgentEvent] = []
+async def _drain(sub, count: int, timeout: float = 2.0) -> list[BusEvent]:
+    got: list[BusEvent] = []
     for _ in range(count):
         try:
             got.append(await asyncio.wait_for(sub.queue.get(), timeout=timeout))
@@ -89,7 +89,7 @@ async def _drain(sub, count: int, timeout: float = 2.0) -> list[AgentEvent]:
     return got
 
 
-async def _events(bus: EventBus, count: int, timeout: float = 2.0) -> list[AgentEvent]:
+async def _events(bus: EventBus, count: int, timeout: float = 2.0) -> list[BusEvent]:
     sub = await bus.subscribe("test", "event/*")
     return await _drain(sub, count, timeout)
 

@@ -19,7 +19,7 @@ import pytest
 
 from appserver.eventbus import (
     AppendOnlyLog,
-    AgentEvent,
+    BusEvent,
     EventBus,
     ReplayUnavailableError,
 )
@@ -34,9 +34,9 @@ def _require_replay() -> None:
         pytest.skip("replay unavailable: RXYCODE_EVENTBUS_LOG=0")
 
 
-def _event(method: str, agent_id: str, session_id: str = "s", **extra) -> AgentEvent:
+def _event(method: str, agent_id: str, session_id: str = "s", **extra) -> BusEvent:
     payload = extra.pop("payload", {"k": "v"})
-    return AgentEvent(
+    return BusEvent(
         method=method,
         session_id=session_id,
         agent_id=agent_id,
@@ -50,8 +50,8 @@ def _bus(persist: bool | None = None, max_entries: int = 100_000) -> EventBus:
     return EventBus(log)
 
 
-async def _drain(sub, limit: int = 100) -> list[AgentEvent]:
-    events: list[AgentEvent] = []
+async def _drain(sub, limit: int = 100) -> list[BusEvent]:
+    events: list[BusEvent] = []
     for _ in range(limit):
         try:
             events.append(sub.queue.get_nowait())
@@ -60,8 +60,8 @@ async def _drain(sub, limit: int = 100) -> list[AgentEvent]:
     return events
 
 
-async def _collect(sub, count: int, timeout: float = 2.0) -> list[AgentEvent]:
-    events: list[AgentEvent] = []
+async def _collect(sub, count: int, timeout: float = 2.0) -> list[BusEvent]:
+    events: list[BusEvent] = []
     for _ in range(count):
         try:
             events.append(
@@ -301,7 +301,7 @@ async def test_async_iterator_is_paged_and_resumable():
     for i in range(7):
         await bus.publish(_event("event/agent_started", "A", session_id=f"n{i}"))
 
-    it: AsyncIterator[AgentEvent] = bus.replay(after_seq=0, page_size=3)
+    it: AsyncIterator[BusEvent] = bus.replay(after_seq=0, page_size=3)
     first = await it.__anext__()
     assert first.seq == 1
     rest = [e async for e in it]

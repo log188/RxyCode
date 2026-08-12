@@ -2,7 +2,7 @@
 
 Every session worker process owns one EventBus (process-local singleton;
 sessions stay isolated per the PHASE-C worker model).  Agents publish
-``AgentEvent`` records; subscribers match by ``pattern``; the event log is
+``BusEvent`` records; subscribers match by ``pattern``; the event log is
 append-only with a rolling retention window; ``replay`` is a paged iterator
 over the log (OpenHands ``resend`` semantics).
 
@@ -42,10 +42,10 @@ class ReplayUnavailableError(RuntimeError):
 
 
 @dataclass
-class AgentEvent:
+class BusEvent:
     """Minimal runtime event carried by the bus.
 
-    The protocol-layer ``AgentEvent`` (Phase E4, ``protocol/``) will carry the
+    The protocol-layer ``BusEvent`` (Phase E4, ``protocol/``) will carry the
     ten frozen ``event/agent_*`` methods; this runtime object exposes the
     fields the bus itself needs.  ``seq`` is assigned by the bus on publish
     (append-only order credential).
@@ -67,7 +67,7 @@ class Sub:
 
     subscriber: str
     pattern: str
-    queue: asyncio.Queue[AgentEvent] = field(
+    queue: asyncio.Queue[BusEvent] = field(
         default_factory=lambda: asyncio.Queue(1024)
     )
     dropped: bool = False
@@ -100,7 +100,7 @@ class AppendOnlyLog:
         if persist is None:
             persist = eventbus_log_enabled()
         self._persist = persist
-        self._entries: deque[AgentEvent] = deque()
+        self._entries: deque[BusEvent] = deque()
         self._bytes = 0
 
     @property
@@ -114,7 +114,7 @@ class AppendOnlyLog:
             return 0
         return self._entries[0].seq
 
-    async def append(self, event: AgentEvent) -> None:
+    async def append(self, event: BusEvent) -> None:
         """Persist the event (retaining the rollover window)."""
         if not self._persist:
             return
@@ -131,7 +131,7 @@ class AppendOnlyLog:
 
     async def iter_from(
         self, after_seq: int, page_size: int = 200
-    ) -> AsyncIterator[AgentEvent]:
+    ) -> AsyncIterator[BusEvent]:
         """Yield retained events with ``seq > after_seq`` in paged batches.
 
         Raises ``ReplayUnavailableError`` when the log is disabled or
@@ -148,7 +148,7 @@ class AppendOnlyLog:
             raise ReplayUnavailableError(
                 f"seq {after_seq} predates log rollover point (earliest {first})"
             )
-        page: list[AgentEvent] = []
+        page: list[BusEvent] = []
         for event in self._entries:
             if event.seq <= after_seq:
                 continue
@@ -162,7 +162,7 @@ class AppendOnlyLog:
                 yield item
 
 
-def _approx_size(event: AgentEvent) -> int:
+def _approx_size(event: BusEvent) -> int:
     """Cheap byte estimate for rollover budgeting (not exact serialization)."""
     return (
         len(event.method)
@@ -219,7 +219,7 @@ class EventBus:
         if sub in self._subs:
             self._subs.remove(sub)
 
-    async def publish(self, event: AgentEvent) -> None:
+    async def publish(self, event: BusEvent) -> None:
         """Serialized publish: seq → log → notify inside one lock (EB6).
 
         Routing: ``send_to`` set and not ``*`` delivers only to subscriptions
@@ -247,7 +247,7 @@ class EventBus:
                     event.seq,
                 )
 
-    def _deliver(self, event: AgentEvent) -> bool:
+    def _deliver(self, event: BusEvent) -> bool:
         """Fan out to matching subscriptions; returns whether anyone matched.
 
         Routed events (``send_to`` set and not ``*``) are delivered against
@@ -278,7 +278,7 @@ class EventBus:
 
     async def replay(
         self, after_seq: int, page_size: int = 200
-    ) -> AsyncIterator[AgentEvent]:
+    ) -> AsyncIterator[BusEvent]:
         """Replay retained events by seq (paged; OpenHands resend semantics)."""
         async for event in self._log.iter_from(after_seq, page_size):
             yield event

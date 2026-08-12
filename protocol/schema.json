@@ -518,6 +518,138 @@
       "title": "CredentialsDeleteRequest",
       "type": "object"
     },
+    "AgentEvent": {
+      "description": "Runtime agent event (Phase E4; E-layer bus carries these).\n\nField matrix (PHASE-E §4.1, authoritative):\n  method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason\n  ----------------------|--------------- |------------|--------|--------|--------|---------------\n  agent_started         | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_done            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid\n  agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_routed          | **req          | opt        | req*   | req*   | opt    | **req\n  agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid\n\n``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);\nthe schema compatibility layer allows them to be absent (historical\nevents).  ``**req`` = hard requirement at this layer; ``forbid`` =\ncarrying the field is rejected.  ``tokens_used``/``budget_used`` are\nstrict ints (bool/str/float rejected) and non-negative cumulative\nsnapshots.  ``source`` distinguishes bridge-replayed events; unknown\nvalues are rejected on construction and deserialization.",
+      "properties": {
+        "method": {
+          "enum": [
+            "event/agent_started",
+            "event/agent_tool",
+            "event/agent_progress",
+            "event/agent_done",
+            "event/agent_paused",
+            "event/agent_cancelled",
+            "event/agent_budget_exceeded",
+            "event/agent_denied",
+            "event/agent_routed",
+            "event/agent_team_created"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        },
+        "seq": {
+          "title": "Seq",
+          "type": "integer"
+        },
+        "experiment_tag": {
+          "anyOf": [
+            {
+              "enum": [
+                "E0",
+                "E1",
+                "E2"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Experiment Tag"
+        },
+        "cache_miss_warning": {
+          "default": false,
+          "title": "Cache Miss Warning",
+          "type": "boolean"
+        },
+        "tokens_used": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tokens Used"
+        },
+        "budget_used": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budget Used"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "enum": [
+                "internal",
+                "bridge"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "routing_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Routing Reason"
+        }
+      },
+      "required": [
+        "method",
+        "session_id",
+        "agent_id",
+        "seq"
+      ],
+      "title": "AgentEvent",
+      "type": "object"
+    },
     "MessageDelta": {
       "description": "SSE ``type: token`` via ``StreamTUI._buffer(\"token\")`` / flush (api_server.py).",
       "properties": {
@@ -1339,6 +1471,9 @@
     },
     "ProtocolNotification": {
       "oneOf": [
+        {
+          "$ref": "#/$defs/AgentEvent"
+        },
         {
           "$ref": "#/$defs/MessageDelta"
         },

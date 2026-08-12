@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Any
 
-from .eventbus import AgentEvent, EventBus
+from .eventbus import BusEvent, EventBus
 
 RunTarget = Callable[[str], Awaitable[Any]]
 
@@ -97,7 +97,7 @@ class AgentTask:
         """IDLE -> BOOTSTRAP -> RUNNING; starts the main task."""
         await self._set_state(LifecycleState.BOOTSTRAP)
         await self._bus.publish(
-            AgentEvent(
+            BusEvent(
                 method="event/agent_started",
                 session_id="",
                 agent_id=self.agent_id,
@@ -132,7 +132,7 @@ class AgentTask:
             await asyncio.gather(main_task, return_exceptions=True)
         await self._set_state(LifecycleState.PAUSED)
         await self._bus.publish(
-            AgentEvent(
+            BusEvent(
                 method="event/agent_paused",
                 session_id="",
                 agent_id=self.agent_id,
@@ -156,7 +156,7 @@ class AgentTask:
             main_task.cancel()
             await asyncio.gather(main_task, return_exceptions=True)
         await self._bus.publish(
-            AgentEvent(
+            BusEvent(
                 method="event/agent_cancelled",
                 session_id="",
                 agent_id=self.agent_id,
@@ -235,7 +235,7 @@ class AgentTask:
         else:
             await self._set_state(LifecycleState.DONE)
             await self._bus.publish(
-                AgentEvent(
+                BusEvent(
                     method="event/agent_done",
                     session_id="",
                     agent_id=self.agent_id,
@@ -263,7 +263,7 @@ class AgentTask:
         else:
             await self._set_state(LifecycleState.DONE)
             await self._bus.publish(
-                AgentEvent(
+                BusEvent(
                     method="event/agent_done",
                     session_id="",
                     agent_id=self.agent_id,

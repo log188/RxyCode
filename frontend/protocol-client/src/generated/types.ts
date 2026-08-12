@@ -87,6 +87,7 @@ export type ApiKey3 = string;
 export type Method16 = "credentials/delete";
 export type Id4 = string;
 export type ProtocolNotification =
+  | AgentEvent
   | MessageDelta
   | ProgressUpdate
   | ReasoningSnapshot
@@ -102,51 +103,72 @@ export type ProtocolNotification =
   | RunComplete
   | JobStatusUpdate
   | ServerHeartbeat;
-export type Method17 = "event/message_delta";
+export type Method17 =
+  | "event/agent_started"
+  | "event/agent_tool"
+  | "event/agent_progress"
+  | "event/agent_done"
+  | "event/agent_paused"
+  | "event/agent_cancelled"
+  | "event/agent_budget_exceeded"
+  | "event/agent_denied"
+  | "event/agent_routed"
+  | "event/agent_team_created";
 export type SessionId4 = string;
-export type Text1 = string;
-export type Method18 = "event/progress";
+export type AgentId = string;
+export type RunId = string | null;
+export type Seq = number;
+export type ExperimentTag = ("E0" | "E1" | "E2") | null;
+export type CacheMissWarning = boolean;
+export type TokensUsed = number | null;
+export type BudgetUsed = number | null;
+export type Source = ("internal" | "bridge") | null;
+export type RoutingReason = string | null;
+export type Method18 = "event/message_delta";
 export type SessionId5 = string;
-export type Text2 = string;
-export type Method19 = "event/reasoning_snapshot";
+export type Text1 = string;
+export type Method19 = "event/progress";
 export type SessionId6 = string;
+export type Text2 = string;
+export type Method20 = "event/reasoning_snapshot";
+export type SessionId7 = string;
 export type Text3 = string;
 export type Snapshot = boolean;
-export type Method20 = "event/plan";
-export type SessionId7 = string;
-export type Steps = string[];
-export type Method21 = "event/step";
+export type Method21 = "event/plan";
 export type SessionId8 = string;
+export type Steps = string[];
+export type Method22 = "event/step";
+export type SessionId9 = string;
 export type Index = number;
 export type Total = number;
 export type Text4 = string;
-export type Method22 = "event/task_started";
-export type SessionId9 = string;
+export type Method23 = "event/task_started";
+export type SessionId10 = string;
 export type TaskId = string;
 export type Title = string;
-export type Method23 = "event/tool_begin";
-export type SessionId10 = string;
+export type Method24 = "event/tool_begin";
+export type SessionId11 = string;
 export type CallId = string;
 export type ToolName = string;
-export type Method24 = "event/tool_end";
-export type SessionId11 = string;
+export type Method25 = "event/tool_end";
+export type SessionId12 = string;
 export type CallId1 = string;
 export type Ok = boolean;
 export type Summary = string;
 export type Status = string | null;
-export type Method25 = "event/task_complete";
-export type SessionId12 = string;
+export type Method26 = "event/task_complete";
+export type SessionId13 = string;
 export type TaskId1 = string;
 export type Ok1 = boolean;
-export type Method26 = "event/token_usage";
-export type SessionId13 = string;
+export type Method27 = "event/token_usage";
+export type SessionId14 = string;
 export type InputTokens = number;
 export type OutputTokens = number;
 export type CacheHitTokens = number;
 export type CacheHitRate = number;
-export type Method27 = "event/final";
-export type SessionId14 = string;
-export type RunId = string;
+export type Method28 = "event/final";
+export type SessionId15 = string;
+export type RunId1 = string;
 export type Text5 = string;
 export type Thinking = string | null;
 export type InputTokens1 = number | null;
@@ -154,33 +176,33 @@ export type OutputTokens1 = number | null;
 export type CacheHitTokens1 = number | null;
 export type CacheHitRate1 = number | null;
 export type SessionSchemaVersion = number | null;
-export type Method28 = "event/error";
-export type SessionId15 = string;
-export type Message = string;
-export type RunId1 = string | null;
-export type Status1 = ("succeeded" | "failed" | "cancelled" | "timed_out") | null;
-export type Method29 = "event/done";
+export type Method29 = "event/error";
 export type SessionId16 = string;
-export type RunId2 = string;
-export type Status2 = "succeeded" | "failed" | "cancelled" | "timed_out";
-export type Method30 = "event/job_status";
+export type Message = string;
+export type RunId2 = string | null;
+export type Status1 = ("succeeded" | "failed" | "cancelled" | "timed_out") | null;
+export type Method30 = "event/done";
 export type SessionId17 = string;
+export type RunId3 = string;
+export type Status2 = "succeeded" | "failed" | "cancelled" | "timed_out";
+export type Method31 = "event/job_status";
+export type SessionId18 = string;
 export type JobId = string;
 export type State = "submitted" | "running" | "failed";
-export type Method31 = "event/server_heartbeat";
+export type Method32 = "event/server_heartbeat";
 export type UptimeSeconds = number;
 export type ActiveJobs = number;
 export type Degraded = boolean;
 export type ServerRequestMessage = ApprovalRequest | ApprovalResponse | QuestionRequest | QuestionResponse;
-export type Method32 = "approval/request";
-export type SessionId18 = string;
+export type Method33 = "approval/request";
+export type SessionId19 = string;
 export type RequestId = string;
 export type RiskLevel = "READ" | "WRITE" | "DANGER";
 export type Action = string;
 export type RequestId1 = string;
 export type Decision = "approved" | "rejected" | "allow_once" | "always_allow_level";
-export type Method33 = "question/request";
-export type SessionId19 = string;
+export type Method34 = "question/request";
+export type SessionId20 = string;
 export type QuestionId = string;
 export type Question = string;
 export type Header = string;
@@ -393,11 +415,54 @@ export interface CredentialsDeleteRequest {
   [k: string]: unknown;
 }
 /**
+ * Runtime agent event (Phase E4; E-layer bus carries these).
+ *
+ * Field matrix (PHASE-E §4.1, authoritative):
+ *   method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason
+ *   ----------------------|--------------- |------------|--------|--------|--------|---------------
+ *   agent_started         | opt            | opt        | req*   | req*   | opt    | forbid
+ *   agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid
+ *   agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid
+ *   agent_done            | opt            | opt        | req*   | req*   | opt    | forbid
+ *   agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid
+ *   agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid
+ *   agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid
+ *   agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid
+ *   agent_routed          | **req          | opt        | req*   | req*   | opt    | **req
+ *   agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid
+ *
+ * ``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);
+ * the schema compatibility layer allows them to be absent (historical
+ * events).  ``**req`` = hard requirement at this layer; ``forbid`` =
+ * carrying the field is rejected.  ``tokens_used``/``budget_used`` are
+ * strict ints (bool/str/float rejected) and non-negative cumulative
+ * snapshots.  ``source`` distinguishes bridge-replayed events; unknown
+ * values are rejected on construction and deserialization.
+ */
+export interface AgentEvent {
+  method: Method17;
+  session_id: SessionId4;
+  agent_id: AgentId;
+  run_id?: RunId;
+  payload?: Payload;
+  seq: Seq;
+  experiment_tag?: ExperimentTag;
+  cache_miss_warning?: CacheMissWarning;
+  tokens_used?: TokensUsed;
+  budget_used?: BudgetUsed;
+  source?: Source;
+  routing_reason?: RoutingReason;
+  [k: string]: unknown;
+}
+export interface Payload {
+  [k: string]: unknown;
+}
+/**
  * SSE ``type: token`` via ``StreamTUI._buffer("token")`` / flush (api_server.py).
  */
 export interface MessageDelta {
-  method?: Method17;
-  session_id: SessionId4;
+  method?: Method18;
+  session_id: SessionId5;
   text: Text1;
   [k: string]: unknown;
 }
@@ -405,8 +470,8 @@ export interface MessageDelta {
  * SSE ``type: progress`` from ``StreamTUI.write_progress`` (api_server.py).
  */
 export interface ProgressUpdate {
-  method?: Method18;
-  session_id: SessionId5;
+  method?: Method19;
+  session_id: SessionId6;
   text: Text2;
   [k: string]: unknown;
 }
@@ -414,8 +479,8 @@ export interface ProgressUpdate {
  * SSE ``type: reasoning`` with ``snapshot: true`` from ``StreamTUI._emit_thinking_snapshot`` (api_server.py).
  */
 export interface ReasoningSnapshot {
-  method?: Method19;
-  session_id: SessionId6;
+  method?: Method20;
+  session_id: SessionId7;
   text: Text3;
   snapshot?: Snapshot;
   [k: string]: unknown;
@@ -424,8 +489,8 @@ export interface ReasoningSnapshot {
  * SSE ``type: plan`` from ``StreamTUI.write_plan`` (api_server.py).
  */
 export interface PlanUpdate {
-  method?: Method20;
-  session_id: SessionId7;
+  method?: Method21;
+  session_id: SessionId8;
   steps: Steps;
   [k: string]: unknown;
 }
@@ -433,8 +498,8 @@ export interface PlanUpdate {
  * SSE ``type: step`` from ``StreamTUI.write_step`` (api_server.py).
  */
 export interface StepProgress {
-  method?: Method21;
-  session_id: SessionId8;
+  method?: Method22;
+  session_id: SessionId9;
   index: Index;
   total: Total;
   text: Text4;
@@ -444,8 +509,8 @@ export interface StepProgress {
  * Structured task boundary for LangGraph runs (future emit from chat worker).
  */
 export interface TaskStarted {
-  method?: Method22;
-  session_id: SessionId9;
+  method?: Method23;
+  session_id: SessionId10;
   task_id: TaskId;
   title: Title;
   [k: string]: unknown;
@@ -454,8 +519,8 @@ export interface TaskStarted {
  * SSE ``type: tool_call`` from ``StreamTUI.write_tool_call`` (api_server.py).
  */
 export interface ToolBegin {
-  method?: Method23;
-  session_id: SessionId10;
+  method?: Method24;
+  session_id: SessionId11;
   call_id: CallId;
   tool_name: ToolName;
   arguments?: Arguments;
@@ -468,8 +533,8 @@ export interface Arguments {
  * SSE ``type: tool_result`` from ``StreamTUI.write_tool_result`` (api_server.py).
  */
 export interface ToolEnd {
-  method?: Method24;
-  session_id: SessionId11;
+  method?: Method25;
+  session_id: SessionId12;
   call_id: CallId1;
   ok: Ok;
   summary: Summary;
@@ -480,8 +545,8 @@ export interface ToolEnd {
  * Structured task completion paired with ``TaskStarted``.
  */
 export interface TaskComplete {
-  method?: Method25;
-  session_id: SessionId12;
+  method?: Method26;
+  session_id: SessionId13;
   task_id: TaskId1;
   ok: Ok1;
   [k: string]: unknown;
@@ -490,8 +555,8 @@ export interface TaskComplete {
  * Token deltas from chat ``final`` SSE payload fields (api_server.py queue).
  */
 export interface TokenUsage {
-  method?: Method26;
-  session_id: SessionId13;
+  method?: Method27;
+  session_id: SessionId14;
   input_tokens: InputTokens;
   output_tokens: OutputTokens;
   cache_hit_tokens?: CacheHitTokens;
@@ -502,9 +567,9 @@ export interface TokenUsage {
  * SSE ``type: final`` payload in ``/chat/stream`` worker (api_server.py).
  */
 export interface FinalAnswer {
-  method?: Method27;
-  session_id: SessionId14;
-  run_id: RunId;
+  method?: Method28;
+  session_id: SessionId15;
+  run_id: RunId1;
   text: Text5;
   thinking?: Thinking;
   input_tokens?: InputTokens1;
@@ -518,10 +583,10 @@ export interface FinalAnswer {
  * SSE ``type: error`` from ``StreamTUI.write_error`` and chat worker (api_server.py).
  */
 export interface ErrorNotification {
-  method?: Method28;
-  session_id: SessionId15;
+  method?: Method29;
+  session_id: SessionId16;
   message: Message;
-  run_id?: RunId1;
+  run_id?: RunId2;
   status?: Status1;
   [k: string]: unknown;
 }
@@ -529,9 +594,9 @@ export interface ErrorNotification {
  * SSE ``type: done`` from chat stream teardown (api_server.py).
  */
 export interface RunComplete {
-  method?: Method29;
-  session_id: SessionId16;
-  run_id: RunId2;
+  method?: Method30;
+  session_id: SessionId17;
+  run_id: RunId3;
   status: Status2;
   [k: string]: unknown;
 }
@@ -539,8 +604,8 @@ export interface RunComplete {
  * Background job state for watchdog / appserver (submitted|running|failed).
  */
 export interface JobStatusUpdate {
-  method?: Method30;
-  session_id: SessionId17;
+  method?: Method31;
+  session_id: SessionId18;
   job_id: JobId;
   state: State;
   [k: string]: unknown;
@@ -549,7 +614,7 @@ export interface JobStatusUpdate {
  * Periodic appserver liveness signal (T4 watchdog).
  */
 export interface ServerHeartbeat {
-  method?: Method31;
+  method?: Method32;
   uptime_seconds: UptimeSeconds;
   active_jobs: ActiveJobs;
   degraded: Degraded;
@@ -559,8 +624,8 @@ export interface ServerHeartbeat {
  * Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.
  */
 export interface ApprovalRequest {
-  method?: Method32;
-  session_id: SessionId18;
+  method?: Method33;
+  session_id: SessionId19;
   request_id: RequestId;
   risk_level: RiskLevel;
   action: Action;
@@ -582,8 +647,8 @@ export interface ApprovalResponse {
  * Maps ``QuestionRequest.to_event()`` in core/question.py.
  */
 export interface QuestionRequest {
-  method?: Method33;
-  session_id: SessionId19;
+  method?: Method34;
+  session_id: SessionId20;
   question_id: QuestionId;
   question: Question;
   header?: Header;
