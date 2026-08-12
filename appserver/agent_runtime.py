@@ -10,6 +10,7 @@ uses.  See PHASE-E §4.3 / §5 E3.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
@@ -18,7 +19,7 @@ from types import MappingProxyType
 from typing import Any, Literal
 
 from .agent_task import AgentTask, LifecycleState
-from .eventbus import AgentEvent, EventBus
+from .eventbus import BusEvent, EventBus
 
 RunTarget = Callable[[str, object | None], Awaitable[Any]]
 
@@ -29,6 +30,23 @@ class BudgetExceededError(asyncio.CancelledError):
     The CANCELLED state transition is performed by the runtime's breaker
     path (or an external ``stop``); this error is only the stop signal.
     """
+
+
+class ParallelLimitError(RuntimeError):
+    """Raised when a spawn would exceed ``RXYCODE_AGENT_PARALLEL``.
+
+    The denied spawn publishes ``event/agent_denied`` before raising (E5).
+    """
+
+
+def agent_parallel_limit() -> int:
+    """``RXYCODE_AGENT_PARALLEL`` (default 1 = legacy serial)."""
+    raw = os.environ.get("RXYCODE_AGENT_PARALLEL", "1").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 1
+    return value if value >= 1 else 1
 
 
 # ---------------------------------------------------------------------------
@@ -141,11 +159,17 @@ class AgentRuntime:
         total_tool_slots: int = 16,
         budget_total: int | None = None,
         run_factory: Callable[[AgentConfig], RunTarget] | None = None,
+        parallel_limit: int | None = None,
+        cancel_storm_limit: int = 4,
     ) -> None:
         self._bus = bus
         self._sem_global = asyncio.Semaphore(max(1, int(total_tool_slots)))
         self._budget_total = budget_total
         self._run_factory = run_factory
+        self._parallel_limit = (
+            parallel_limit if parallel_limit is not None else agent_parallel_limit()
+        )
+        self._cancel_slots = asyncio.Semaphore(max(1, int(cancel_storm_limit)))
         self.agents: dict[str, AgentTask] = {}
         self.configs: dict[str, AgentConfig] = {}
         self.quotas: dict[str, asyncio.Semaphore] = {}
@@ -157,10 +181,29 @@ class AgentRuntime:
     # -- lifecycle --------------------------------------------------------
 
     async def spawn(self, config: AgentConfig) -> AgentTask:
-        """Create + start an agent; rejects duplicate ids and bad namespaces."""
+        """Create + start an agent; rejects duplicate ids and bad namespaces.
+
+        E5: when the running-agent count already equals
+        ``RXYCODE_AGENT_PARALLEL`` (default 1 = legacy serial), the spawn is
+        denied: ``event/agent_denied`` is published and ParallelLimitError
+        raised (the caller must not treat this as a runtime failure).
+        """
         if config.agent_id in self.agents:
             raise AssertionError(f"agent {config.agent_id} already spawned")
         validate_cache_namespace(config.cache_namespace)  # raises ValueError
+        if len(self.agents) >= self._parallel_limit:
+            await self._bus.publish(
+                BusEvent(
+                    method="event/agent_denied",
+                    session_id="",
+                    agent_id=config.agent_id,
+                    payload={"reason": "parallel_limit"},
+                )
+            )
+            raise ParallelLimitError(
+                f"agent {config.agent_id} denied: parallel limit "
+                f"{self._parallel_limit} reached"
+            )
 
         sem = asyncio.Semaphore(max(1, int(config.quota)))
         raw_target = (
@@ -178,17 +221,22 @@ class AgentRuntime:
         """Cancel fan-out: interrupt (state -> CANCELLED, real cancel,
         tool-process cascade) and drop the registry entry.  Agents that
         already reached a terminal state are just removed (stopping is
-        idempotent)."""
-        task = self.agents.pop(agent_id, None)
-        if task is None:
-            return
-        if task.state in (
-            LifecycleState.DONE,
-            LifecycleState.FAILED,
-            LifecycleState.CANCELLED,
-        ):
-            return
-        await task.interrupt(cascade_tools=True)
+        idempotent).
+
+        E5: cancel storms are rate-limited — at most ``cancel_storm_limit``
+        fan-outs run at the same moment, the rest queue (§7 security).
+        """
+        async with self._cancel_slots:
+            task = self.agents.pop(agent_id, None)
+            if task is None:
+                return
+            if task.state in (
+                LifecycleState.DONE,
+                LifecycleState.FAILED,
+                LifecycleState.CANCELLED,
+            ):
+                return
+            await task.interrupt(cascade_tools=True)
 
     # -- quotas -----------------------------------------------------------
 
@@ -238,7 +286,7 @@ class AgentRuntime:
         if used + est <= budget:
             return
         await self._bus.publish(
-            AgentEvent(
+            BusEvent(
                 method="event/agent_budget_exceeded",
                 session_id="",
                 agent_id=agent_id,
@@ -295,7 +343,7 @@ class AgentRuntime:
                 if task is not None:
                     await task._set_state(LifecycleState.CANCELLED)
                     await self._bus.publish(
-                        AgentEvent(
+                        BusEvent(
                             method="event/agent_cancelled",
                             session_id="",
                             agent_id=config.agent_id,
