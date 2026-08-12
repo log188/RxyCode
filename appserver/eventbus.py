@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import itertools
+import json
 import logging
 import os
 from collections import deque
@@ -161,11 +162,19 @@ class AppendOnlyLog:
             page.append(event)
             if len(page) >= page_size:
                 for item in page:
-                    yield item
+                    yield copy.deepcopy(item)  # replay never exposes the log fact
                 page = []
         if page:
             for item in page:
-                yield item
+                yield copy.deepcopy(item)
+
+
+def _serialized_payload_size(payload: dict[str, Any]) -> int:
+    """Exact wire size of the payload (EB8: serialized byte count)."""
+    try:
+        return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _approx_size(event: BusEvent) -> int:
@@ -236,10 +245,10 @@ class EventBus:
         rejected (data plane must go through explicit delegation), so a
         contract breach fails loudly instead of growing the log silently.
         """
-        if len(str(event.payload)) > MAX_PAYLOAD_BYTES:
+        if _serialized_payload_size(event.payload) > MAX_PAYLOAD_BYTES:
             raise ValueError(
-                f"event payload exceeds {MAX_PAYLOAD_BYTES} bytes (EB8: "
-                "data plane must use explicit delegation, not bus events)"
+                f"event payload exceeds {MAX_PAYLOAD_BYTES} serialized bytes "
+                "(EB8: data plane must use explicit delegation, not bus events)"
             )
         async with self._publish_lock:
             event.seq = next(self._seq)

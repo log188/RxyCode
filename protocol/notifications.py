@@ -92,7 +92,7 @@ class AgentEvent(BaseModel):
     cache_miss_warning: bool = False
     tokens_used: Annotated[int, Strict()] | None = None
     budget_used: Annotated[int, Strict()] | None = None
-    source: Literal["internal", "bridge"] = "internal"
+    source: Literal["internal", "bridge"] | None = "internal"
     routing_reason: str | None = None
 
     @model_validator(mode="after")

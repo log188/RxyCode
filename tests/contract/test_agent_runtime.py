@@ -144,6 +144,24 @@ def test_agent_config_new_fields_present_when_set():
     assert dumped["mechanical"] is True
 
 
+def test_agent_config_golden_serialization_byte_identical():
+    old_cfg = AgentConfig(
+        agent_id="A", model="deepseek/deepseek-v4",
+        tools=("read", "bash"), quota=3, budget_tokens=200_000,
+        memory_scope="own",
+    )
+    new_cfg = AgentConfig(
+        agent_id="A", model="deepseek/deepseek-v4",
+        tools=("read", "bash"), quota=3, budget_tokens=200_000,
+        memory_scope="own", cache_namespace=None, mechanical=False,
+    )
+    import json as _json
+
+    old_bytes = _json.dumps(old_cfg.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+    new_bytes = _json.dumps(new_cfg.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+    assert old_bytes == new_bytes  # byte-for-byte identical (PHASE-E §4.3 golden)
+
+
 def test_agent_config_round_trip_stable():
     first = AgentConfig(agent_id="A", tools=(), cache_namespace="team-a")
     second = AgentConfig(**first.to_dict())

@@ -288,6 +288,38 @@ async def test_seq_never_rewinds_across_rollover():
 
 
 @pytest.mark.asyncio
+async def test_replay_and_delivery_never_expose_mutable_log_fact():
+    bus = _bus()
+    sub = await bus.subscribe("system", "event/*")
+    event = _event("event/agent_started", "A")
+    await bus.publish(event)
+
+    # mutating the publisher's own object after publish must not change the log
+    event.payload["mutated"] = True
+    replayed = [e async for e in bus.replay(after_seq=0)]
+    assert "mutated" not in replayed[0].payload
+
+    # mutating a delivered copy must not change the log either
+    delivered = await _drain(sub)
+    delivered[0].payload["mutated2"] = True
+    replayed2 = [e async for e in bus.replay(after_seq=0)]
+    assert "mutated2" not in replayed2[0].payload
+    assert "mutated" not in replayed2[0].payload
+
+
+@pytest.mark.asyncio
+async def test_oversized_payload_rejected_eb8():
+    # EB8: byte budget is the serialized wire size, not len(str(dict))
+    import json as _json
+
+    bus = _bus()
+    big = {"blob": "你好" * 20000}  # multibyte: str-len would undercount
+    assert len(_json.dumps(big, ensure_ascii=False).encode("utf-8")) > 60000
+    with pytest.raises(ValueError, match="EB8"):
+        await bus.publish(_event("event/agent_progress", "A", payload=big))
+
+
+@pytest.mark.asyncio
 async def test_routed_with_no_target_subscriber_dead_letters_even_with_monitor(caplog):
     bus = _bus()
     monitor = await bus.subscribe("monitor", "event/*")

@@ -221,6 +221,20 @@ def test_source_missing_field_deserializes_to_internal():
     assert AgentEvent(**raw).source == "internal"
 
 
+def test_source_object_layer_three_states():
+    # 缺失 -> 默认 internal（签名一致）
+    assert _evt("event/agent_started").source == "internal"
+    # 显式 None 可构造（对象层三态之一）
+    assert _evt("event/agent_started", source=None).source is None
+    # bridge 枚举
+    assert _evt("event/agent_started", source="bridge").source == "bridge"
+    # 线协议：None -> 省略；internal/bridge -> 枚举输出
+    wire_none = _evt("event/agent_started", source=None).model_dump(exclude_none=True)
+    assert "source" not in wire_none
+    wire_internal = _evt("event/agent_started").model_dump(exclude_none=True)
+    assert wire_internal["source"] == "internal"
+
+
 def test_source_unknown_value_rejected():
     with pytest.raises(ValidationError):
         _evt("event/agent_started", source="external")
