@@ -29,6 +29,20 @@ describe("ProtocolClient", () => {
     await expect(responsePromise).resolves.toEqual({ ok: true });
   });
 
+  test("pending request diagnostics expose only a count", async () => {
+    const { client, outbound } = createHarness();
+    const responsePromise = client.request("session/new", {
+      workspace_root: "D:/repo",
+    });
+    expect(client.pendingRequestCount).toBe(1);
+    const sent = JSON.parse(outbound[0]!);
+    await client.handleLine(
+      JSON.stringify({ jsonrpc: "2.0", id: sent.id, result: {} }),
+    );
+    await responsePromise;
+    expect(client.pendingRequestCount).toBe(0);
+  });
+
   test("notifications without id", async () => {
     const { client } = createHarness();
     const seen: Array<{ method: string; params: unknown }> = [];

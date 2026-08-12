@@ -58,6 +58,9 @@ async def test_session_prompt_emits_final_answer():
     final = next(item for item in emitted if isinstance(item, FinalAnswer))
     assert final.text == "hello"
     assert final.run_id == "run-1"
+    assert final.input_tokens is None
+    assert final.output_tokens is None
+    assert final.reporting_status == "not_reported"
 
 
 @pytest.mark.asyncio

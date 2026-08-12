@@ -14,6 +14,7 @@ from core.subagents.modes import (
     build_capability,
     get_subagent_config,
     reset_subagent_config,
+    subagent_config_from_env,
     set_subagent_config,
     validate_primary_entry,
     validate_subagent_entry,
@@ -58,6 +59,18 @@ class TestFeatureFlagDefaults:
         assert cap.task is False
         assert cap.mention is False
         assert cap.child_tasks is False
+
+    def test_environment_flags_require_explicit_master_enable(self, monkeypatch):
+        monkeypatch.setenv("RXYCODE_SUBAGENTS_TASK", "1")
+        assert subagent_config_from_env().flags.subagents_task is False
+
+        monkeypatch.setenv("RXYCODE_SUBAGENTS", "true")
+        monkeypatch.setenv("RXYCODE_SUBAGENTS_MENTION", "yes")
+        config = subagent_config_from_env()
+        assert config.flags.subagents_enabled is True
+        assert config.flags.subagents_task is True
+        assert config.flags.subagents_mention is True
+        assert config.flags.subagents_child_tasks is False
 
 
 # ============================================================================

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel, register_tool_risk
+
 from RxyCode.RxyCode1_1_0.tools.read import read_tool
 from RxyCode.RxyCode1_1_0.tools.write import write_tool
 from RxyCode.RxyCode1_1_0.tools.edit import edit_tool
@@ -98,7 +100,12 @@ def register_builtin_tools(
 
     # Isolated subagent dispatch tool (name `task`) — ONLY when subagents on
     if subagents_enabled:
-        registry.register(subagent_task_tool, risk="write")
+        # Dispatch itself does not write the workspace. The manager enforces
+        # permission.task and child tools cross their own approval gates.
+        register_tool_risk("task", RiskLevel.READ)
+        registry.register(subagent_task_tool, risk="read")
+    else:
+        register_tool_risk("task", RiskLevel.WRITE)
 
     registry.register(download_skill_tool, risk="danger")
     registry.register(download_mcp_tool, risk="danger")

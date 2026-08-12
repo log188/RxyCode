@@ -11,6 +11,7 @@ Color system:
 
 import os
 import threading
+from contextvars import ContextVar, Token
 from typing import Optional
 
 from rich.console import Console
@@ -42,6 +43,9 @@ class TokenStats:
     """
 
     def __init__(self, context_max: Optional[int] = None):
+        self._usage_scope: ContextVar[dict[str, int] | None] = ContextVar(
+            f"token_usage_scope_{id(self)}", default=None
+        )
         self.input_tokens = 0
         self.output_tokens = 0
         self.cache_hits = 0
@@ -96,6 +100,20 @@ class TokenStats:
             self.cache_misses += 1
         # FIX-2: Always update cache_size, even when cache_read_tokens is 0
         self.cache_size = self.cache_hit_tokens
+        scoped = self._usage_scope.get()
+        if scoped is not None:
+            scoped["input_tokens"] += int(input_tokens or 0)
+            scoped["output_tokens"] += int(output_tokens or 0)
+            scoped["cache_hit_tokens"] += int(cache_read_tokens or 0)
+
+    def begin_usage_scope(self) -> tuple[Token, dict[str, int]]:
+        """Start task-local usage attribution while retaining global totals."""
+        usage = {"input_tokens": 0, "output_tokens": 0, "cache_hit_tokens": 0}
+        return self._usage_scope.set(usage), usage
+
+    def end_usage_scope(self, token: Token) -> None:
+        """Restore the previous task-local attribution scope."""
+        self._usage_scope.reset(token)
 
     @property
     def total_tokens(self) -> int:
@@ -167,6 +185,10 @@ class TokenStats:
             self.cache_hits += 1
         else:
             self.cache_misses += 1
+        scoped = self._usage_scope.get()
+        if scoped is not None:
+            scoped["input_tokens"] += int(input_tokens or 0)
+            scoped["output_tokens"] += int(output_tokens or 0)
 
     def record_application_cache(
         self,

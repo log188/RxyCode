@@ -41,3 +41,24 @@ def test_top_level_worker_uses_the_same_approval_broker_module_as_agent_core():
         text=True,
     )
     assert completed.stdout.strip() == "True"
+
+
+def test_top_level_worker_registers_manager_in_canonical_agent_namespace(tmp_path, monkeypatch):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path / "data"))
+    import appserver  # noqa: F401
+    from appserver.agent_worker import bootstrap_subagent_manager
+    from RxyCode.RxyCode1_1_0.core.subagents.registry_provider import (
+        get_manager_or_none,
+        reset_manager,
+    )
+
+    reset_manager()
+    manager, _store = bootstrap_subagent_manager(
+        session_id="source-tree-test",
+        workspace_root=tmp_path,
+        emit=lambda _method, _payload: None,
+    )
+    try:
+        assert get_manager_or_none() is manager
+    finally:
+        reset_manager()

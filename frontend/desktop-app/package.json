@@ -25,6 +25,10 @@
     "screenshot:d4": "node scripts/approval-screenshot.mts",
     "screenshot:d5": "node scripts/settings-screenshot.mts",
     "stress:desktop": "node scripts/desktop-stress.mts",
+    "stress:cd:deterministic": "node scripts/desktop-cd-suite.mts --mode=deterministic --rounds=3",
+    "stress:cd:real": "node scripts/desktop-cd-suite.mts --mode=real --rounds=1",
+    "stress:cd:all": "npm run stress:cd:deterministic && npm run stress:cd:real",
+    "report:cd": "node scripts/desktop-cd-report.mts",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && npm run runtime:prepare && electron-builder --dir",
     "build:win": "npm run build && npm run runtime:prepare && electron-builder --win",
@@ -36,7 +40,8 @@
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@rxycode/protocol-client": "file:../protocol-client",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "lucide-react": "^0.468.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",

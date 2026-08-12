@@ -37,6 +37,7 @@ from RxyCode.RxyCode1_1_0.planning.decomposer import HierarchicalDecomposer
 from RxyCode.RxyCode1_1_0.planning.goal_planner import GoalPlanner
 from RxyCode.RxyCode1_1_0.planning.structured_output import StructuredOutputError
 from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorRecovery
+from RxyCode.RxyCode1_1_0.recovery.tracker import RecoveryKind
 from RxyCode.RxyCode1_1_0.synthesis.synthesizer import OutputSynthesizer
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
@@ -100,6 +101,23 @@ def _record_trajectory(state: AgentState, event_type: str, payload: dict) -> Non
     trajectory = state.get("_trajectory")
     if trajectory is not None:
         trajectory.record(event_type, payload)
+
+
+def _graph_recovery_tracker(state: AgentState):
+    """Return the request-local recovery tracker when a protocol TUI owns one.
+
+    The graph is also used without an appserver (tests, batch jobs and the
+    legacy CLI), so this remains a duck-typed optional bridge.  It never makes
+    the renderer aware of graph internals and never creates a second tracker.
+    """
+    tui = state.get("_tui")
+    tracker = getattr(tui, "recovery_tracker", None) if tui is not None else None
+    if tracker is None or callable(tracker):
+        return None
+    return tracker if all(
+        hasattr(tracker, name)
+        for name in ("active", "detect", "analyze", "attempt", "resolve", "exhaust")
+    ) else None
 
 
 def _trajectory_update(node_name: str, result: dict) -> dict:
@@ -765,6 +783,14 @@ async def re_planner_node(state: AgentState) -> dict:
     for task_id in failed_ids:
         await replanner.replan(tree, task_id)
 
+    tracker = _graph_recovery_tracker(state)
+    active = tracker.active if tracker is not None else None
+    if active is not None and active.recovery_kind == RecoveryKind.GRAPH_REPLAN:
+        tracker.resolve(
+            active.recovery_id,
+            display_summary=f"Graph re-plan completed for {len(failed_ids)} failed task(s)",
+        )
+
     return {
         "task_tree": tree,
         "parallel_tasks": [],
@@ -796,6 +822,19 @@ async def reflection_node(state: AgentState) -> dict:
     current_task_id = state.get("current_task_id")
     error: str | None = None
     memory: MemoryManager = state["_memory"]
+    recovery_tracker = _graph_recovery_tracker(state)
+
+    if recovery_tracker is not None and failures:
+        active = recovery_tracker.active
+        if active is None:
+            recovery_record = recovery_tracker.detect(
+                source_call_id=f"graph:{state.get('session_id', '')}:{current_task_id or 'failure'}",
+                recovery_kind=RecoveryKind.GRAPH_REPLAN,
+                error_kind="graph_validation_failure",
+                max_attempts=max(1, int(((_settings.load_config() or {}).get("execution") or {}).get("max_replan_rounds", 3) or 3)),
+                run_id=str(state.get("run_id", "")),
+            )
+            recovery_tracker.analyze(recovery_record.recovery_id)
 
     cfg = _settings.load_config() or {}
     max_replan_rounds = max(
@@ -881,6 +920,27 @@ async def reflection_node(state: AgentState) -> dict:
         action = "retry"
     else:
         action = "terminate"
+
+    if recovery_tracker is not None:
+        active = recovery_tracker.active
+        if active is not None and active.recovery_kind == RecoveryKind.GRAPH_REPLAN:
+            if action == "replan":
+                recovery_tracker.attempt(
+                    active.recovery_id,
+                    strategy="replan",
+                    display_summary="Reflection selected a governed graph re-plan",
+                )
+            elif action == "retry":
+                recovery_tracker.attempt(
+                    active.recovery_id,
+                    strategy="retry_task",
+                    display_summary="Reflection selected a governed task retry",
+                )
+            else:
+                recovery_tracker.exhaust(
+                    active.recovery_id,
+                    final_error=(error or "Graph recovery exhausted")[:1000],
+                )
 
     return {
         "task_tree": tree,
@@ -985,6 +1045,19 @@ async def error_recovery_node(state: AgentState) -> dict:
     recovery = ErrorRecovery()
     if task_id:
         action = recovery.handle_error(tree, task_id, error)
+        tracker = _graph_recovery_tracker(state)
+        active = tracker.active if tracker is not None else None
+        if active is not None and active.recovery_kind == RecoveryKind.GRAPH_REPLAN:
+            if action == "retry":
+                tracker.resolve(
+                    active.recovery_id,
+                    display_summary="Governed task retry was scheduled",
+                )
+            else:
+                tracker.exhaust(
+                    active.recovery_id,
+                    final_error=str(error)[:1000],
+                )
         # Log error to error log (NOT conversation memory)
         if memory is not None:
             await memory.log_error(session_id, task_id, error)

@@ -543,6 +543,7 @@ class ToolOrchestrator:
         approval: str,
         risk: Any,
         audit: Any,
+        call_id: str | None = None,
     ) -> str:
         """Invoke once, applying the shared deadline and terminal recording."""
         timeout = self._tool_timeout_seconds(config)
@@ -625,10 +626,24 @@ class ToolOrchestrator:
 
         async def invoke() -> str:
             if getattr(risk, "name", "") == "READ" and retry_attempts > 1:
+                tui = self.get_event_tui()
+
+                def on_retry(attempt: int, exc: BaseException) -> None:
+                    if tui is None or not hasattr(tui, "write_transport_retry"):
+                        return
+                    tui.write_transport_retry(
+                        call_id=str(call_id or ""),
+                        tool_name=name,
+                        attempt=attempt,
+                        max_attempts=retry_attempts,
+                        error_kind=type(exc).__name__,
+                    )
+
                 return await retry_with_backoff(
                     lambda: self._invoke_async_strict(tool, args),
                     max_attempts=retry_attempts,
                     wait_multiplier=retry_wait,
+                    on_retry=on_retry,
                 )
             return await self._invoke_async(tool, args)
 
@@ -813,6 +828,7 @@ class ToolOrchestrator:
                 config,
                 approval_source=approval_source,
                 mode=mode,
+                call_id=resolved_call_id,
             )
             if cache is not None:
                 cache[key] = str(result)
@@ -909,6 +925,7 @@ class ToolOrchestrator:
         *,
         approval_source: str | None = None,
         mode: str | None = None,
+        call_id: str | None = None,
     ) -> str:
         """Execute a tool through the safety gate.
 
@@ -994,6 +1011,7 @@ class ToolOrchestrator:
                 approval="safety_disabled",
                 risk=risk,
                 audit=audit,
+                call_id=call_id,
             )
 
         audit = self._get_audit_logger()
@@ -1093,6 +1111,7 @@ class ToolOrchestrator:
             approval=approval_state,
             risk=risk,
             audit=audit,
+            call_id=call_id,
         )
 
     @staticmethod

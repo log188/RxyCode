@@ -176,7 +176,12 @@ async function main(): Promise<void> {
         })(),
         banner: document.querySelector('.error-banner')
           ? document.querySelector('.error-banner').getBoundingClientRect().top
-          : null
+          : null,
+        commandLayout: ['.main-layout', '.session-panel', '.task-main', '.task-inspector'].map((selector) => {
+          const el = document.querySelector(selector);
+          const r = el ? el.getBoundingClientRect() : null;
+          return { selector, display: el ? getComputedStyle(el).display : 'missing', gridColumn: el ? getComputedStyle(el).gridColumn : '', rect: r ? { left: Math.round(r.left), width: Math.round(r.width), top: Math.round(r.top), height: Math.round(r.height) } : null };
+        })
       })`)) as string
       console.log(`SCREENSHOT_LAYOUT ${layout}`)
     }
@@ -217,6 +222,23 @@ async function main(): Promise<void> {
     await delay(500)
     await capture(join(outDir, '01-empty.png'))
 
+    // Explicitly exercise both semantic theme branches; system theme alone
+    // is not evidence that the user-selectable light/dark tokens work.
+    async function setTheme(mode: 'light' | 'dark'): Promise<void> {
+      await evaluate(`(() => {
+        const button = Array.from(document.querySelectorAll('.theme-picker button'))
+          .find((item) => item.textContent?.trim() === ${JSON.stringify(mode)});
+        if (!(button instanceof HTMLButtonElement)) throw new Error('theme button not found');
+        button.click();
+      })()`)
+      await delay(100)
+    }
+
+    await setTheme('light')
+    await capture(join(outDir, '06-light-empty.png'))
+    await setTheme('dark')
+    await capture(join(outDir, '07-dark-empty.png'))
+
     await evaluate(`document.querySelector('.new-session').click()`)
     await waitForSelector('.session-item', 20_000, 'session created')
     await waitForSelector('.composer textarea:not(:disabled)', 20_000, 'composer enabled')
@@ -250,6 +272,12 @@ async function main(): Promise<void> {
     })
     await delay(600)
     await capture(join(outDir, '05-narrow.png'))
+    const narrowTaskWidth = await evaluate(
+      `Math.round(document.querySelector('.task-main')?.getBoundingClientRect().width ?? 0)`
+    )
+    if (typeof narrowTaskWidth !== 'number' || narrowTaskWidth < 300) {
+      throw new Error(`narrow task column is unusable: ${String(narrowTaskWidth)}px`)
+    }
 
     console.log(`SCREENSHOT_OK ${outDir}`)
   } catch (error) {

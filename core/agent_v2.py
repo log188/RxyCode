@@ -85,6 +85,7 @@ from RxyCode.RxyCode1_1_0.memory.compressor import ContextCompressor
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
 from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as _circuit_breaker
+from RxyCode.RxyCode1_1_0.recovery.tracker import RecoveryKind
 from RxyCode.RxyCode1_1_0.tools.registry import registry
 from RxyCode.RxyCode1_1_0.tools.task_tool import clear_session_tasks
 from RxyCode.RxyCode1_1_0.tools.workflow_tool import clear_session_workflows
@@ -101,6 +102,63 @@ from .providers.base import BaseProvider
 from .providers.tokenizers import count_tokens
 
 _logger = logging.getLogger(__name__)
+
+
+def _get_recovery_tracker():
+    """Return a real request-local tracker, never a legacy compatibility hook.
+
+    The CLI/legacy runtime may expose ``recovery_tracker`` as a callable hook
+    or may expose no tracker at all.  Transport recovery is optional outside
+    the protocol appserver, so those surfaces must keep their original error
+    semantics instead of failing while trying to report telemetry.
+    """
+    tui = get_tui()
+    tracker = getattr(tui, "recovery_tracker", None) if tui is not None else None
+    if tracker is None or callable(tracker):
+        return None
+    if not all(hasattr(tracker, name) for name in ("active", "detect", "attempt", "resolve", "exhaust")):
+        return None
+    return tracker
+
+
+def _notify_llm_transport_retry(attempt: int, max_attempts: int, error_kind: str) -> None:
+    """Expose bounded model transport retries through the request-local TUI."""
+    tracker = _get_recovery_tracker()
+    if tracker is None:
+        return
+    active = tracker.active
+    if active is None:
+        active = tracker.detect(
+            source_call_id="llm_transport",
+            recovery_kind=RecoveryKind.TRANSPORT_RETRY,
+            error_kind=error_kind,
+            max_attempts=max_attempts,
+        )
+    if active.recovery_kind != RecoveryKind.TRANSPORT_RETRY:
+        return
+    tracker.attempt(
+        active.recovery_id,
+        attempt=attempt,
+        strategy="same_tool",
+        display_summary=f"Model transport error; retrying ({attempt}/{max_attempts})",
+    )
+
+
+def _resolve_llm_transport_recovery() -> None:
+    tracker = _get_recovery_tracker()
+    active = tracker.active if tracker is not None else None
+    if active is not None and active.recovery_kind == RecoveryKind.TRANSPORT_RETRY:
+        tracker.resolve(active.recovery_id, display_summary="Model transport recovered")
+
+
+def _exhaust_llm_transport_recovery(error_kind: str) -> None:
+    tracker = _get_recovery_tracker()
+    active = tracker.active if tracker is not None else None
+    if active is not None and active.recovery_kind == RecoveryKind.TRANSPORT_RETRY:
+        tracker.exhaust(
+            active.recovery_id,
+            final_error=f"Model transport recovery exhausted ({error_kind})",
+        )
 
 VALID_AGENT_MODES = frozenset({"build", "plan", "compose"})
 PLAN_READONLY_TOOL_NAMES = frozenset({
@@ -659,11 +717,17 @@ class UsageTrackingLLM:
         last_exc: BaseException | None = None
         for attempt in range(max_retries + 1):
             try:
-                return await self._llm.ainvoke(messages, **kwargs)
+                response = await self._llm.ainvoke(messages, **kwargs)
+                _resolve_llm_transport_recovery()
+                return response
             except Exception as exc:  # noqa: BLE001 - narrowed by _is_transport_retryable
                 last_exc = exc
                 if attempt >= max_retries or not _is_transport_retryable(exc):
+                    _exhaust_llm_transport_recovery(type(exc).__name__)
                     raise
+                _notify_llm_transport_retry(
+                    attempt + 1, max_retries + 1, type(exc).__name__
+                )
                 _logger.warning(
                     "LLM transport error (attempt %d/%d, %s); retrying in %.1fs",
                     attempt + 1,
@@ -689,12 +753,18 @@ class UsageTrackingLLM:
                 try:
                     first = await ait.__anext__()
                 except StopAsyncIteration:
+                    _resolve_llm_transport_recovery()
                     return None, ait
+                _resolve_llm_transport_recovery()
                 return first, ait
             except Exception as exc:  # noqa: BLE001 - narrowed by _is_transport_retryable
                 last_exc = exc
                 if attempt >= max_retries or not _is_transport_retryable(exc):
+                    _exhaust_llm_transport_recovery(type(exc).__name__)
                     raise
+                _notify_llm_transport_retry(
+                    attempt + 1, max_retries + 1, type(exc).__name__
+                )
                 _logger.warning(
                     "LLM stream transport error (attempt %d/%d, %s); retrying in %.1fs",
                     attempt + 1,

@@ -15,7 +15,14 @@ import {
 } from "./httpAdmin.ts";
 import { notifyToStreamEvent } from "./notifyToStreamEvent.ts";
 import { shouldClearStreamingOnNotify } from "./streamLifecycle.ts";
-import type { ChatApiCallbacks, ChatTransport, SubagentResult } from "./types.ts";
+import { resolveChildTarget } from "../childNavigation.ts";
+import type {
+  ChatApiCallbacks,
+  ChatTransport,
+  ChildNavigationEntry,
+  ChildNavigationResult,
+  SubagentResult,
+} from "./types.ts";
 
 const DEFAULT_INIT_TIMEOUT_MS = 10_000;
 const DEFAULT_SESSION_TIMEOUT_MS = 10_000;
@@ -65,6 +72,7 @@ class StdioAppserverSession {
   private approvalTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private activePromptAbort: AbortController | null = null;
   private activeCallbacks: ChatApiCallbacks | null = null;
+  private childViewSessionId: string | null = null;
 
   private projectRoot(): string {
     return process.env.RXYCODE_PROJECT_ROOT ?? process.cwd();
@@ -106,6 +114,7 @@ class StdioAppserverSession {
     this.proc = null;
     this.client = null;
     this.sessionId = null;
+    this.childViewSessionId = null;
     this.ready = null;
   }
 
@@ -365,6 +374,42 @@ class StdioAppserverSession {
     return result;
   }
 
+  async listChildSessions(): Promise<ChildNavigationEntry[]> {
+    const client = await this.ensureReady();
+    if (!this.sessionId) throw new Error("appserver session not ready");
+    const result = await client.request<{ sessions?: ChildNavigationEntry[] }>(
+      "child_sessions/list",
+      { root_session_id: this.sessionId },
+    );
+    return result.sessions ?? [];
+  }
+
+  async openChildSession(target: string): Promise<ChildNavigationResult> {
+    const children = await this.listChildSessions();
+    const entry = resolveChildTarget(target, children);
+    if (!entry) return { ok: false, message: `child session not found: ${target}` };
+    if (!this.sessionId) return { ok: false, message: "appserver session not ready" };
+    const replay = await (await this.ensureReady()).request<{
+      events?: Array<Record<string, unknown>>
+    }>("child_sessions/events", { root_session_id: this.sessionId, cursor: 0 });
+    this.childViewSessionId = entry.session_id;
+    return {
+      ok: true,
+      entry,
+      events: (replay.events ?? []).filter((event) => event.session_id === entry.session_id),
+      message: `opened child session ${entry.session_id}`,
+    };
+  }
+
+  async openParentSession(): Promise<ChildNavigationResult> {
+    if (this.childViewSessionId === null) {
+      return { ok: false, message: "already at the parent session" };
+    }
+    const childId = this.childViewSessionId;
+    this.childViewSessionId = null;
+    return { ok: true, message: `returned to parent session ${this.sessionId ?? ""}`, entry: { session_id: childId } };
+  }
+
   async sendChatMessage(
     content: string,
     mode: Mode,
@@ -619,6 +664,18 @@ export const stdioTransport: ChatTransport = {
 
   async invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult> {
     return sharedSession.invokeSubagent(agentId, prompt);
+  },
+
+  async listChildSessions(): Promise<ChildNavigationEntry[]> {
+    return sharedSession.listChildSessions();
+  },
+
+  async openChildSession(target: string): Promise<ChildNavigationResult> {
+    return sharedSession.openChildSession(target);
+  },
+
+  async openParentSession(): Promise<ChildNavigationResult> {
+    return sharedSession.openParentSession();
   },
 
   async respondApproval(approvalId: string, decision: ApprovalDecision): Promise<boolean> {

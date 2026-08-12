@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
@@ -38,11 +39,88 @@ try:
     from ..core.safety.approval import set_approval_broker
     from ..core.session import Session
 except ImportError:
-    from core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
-    from core.safety.approval import set_approval_broker
-    from core.session import Session
+    from RxyCode.RxyCode1_1_0.core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
+    from RxyCode.RxyCode1_1_0.core.safety.approval import set_approval_broker
+    from RxyCode.RxyCode1_1_0.core.session import Session
 
 _logger = logging.getLogger(__name__)
+
+
+def resolve_subagent_task_token_budget() -> int:
+    """Resolve a child task's aggregate budget from active-model metadata.
+
+    This is not the provider request's max output tokens: one child task may
+    make several model calls, so its aggregate guard follows the model context
+    window. Unknown models use the configured fallback across four turns.
+    """
+    fallback = 131072
+    try:
+        try:
+            from ..config.model_limits import resolve_configured_max_tokens
+            from ..config.settings import get_active_model_config, load_config
+        except ImportError:
+            from config.model_limits import resolve_configured_max_tokens
+            from config.settings import get_active_model_config, load_config
+
+        cfg = load_config()
+        model_config = get_active_model_config(cfg)
+        unknown_output = int(
+            (cfg.get("model_limits") or {}).get("unknown_model_max_tokens", 32768)
+            or 32768
+        )
+        fallback = max(32768, unknown_output * 4)
+        resolution = resolve_configured_max_tokens(
+            model_config=model_config,
+            capability_max_output_tokens=None,
+            configured_max_tokens=model_config.get("max_tokens"),
+            model_limits_config=cfg.get("model_limits"),
+        )
+        if isinstance(resolution.context_window, int) and resolution.context_window > 0:
+            return resolution.context_window
+    except (KeyError, TypeError, ValueError, OSError):
+        _logger.warning(
+            "could not resolve active model context for subagent budget; using fallback=%d",
+            fallback,
+        )
+    return fallback
+
+
+def bootstrap_subagent_manager(
+    *,
+    session_id: str,
+    workspace_root: Path,
+    emit: Callable[[str, dict[str, Any]], None],
+) -> tuple[Any, Any]:
+    """Create the single ChildSessionManager owned by this Primary worker."""
+    try:
+        from ..config.settings import get_dated_data_dir
+        from ..core.subagents.events import EventStore
+        from ..core.subagents.modes import subagent_config_from_env
+        from ..core.subagents.registry_provider import init_manager
+        from ..memory.long_term import validate_session_id
+    except ImportError:
+        from RxyCode.RxyCode1_1_0.config.settings import get_dated_data_dir
+        from RxyCode.RxyCode1_1_0.core.subagents.events import EventStore
+        from RxyCode.RxyCode1_1_0.core.subagents.modes import subagent_config_from_env
+        from RxyCode.RxyCode1_1_0.core.subagents.registry_provider import init_manager
+        from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
+
+    safe_session_id = validate_session_id(session_id)
+    persist_dir = (
+        get_dated_data_dir("sessions")
+        / "subagents"
+        / safe_session_id
+    )
+    store = EventStore(persist_dir=persist_dir)
+    manager = init_manager(
+        config=subagent_config_from_env(
+            default_max_tokens=resolve_subagent_task_token_budget()
+        ),
+        workspace_root=workspace_root.resolve(),
+    )
+    manager.set_event_store(store)
+    manager.set_event_emitter(emit)
+    return manager, store
 
 
 class _PipeApproval(ApprovalBroker):
@@ -86,6 +164,9 @@ class AgentWorker:
     def __init__(self) -> None:
         install_tui_context_hook()
         self._agent: Any | None = None
+        self._subagent_manager: Any | None = None
+        self._subagent_event_store: Any | None = None
+        self._subagent_tasks: set[asyncio.Task[Any]] = set()
         self._session_id = "worker"
         self._workspace_root = Path.cwd()
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
@@ -120,7 +201,9 @@ class AgentWorker:
             for old in list(self._answered_request_ids)[:32]:
                 self._answered_request_ids.discard(old)
 
-    async def _write_interrupted_response(self, request_id: int) -> None:
+    async def _write_interrupted_response(
+        self, request_id: int, *, run_id: str | None = None
+    ) -> None:
         """Send the 'cancelled' terminal result for a cancelled prompt request.
 
         A notification flush failure must not prevent the terminal response:
@@ -131,21 +214,25 @@ class AgentWorker:
             await self._flush_pending_writes()
         except BaseException as exc:
             _logger.error("flush failed before interrupted response: %r", exc)
+        result = {
+            "status": "cancelled",
+            "text": "",
+            "thinking": None,
+            "input_tokens": None,
+            "output_tokens": None,
+            "cache_hit_tokens": None,
+            "cache_write_tokens": None,
+            "cache_hit_rate": None,
+            "reporting_status": "not_reported",
+        }
+        if run_id is not None:
+            result["run_id"] = run_id
         await asyncio.shield(
             self._write_ordered(
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": {
-                        "status": "cancelled",
-                        "text": "",
-                        "thinking": None,
-                        "input_tokens": 0,
-                        "output_tokens": 0,
-                        "cache_hit_tokens": 0,
-                        "cache_hit_rate": 0.0,
-                        "detail": "interrupted",
-                    },
+                    "result": result,
                 }
             )
         )
@@ -263,6 +350,13 @@ class AgentWorker:
         workspace = Path(str(params.get("workspace_root", ".")))
         self._workspace_root = workspace.resolve()
         self._session_id = str(params.get("session_id", "worker"))
+        self._subagent_manager, self._subagent_event_store = bootstrap_subagent_manager(
+            session_id=self._session_id,
+            workspace_root=self._workspace_root,
+            emit=lambda method, payload: self._schedule_write(
+                {"jsonrpc": "2.0", "method": method, "params": payload}
+            ),
+        )
         set_approval_broker(self._approval)
         self._agent = await asyncio.to_thread(
             bootstrap_agent,
@@ -300,7 +394,7 @@ class AgentWorker:
             tui._flush_pending_stream()
             self._schedule_write(model_to_notification(notification))
 
-        tui = ProtocolTui(session_id, emit)
+        tui = ProtocolTui(session_id, emit, run_id=run_id)
         expanded = bool(params.get("thinking_expanded", self._thinking_expanded))
         self._thinking_expanded = expanded
         tui.set_thinking_expanded(expanded)
@@ -348,12 +442,24 @@ class AgentWorker:
                 emit=emit,
             )
             try:
-                result = await session.prompt(
-                    self._agent,
-                    text,
-                    mode=str(params.get("mode", "build")),
-                    run_id=run_id,
-                )
+                prompt_kwargs = {
+                    "mode": str(params.get("mode", "build")),
+                    "run_id": run_id,
+                }
+                # Keep the worker compatible with lightweight Session doubles
+                # and older integrations while passing the request-local TUI
+                # to the production Session implementation.
+                try:
+                    prompt_signature = inspect.signature(session.prompt)
+                    accepts_tui = "tui" in prompt_signature.parameters or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in prompt_signature.parameters.values()
+                    )
+                except (TypeError, ValueError):
+                    accepts_tui = True
+                if accepts_tui:
+                    prompt_kwargs["tui"] = tui
+                result = await session.prompt(self._agent, text, **prompt_kwargs)
             except asyncio.CancelledError:
                 # Interrupt RPC cancelled this prompt task (C1): report the
                 # cancellation to the host so the pending request resolves
@@ -363,8 +469,17 @@ class AgentWorker:
                 # write is shielded so an interrupt in the write window
                 # cannot leave the parent hanging.
                 await self._wind_down_stream(tui, coalescer)
-                await self._write_interrupted_response(request_id)
-                raise
+                await self._write_interrupted_response(request_id, run_id=run_id)
+                # A real task cancellation must continue propagating so the
+                # interrupt lifecycle remains cancellable. A Session may also
+                # return CancelledError as a terminal result without the
+                # handler task itself being cancelled; in that case the
+                # terminal response is sufficient and the direct caller must
+                # not receive an unexpected exception.
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+                return
             except Exception as exc:
                 await self._wind_down_stream(tui, coalescer)
                 # Order the error response after all already-queued
@@ -410,6 +525,10 @@ class AgentWorker:
                         "thinking": result.thinking,
                         "input_tokens": result.input_tokens,
                         "output_tokens": result.output_tokens,
+                        "cache_hit_tokens": getattr(result, "cache_hit_tokens", None),
+                        "cache_write_tokens": getattr(result, "cache_write_tokens", None),
+                        "cache_hit_rate": getattr(result, "cache_hit_rate", None),
+                        "reporting_status": getattr(result, "reporting_status", "not_reported"),
                     },
                 }
             )
@@ -506,6 +625,15 @@ class AgentWorker:
         does not cancel the interrupt handler itself.
         """
         cancelled = False
+        manager = self._subagent_manager
+        child_tasks = [task for task in self._subagent_tasks if not task.done()]
+        if manager is not None:
+            manager.cancel_root(self._session_id)
+        if child_tasks:
+            for task in child_tasks:
+                task.cancel()
+            await asyncio.gather(*child_tasks, return_exceptions=True)
+            cancelled = True
         run_task = self._run_task
         if run_task is not None and not run_task.done():
             # We cancelled a running prompt task: report the cancel intent.
@@ -549,6 +677,322 @@ class AgentWorker:
             }
         )
 
+    async def _handle_model_switch(
+        self, params: dict[str, Any], request_id: int
+    ) -> None:
+        """Switch this worker's model while preserving task isolation."""
+        if self._agent is None:
+            await self._write_ordered(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32002, "message": "bootstrap first"},
+                }
+            )
+            return
+        if self._run_task is not None and not self._run_task.done():
+            await self._write_ordered(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32001,
+                        "message": "cannot switch model during an active run",
+                    },
+                }
+            )
+            return
+        model_id = str(params.get("model_id", "")).strip()
+        if not model_id:
+            await self._write_ordered(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32602, "message": "model_id is required"},
+                }
+            )
+            return
+        result = self._agent.switch_model(model_id)
+        if not isinstance(result, dict):
+            result = {"model_id": model_id}
+        await self._write_ordered(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"ok": True, **result},
+            }
+        )
+
+    async def _handle_subagent_capability(self, request_id: int) -> None:
+        manager = self._subagent_manager
+        if manager is None:
+            result = {
+                "protocol_version": 1,
+                "subagents_enabled": False,
+                "task": False,
+                "mention": False,
+                "child_tasks": False,
+                "active_lease_count": 0,
+            }
+        else:
+            capability = manager.capability
+            result = {
+                "protocol_version": capability.protocol_version,
+                "subagents_enabled": capability.subagents_enabled,
+                "task": capability.task,
+                "mention": capability.mention,
+                "child_tasks": capability.child_tasks,
+                "active_lease_count": manager.active_lease_count,
+            }
+        await self._write_ordered(
+            {"jsonrpc": "2.0", "id": request_id, "result": result}
+        )
+
+    def _require_subagent_manager(self) -> Any:
+        if self._subagent_manager is None:
+            raise RuntimeError("bootstrap first")
+        return self._subagent_manager
+
+    async def _handle_subagent_list(self, request_id: int) -> None:
+        manager = self._require_subagent_manager()
+        agents = [
+            {
+                "id": definition.id,
+                "description": definition.description,
+                "mode": definition.mode.value,
+                "model": definition.model,
+            }
+            for definition in manager.registry.list_visible()
+        ]
+        await self._write_ordered(
+            {"jsonrpc": "2.0", "id": request_id, "result": {"agents": agents}}
+        )
+
+    def _parse_subagent_request(self, params: dict[str, Any], *, mention: bool):
+        try:
+            from ..protocol.subagents import (
+                BudgetSpec,
+                TaskRequest,
+                TriggerKind,
+                WorkspaceMode,
+                WorkspaceScope,
+            )
+        except ImportError:
+            from protocol.subagents import (
+                BudgetSpec,
+                TaskRequest,
+                TriggerKind,
+                WorkspaceMode,
+                WorkspaceScope,
+            )
+
+        agent_id = str(params.get("agent_id", "")).strip()
+        prompt = str(params.get("prompt", "")).strip()
+        if not agent_id:
+            raise ValueError("agent_id is required")
+        if not prompt:
+            raise ValueError("prompt is required")
+
+        budget = None
+        raw_budget = params.get("requested_budget")
+        if isinstance(raw_budget, dict):
+            budget = BudgetSpec(
+                max_steps=int(raw_budget.get("max_steps", 12)),
+                max_tokens=int(raw_budget.get("max_tokens", 8000)),
+                max_wall_time_seconds=int(
+                    raw_budget.get("max_wall_time_seconds", 300)
+                ),
+                max_concurrent_children=int(
+                    raw_budget.get("max_concurrent_children", 3)
+                ),
+            )
+
+        workspace = None
+        raw_workspace = params.get("requested_workspace")
+        if isinstance(raw_workspace, dict):
+            workspace = WorkspaceScope(
+                mode=WorkspaceMode(str(raw_workspace.get("mode", "read_only"))),
+                leased_paths=tuple(
+                    str(path) for path in raw_workspace.get("leased_paths", [])
+                ),
+                lease_id=str(raw_workspace.get("lease_id", "")),
+            )
+
+        return TaskRequest(
+            request_id=str(params.get("request_id") or uuid.uuid4()),
+            parent_session_id=str(
+                params.get("parent_session_id")
+                or params.get("root_session_id")
+                or self._session_id
+            ),
+            agent_id=agent_id,
+            prompt=prompt,
+            trigger=TriggerKind.MENTION if mention else TriggerKind.AUTOMATIC,
+            output_schema=(
+                str(params["output_schema"])
+                if params.get("output_schema") is not None
+                else None
+            ),
+            requested_budget=budget,
+            requested_workspace=workspace,
+        )
+
+    async def _run_subagent_dispatch(self, request: Any) -> None:
+        try:
+            await self._require_subagent_manager().dispatch(request)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Pre-session validation failures still need an observable,
+            # persisted terminal record correlated by request id.
+            try:
+                from ..core.subagents.events import build_event
+            except ImportError:
+                from RxyCode.RxyCode1_1_0.core.subagents.events import build_event
+
+            event = build_event(
+                "child_session/denied",
+                f"request:{request.request_id}",
+                request.parent_session_id,
+                root_session_id=self._session_id,
+                request_id=request.request_id,
+                payload={
+                    "agent_id": request.agent_id,
+                    "status": "denied",
+                    "error": str(exc),
+                    "code": getattr(exc, "code", "dispatch_error"),
+                },
+            )
+            if self._subagent_event_store is not None:
+                event = self._subagent_event_store.append(event)
+            self._schedule_write(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "child_session/denied",
+                    "params": event.to_dict(),
+                }
+            )
+
+    async def _handle_subagent_start(
+        self, params: dict[str, Any], request_id: int, *, mention: bool
+    ) -> None:
+        request = self._parse_subagent_request(params, mention=mention)
+        await self._write_ordered(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"accepted": True, "request_id": request.request_id},
+            }
+        )
+        task = asyncio.create_task(self._run_subagent_dispatch(request))
+        self._subagent_tasks.add(task)
+        task.add_done_callback(self._subagent_tasks.discard)
+
+    @staticmethod
+    def _session_to_dict(session: Any) -> dict[str, Any]:
+        return {
+            "session_id": session.session_id,
+            "parent_session_id": session.parent_session_id,
+            "root_session_id": session.root_session_id,
+            "agent_id": session.agent_id,
+            "trigger": session.trigger.value,
+            "definition_version": session.definition_version,
+            "status": session.status.value,
+            "created_at": session.created_at.isoformat(),
+            "started_at": (
+                session.started_at.isoformat() if session.started_at else None
+            ),
+            "terminal_at": (
+                session.terminal_at.isoformat() if session.terminal_at else None
+            ),
+            "event_cursor": session.event_cursor,
+        }
+
+    async def _handle_child_sessions_list(
+        self, params: dict[str, Any], request_id: int
+    ) -> None:
+        manager = self._require_subagent_manager()
+        root = str(params.get("root_session_id") or self._session_id)
+        sessions = [
+            self._session_to_dict(session)
+            for session in manager.get_tree(root).list_all()
+        ]
+        await self._write_ordered(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"root_session_id": root, "sessions": sessions},
+            }
+        )
+
+    async def _handle_child_session_events(
+        self, params: dict[str, Any], request_id: int
+    ) -> None:
+        store = self._subagent_event_store
+        if store is None:
+            raise RuntimeError("bootstrap first")
+        root = str(params.get("root_session_id") or self._session_id)
+        cursor = max(0, int(params.get("cursor", 0)))
+        latest = store.latest_cursor()
+        events = [
+            event.to_dict()
+            for event in store.events_from(cursor)
+            if event.root_session_id == root
+        ]
+        await self._write_ordered(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "events": events,
+                    "next_cursor": latest,
+                    "gap_detected": bool(store.detect_gaps(cursor, latest)),
+                },
+            }
+        )
+
+    async def _handle_child_session_cancel(
+        self, params: dict[str, Any], request_id: int
+    ) -> None:
+        manager = self._require_subagent_manager()
+        root = str(params.get("root_session_id") or self._session_id)
+        session_id = str(params.get("session_id", ""))
+        if session_id:
+            manager.cancel_session(root, session_id)
+        else:
+            manager.cancel_root(root)
+        await self._write_ordered(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"cancelled": True, "root_session_id": root, "session_id": session_id or None},
+            }
+        )
+
+    async def _handle_child_session_retry(
+        self, params: dict[str, Any], request_id: int
+    ) -> None:
+        manager = self._require_subagent_manager()
+        root = str(params.get("root_session_id") or self._session_id)
+        session_id = str(params.get("session_id", ""))
+        if not session_id:
+            raise ValueError("session_id is required")
+        retry_request_id = str(params.get("request_id") or uuid.uuid4())
+        await self._write_ordered(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"accepted": True, "request_id": retry_request_id},
+            }
+        )
+        task = asyncio.create_task(
+            manager.retry_session(
+                root, session_id, request_id=retry_request_id
+            )
+        )
+        self._subagent_tasks.add(task)
+        task.add_done_callback(self._subagent_tasks.discard)
+
     async def _dispatch(self, message: dict[str, Any]) -> None:
         if "id" in message and ("result" in message or "error" in message):
             if self._resolve_parent_response(message):
@@ -566,12 +1010,30 @@ class AgentWorker:
         method = str(message.get("method", ""))
         if method == "bootstrap":
             await self._handle_bootstrap(params, int(request_id))
+        elif method == "model/switch":
+            await self._handle_model_switch(params, int(request_id))
         elif method == "prompt":
             await self._handle_prompt(params, int(request_id))
         elif method == "interrupt":
             await self._handle_interrupt(int(request_id))
         elif method == "thinking/set_expanded":
             await self._handle_set_thinking_expanded(params, int(request_id))
+        elif method == "subagents/capability":
+            await self._handle_subagent_capability(int(request_id))
+        elif method == "subagents/list":
+            await self._handle_subagent_list(int(request_id))
+        elif method == "agent/invoke":
+            await self._handle_subagent_start(params, int(request_id), mention=True)
+        elif method == "task/start":
+            await self._handle_subagent_start(params, int(request_id), mention=False)
+        elif method == "child_sessions/list":
+            await self._handle_child_sessions_list(params, int(request_id))
+        elif method == "child_sessions/events":
+            await self._handle_child_session_events(params, int(request_id))
+        elif method == "child_sessions/cancel":
+            await self._handle_child_session_cancel(params, int(request_id))
+        elif method == "child_sessions/retry":
+            await self._handle_child_session_retry(params, int(request_id))
         elif method == "shutdown":
             await self._write_ordered(
                 {"jsonrpc": "2.0", "id": request_id, "result": {"ok": True}}
@@ -683,6 +1145,10 @@ class AgentWorker:
         except Exception:
             raise
         finally:
+            for task in list(self._subagent_tasks):
+                task.cancel()
+            await asyncio.gather(*self._subagent_tasks, return_exceptions=True)
+            self._subagent_tasks.clear()
             for task in list(pending):
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)

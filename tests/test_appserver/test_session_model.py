@@ -1,0 +1,98 @@
+"""Regression tests for task-scoped model selection."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from appserver.agent_worker import AgentWorker
+from appserver.server import AppServer
+
+
+@pytest.mark.asyncio
+async def test_worker_switches_model_only_when_idle(monkeypatch):
+    worker = AgentWorker()
+    calls: list[str] = []
+
+    class Agent:
+        def switch_model(self, model_id: str) -> dict[str, str]:
+            calls.append(model_id)
+            return {"model_id": model_id, "provider_id": "deepseek"}
+
+    worker._agent = Agent()
+    responses = []
+    async def capture(payload):
+        responses.append(payload)
+
+    monkeypatch.setattr(worker, "_write_ordered", capture)
+
+    await worker._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "model/switch",
+            "params": {"model_id": "deepseek/deepseek-v4"},
+        }
+    )
+
+    assert calls == ["deepseek/deepseek-v4"]
+    assert responses[-1]["result"] == {
+        "ok": True,
+        "model_id": "deepseek/deepseek-v4",
+        "provider_id": "deepseek",
+    }
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_model_switch_during_prompt(monkeypatch):
+    worker = AgentWorker()
+    worker._agent = SimpleNamespace(switch_model=lambda _model_id: pytest.fail("must not switch"))
+    worker._run_task = SimpleNamespace(done=lambda: False)
+    responses = []
+    async def capture(payload):
+        responses.append(payload)
+
+    monkeypatch.setattr(worker, "_write_ordered", capture)
+
+    await worker._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "model/switch",
+            "params": {"model_id": "glm/glm-5"},
+        }
+    )
+
+    assert responses[-1]["error"]["code"] == -32001
+    assert "active run" in responses[-1]["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_server_session_set_model_updates_task_record(monkeypatch, tmp_path):
+    server = AppServer(stub=True)
+    server._initialized = True
+    record = server._sessions.create(tmp_path)
+    host = SimpleNamespace(
+        alive=lambda: True,
+        ensure_bootstrapped=AsyncMock(),
+        set_model=AsyncMock(side_effect=lambda model_id, timeout=30.0: {
+            "ok": True,
+            "model_id": model_id,
+            "provider_id": "glm",
+        }),
+    )
+    monkeypatch.setattr(server, "_host_for_session", AsyncMock(return_value=host))
+    responses = []
+    monkeypatch.setattr(
+        server, "_respond", AsyncMock(side_effect=lambda _request_id, payload: responses.append(payload))
+    )
+
+    await server._handle_session_set_model(
+        {"session_id": record.session_id, "model_id": "glm/glm-5"}, 11
+    )
+
+    assert record.model_id == "glm/glm-5"
+    assert record.provider_id == "glm"
+    assert responses[-1]["model_id"] == "glm/glm-5"

@@ -71,6 +71,26 @@ async def test_reflection_node_classifies_tool_failure_and_drives_retry():
 
 
 @pytest.mark.asyncio
+async def test_reflection_node_emits_graph_recovery_notifications():
+    from RxyCode.RxyCode1_1_0.appserver.tui import ProtocolTui
+    from RxyCode.RxyCode1_1_0.core.graph import reflection_node
+
+    emitted = []
+    tui = ProtocolTui("session-1", emitted.append, run_id="run-1")
+    state, leaf = _failed_state(issue="Tool timeout: bash did not complete")
+    state["_tui"] = tui
+    leaf.evidence = [{"tool": "bash", "status": "failed", "executed": True}]
+
+    update = await reflection_node(state)
+
+    methods = [getattr(item, "method", "") for item in emitted]
+    assert methods[:2] == ["event/recovery_started", "event/recovery_analyzing"]
+    assert "event/recovery_attempt" in methods
+    assert emitted[0].recovery_kind == "graph_replan"
+    assert update["reflection_action"] == "retry"
+
+
+@pytest.mark.asyncio
 async def test_reflection_node_cancels_tasks_when_replan_budget_exhausted(
     monkeypatch,
 ):

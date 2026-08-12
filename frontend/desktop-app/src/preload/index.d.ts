@@ -47,6 +47,8 @@ declare global {
           repoRoot: string
           protocolVersion: string
           appVersion: string
+          appserverPid: number | null
+          appserverStatus: string
         }>
       }
       update: {

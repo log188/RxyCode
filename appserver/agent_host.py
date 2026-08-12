@@ -339,7 +339,29 @@ class AsyncRpcPipe:
         try:
             async for raw in self._child_stdout:
                 line = raw.decode("utf-8", errors="replace")
-                msg = parse_line(line)
+                # Some tool/provider integrations emit a harmless blank line
+                # while the worker is active. It carries no JSON-RPC meaning
+                # and must not tear down every pending child notification.
+                if not line.strip():
+                    continue
+                try:
+                    msg = parse_line(line)
+                except (TypeError, ValueError):
+                    # Agent/provider libraries occasionally write diagnostics
+                    # to stdout even though stdout is reserved for JSON-RPC.
+                    # A single foreign line must not kill the notification
+                    # channel and strand an otherwise completed child task.
+                    _logger.warning(
+                        "ignoring non-protocol worker stdout line bytes=%d",
+                        len(raw),
+                    )
+                    continue
+                if not isinstance(msg, dict):
+                    _logger.warning(
+                        "ignoring non-object worker stdout message bytes=%d",
+                        len(raw),
+                    )
+                    continue
                 rid = msg.get("id")
                 has_method = isinstance(msg.get("method"), str)
                 is_response = "result" in msg or "error" in msg
@@ -673,7 +695,11 @@ class AgentHost:
 
             threading.Thread(target=_complete, daemon=True).start()
             return
-        if isinstance(method, str) and method.startswith("event/") and self._emit:
+        if (
+            isinstance(method, str)
+            and (method.startswith("event/") or method.startswith("child_session/"))
+            and self._emit
+        ):
             self._emit(message)
 
     def _route_notification(self, message: dict[str, Any]) -> None:
@@ -702,7 +728,11 @@ class AgentHost:
 
             asyncio.create_task(_complete())
             return
-        if isinstance(method, str) and method.startswith("event/") and self._emit:
+        if (
+            isinstance(method, str)
+            and (method.startswith("event/") or method.startswith("child_session/"))
+            and self._emit
+        ):
             self._emit(message)
 
     def _respond_to_worker(self, rid: int, result: Any, *, error: Any) -> None:
@@ -801,6 +831,35 @@ class AgentHost:
                 "thinking_expanded": thinking_expanded,
             },
             timeout=timeout,
+        )
+
+    async def run_subagent_rpc(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout: float,
+        emit: EmitFn,
+    ) -> dict[str, Any]:
+        """Run a subagent RPC on this Primary session's owned worker.
+
+        The emitter remains attached after the request returns because an
+        accepted child task continues asynchronously and must keep delivering
+        ``child_session/*`` notifications to the appserver client.
+        """
+        self._emit = emit
+        return await self._pipe_request(method, params, timeout=timeout)
+
+    async def set_model(self, model_id: str, *, timeout: float = 30.0) -> dict[str, Any]:
+        """Switch the model owned by this session's worker.
+
+        Each session has one worker, so this operation is task-scoped and does
+        not mutate the process-wide active-model setting used by the CLI.
+        """
+        if not self.alive():
+            raise RuntimeError("session worker is not running")
+        return await self._pipe_request(
+            "model/switch", {"model_id": model_id}, timeout=timeout
         )
 
     async def set_thinking_expanded(self, expanded: bool, timeout: float = 5.0) -> bool:
