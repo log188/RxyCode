@@ -46,7 +46,7 @@ if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
             sys.modules["RxyCode"] = _parent_mod
         _canonical = _types.ModuleType("RxyCode.RxyCode1_1_0")
         sys.modules["RxyCode.RxyCode1_1_0"] = _canonical
-        setattr(_parent_mod, "RxyCode1_1_0", _canonical)
+        _parent_mod.RxyCode1_1_0 = _canonical
         _canonical.__file__ = str(_checkout_root / "__init__.py")
         _canonical.__path__ = [str(_checkout_root)]
         _canonical.__package__ = "RxyCode.RxyCode1_1_0"
@@ -55,13 +55,6 @@ if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
             _canonical_source = _canonical_init.read_text(encoding="utf-8-sig")
             exec(compile(_canonical_source, str(_canonical_init), "exec"), _canonical.__dict__)  # noqa: S102
     os.environ["_RXYCODE_TEST_CHECKOUT"] = str(_checkout_root)
-    if "core" not in sys.modules:
-        try:
-            import RxyCode.RxyCode1_1_0.core as _core_pkg
-        except ImportError:
-            _core_pkg = None
-        if _core_pkg is not None:
-            sys.modules["core"] = _core_pkg
 
 import pytest
 from langchain_core.messages import AIMessage
