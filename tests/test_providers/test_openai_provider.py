@@ -180,13 +180,27 @@ def test_reasoning_effort_is_top_level_param():
     ("fast", "low"),
     ("balanced", "medium"),
     ("deep", "high"),
-    ("ultra", "medium"),  # 未知档位回退 medium
 ])
 def test_effort_preset_mapping(effort, expected):
     caps = _caps("gpt-5.6-sol")
     p, cfg = _resolve("gpt-5.6-sol")
     cfg["effort"] = effort
     assert p.llm_kwargs(cfg, caps)["reasoning_effort"] == expected
+
+
+def test_unknown_effort_not_injected():
+    """审计修复（luna audit2，2026-08-13）：未知档位（不在 effort_options 也
+    不在 presets keys）→ 不注入 reasoning_effort，与 base.py 安全回退语义一致。
+
+    行为等价性：gpt-5.6 省略 reasoning_effort 时厂商默认 medium（thinking
+    default 注释），原 A21 的 get(effort, "medium") 与不注入效果相同——
+    本修改零行为影响，仅收紧语义（防止 /effort 厂商档位直传路径误判）。
+    """
+    caps = _caps("gpt-5.6-sol")
+    p, cfg = _resolve("gpt-5.6-sol")
+    cfg["effort"] = "ultra"
+    kwargs = p.llm_kwargs(cfg, caps)
+    assert "reasoning_effort" not in kwargs
 
 
 # ---- o 系列 --------------------------------------------------------------

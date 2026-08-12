@@ -248,3 +248,11 @@ def test_openai_abstract_effort_still_maps():
     p, cfg, caps = _resolve("https://api.openai.com/v1", "gpt-5.6-sol", effort="deep")
     kwargs = p.llm_kwargs(cfg, caps)
     assert kwargs.get("reasoning_effort") == "high"
+
+
+def test_openai_unknown_effort_no_injection():
+    """审计修复（luna audit2）：OpenAI 未知档位（不在 options 也不在 presets
+    keys）→ 不注入 reasoning_effort（原 get(effort, "medium") 会误注入 medium）。"""
+    p, cfg, caps = _resolve("https://api.openai.com/v1", "gpt-5.6-sol", effort="bogus")
+    kwargs = p.llm_kwargs(cfg, caps)
+    assert "reasoning_effort" not in kwargs

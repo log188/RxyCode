@@ -169,15 +169,18 @@ class OpenAIProvider(BaseProvider):
             # 仅对推理模型注入 reasoning_effort（§7.2 �?5：gpt-5.6 调研范围内；
             # gpt-4o/gpt-5.2 无数据，不得臆造参数）。
             # /effort 扩展（2026-08-12）：effort 命中厂商档位全集（effort_options）
-            # 时直接透传；否则走抽象映射（fast/balanced/deep），未知档位保持
-            # A21 现状默认 "medium"。
+            # 时直接透传；否则走抽象映射（fast/balanced/deep）。
+            # 审计修复（luna audit2，2026-08-13）：未知档位（不在 effort_options
+            # 也不在 presets keys）→ **不注入**，与 base.py 安全回退语义一致
+            # （原 A21 的 get(effort, "medium") 默认会把非法档位误注入 medium）。
             effort = str(model_config.get("effort") or "balanced")
             options = caps.effort_options or ()
             if effort in options:
                 kwargs["reasoning_effort"] = effort
             else:
-                preset = caps.effort_presets.get(effort, "medium")
-                # §7.2 �?5 / ③：Chat Completions 顶层参数 reasoning_effort
-                # （不�?extra_body，也不是 DeepSeek �?thinking.type）�?/
-                kwargs["reasoning_effort"] = preset
+                preset = caps.effort_presets.get(effort)
+                if preset is not None:
+                    # §7.2 �?5 / ③：Chat Completions 顶层参数 reasoning_effort
+                    # （不�?extra_body，也不是 DeepSeek �?thinking.type）�?/
+                    kwargs["reasoning_effort"] = preset
         return kwargs

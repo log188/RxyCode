@@ -293,12 +293,22 @@ def set_active(params: dict[str, Any]) -> dict[str, Any]:
     model_id = str(params.get("id", "")).strip()
     if not model_id:
         return {"ok": False, "error_code": "invalid", "message": "id must not be empty"}
+    # 审计修复（luna audit2，2026-08-13）：effort 校验**前置**于模型切换——
+    # malformed effort 时不得产生"模型已切换但档位未设置"的部分成功（原子性）。
+    effort = params.get("effort")
+    if effort is not None:
+        if not isinstance(effort, str) or not effort.strip():
+            return {
+                "ok": False,
+                "id": model_id,
+                "error_code": "invalid",
+                "message": "effort must be a non-empty string",
+            }
     ok = set_active_model(model_id)
     if not ok:
         return {"ok": False, "id": model_id}
-    effort = params.get("effort")
     if effort is not None:
-        if not set_effort(str(effort)):
+        if not set_effort(effort):
             return {
                 "ok": False,
                 "id": model_id,

@@ -31,6 +31,8 @@ provider 描述"这一族模型和 OpenAI 默认行为有什么不同"，无状�
 | effort_presets | 抽象档位映射 fast/balanced/deep → 厂商参数（A21） | `{}` | 同上（DeepSeek/OpenAI/Kimi-k3/GLM-5.2 非空） |
 | **effort_options** | **厂商档位全集（/effort 命令与设置页档位列表；空 = 不支持档位选择，2026-08-12）** | `()` | 同上（DeepSeek `("low","high","max")`、OpenAI `("low","medium","high")`、Kimi-k3 `("low","high","max")`、GLM-5.2 `("max","xhigh","high","medium","low","minimal","none")`） |
 
+`effort` 注入裁决（2026-08-13，luna audit2 收紧）：`llm_kwargs` 中 effort 命中 `effort_options` → 直接透传厂商档位；否则命中 `effort_presets` keys（fast/balanced/deep）→ 走抽象映射；**都不命中 → 不注入**（OpenAI 原 A21 的 `get(effort, "medium")` 默认已移除——gpt-5.6 省略 reasoning_effort 时厂商默认即 medium，行为等价，仅收紧语义）。
+
 `UsageFieldMap` 默认值（`config/model_capabilities.py`）：
 
 | 字段 | 默认值 |

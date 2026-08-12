@@ -160,6 +160,22 @@ def test_set_active_without_effort_keeps_unset(isolated_config, monkeypatch):
     assert touched == []
 
 
+def test_set_active_non_string_effort_rejected(isolated_config, monkeypatch):
+    """审计修复（luna audit2）：effort 非字符串（数字等）→ 拒绝，不 str() 化。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(model_manager, "set_active_model", lambda name: True)
+    touched = []
+    monkeypatch.setattr(
+        model_manager, "set_effort", lambda v: touched.append(v) or True
+    )
+
+    result = model_routes.set_active({"id": "demo", "effort": 123})
+    assert result["ok"] is False
+    assert result["error_code"] == "invalid"
+    assert touched == []
+
+
 def test_list_models_exposes_effort_key(isolated_config):
     """models/list 返回 effort 键（全局档位），未设置时为 None。"""
     result = model_routes.list_models()
