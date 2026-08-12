@@ -15,6 +15,7 @@ PHASE-E §4.1 / §5 E1.
 from __future__ import annotations
 
 import asyncio
+import copy
 import itertools
 import logging
 import os
@@ -115,11 +116,16 @@ class AppendOnlyLog:
         return self._entries[0].seq
 
     async def append(self, event: BusEvent) -> None:
-        """Persist the event (retaining the rollover window)."""
+        """Persist the event (retaining the rollover window).
+
+        EB6: the stored record is a deep copy — the publisher may keep
+        mutating its own object afterwards, the log fact never changes.
+        """
         if not self._persist:
             return
-        self._entries.append(event)
-        self._bytes += _approx_size(event)
+        snapshot = copy.deepcopy(event)
+        self._entries.append(snapshot)
+        self._bytes += _approx_size(snapshot)
         while self._should_roll():
             removed = self._entries.popleft()
             self._bytes = max(0, self._bytes - _approx_size(removed))

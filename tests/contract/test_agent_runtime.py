@@ -494,6 +494,22 @@ async def test_spawn_rejects_invalid_namespace_before_start():
 
 
 @pytest.mark.asyncio
+async def test_cross_agent_control_plane_flows_through_the_bus():
+    """RB3 runtime evidence: agent A's lifecycle events travel the shared
+    EventBus and agent B's subscription observes them (control plane is the
+    bus; no side channel)."""
+    bus = _bus()
+    b_sub = await bus.subscribe("agent-b", "agent/A/*")
+    rt = AgentRuntime(bus, run_factory=_ok_run, parallel_limit=2)
+    await rt.spawn(AgentConfig(agent_id="A", tools=()))
+    await rt.agents["A"].wait_state(LifecycleState.DONE)
+
+    events = await _drain_events(bus, 2, sub=b_sub)
+    assert [e.method for e in events] == ["event/agent_started", "event/agent_done"]
+    assert all(e.agent_id == "A" for e in events)
+
+
+@pytest.mark.asyncio
 async def test_spawn_mounts_agent_context_with_session_cache():
     rt = AgentRuntime(_bus(), run_factory=_ok_run, parallel_limit=2)
     await rt.spawn(AgentConfig(agent_id="A", tools=()))

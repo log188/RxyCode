@@ -225,6 +225,24 @@ async def test_interrupt_writes_checkpoint_first():
 
 
 @pytest.mark.asyncio
+async def test_interrupt_with_failed_checkpoint_raises_and_keeps_state():
+    rt = FakeRuntime(fail_save=True)
+    started = asyncio.Event()
+
+    async def slow(task: str) -> str:
+        started.set()
+        await asyncio.Event().wait()
+
+    task = _make_task(runtime=rt, run_target=slow)
+    await task.spawn("t1")
+    await started.wait()
+
+    with pytest.raises(RuntimeError, match="checkpoint"):
+        await task.interrupt()
+    assert task.state != LifecycleState.CANCELLED  # never silently continued
+
+
+@pytest.mark.asyncio
 async def test_interrupt_cancels_main_task_and_cascades_tools():
     rt = FakeRuntime()
     started = asyncio.Event()

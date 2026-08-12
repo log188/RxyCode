@@ -126,6 +126,12 @@ class AgentConfig:
     cache_namespace: str | None = None
     mechanical: bool = False
 
+    def __post_init__(self) -> None:
+        # fail-closed at construction: illegal namespaces are rejected
+        # before spawn (PHASE-E §4.3, DC8)
+        if self.cache_namespace is not None:
+            validate_cache_namespace(self.cache_namespace)
+
     def to_dict(self) -> dict[str, Any]:
         """exclude_none-compatible serialization with field-level filtering.
 

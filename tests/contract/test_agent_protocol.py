@@ -198,8 +198,8 @@ def test_snapshot_defaults_to_none_at_schema_layer():
 # ---------------------------------------------------------------------------
 
 
-def test_source_defaults_to_none():
-    assert _evt("event/agent_started").source is None
+def test_source_defaults_to_internal():
+    assert _evt("event/agent_started").source == "internal"  # signature default
 
 
 def test_source_bridge_round_trip_preserved():
@@ -210,9 +210,15 @@ def test_source_bridge_round_trip_preserved():
     assert back.source == "bridge"
 
 
-def test_source_omitted_when_default_and_exclude_none():
-    wire = _evt("event/agent_started").model_dump(exclude_none=True)
-    assert "source" not in wire  # three states: omitted | internal | bridge
+def test_source_missing_field_deserializes_to_internal():
+    # historical events without the field fall back to the signature default
+    raw = {
+        "method": "event/agent_started",
+        "session_id": "s",
+        "agent_id": "A",
+        "seq": 1,
+    }
+    assert AgentEvent(**raw).source == "internal"
 
 
 def test_source_unknown_value_rejected():

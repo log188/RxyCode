@@ -165,15 +165,14 @@ class AgentTask:
         await self._require_state(
             LifecycleState.RUNNING, LifecycleState.PAUSED, LifecycleState.BOOTSTRAP
         )
-        # checkpoint before interrupt (E2 acceptance: interrupt writes the
-        # checkpoint first); a failure is logged, never blocks cancellation
-        try:
-            await self._runtime.save_checkpoint(self.agent_id)
-        except Exception as exc:  # noqa: BLE001
-            _logger.warning(
-                "checkpoint write failed before interrupt for agent %s: %r",
-                self.agent_id,
-                exc,
+        # checkpoint before interrupt (PHASE-E §4.2: interrupt writes the
+        # checkpoint first; on write failure the state moves to FAILED with
+        # the reason recorded — never silently continue)
+        checkpoint = await self._runtime.save_checkpoint(self.agent_id)
+        if checkpoint is None:
+            raise RuntimeError(
+                f"checkpoint write failed for agent {self.agent_id}; "
+                "refusing to interrupt"
             )
         await self._set_state(LifecycleState.CANCELLED)
         main_task = self._main_task
