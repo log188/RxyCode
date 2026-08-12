@@ -7,7 +7,7 @@
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/renderer/src/lib/approvalPolicy.test.mts src/renderer/src/lib/conversationStore.test.mts src/renderer/src/lib/appserver.integration.test.mts src/renderer/src/lib/workspaceSettings.test.mts src/platform/index.test.mts src/main/external-url.test.mts src/main/kill-tree.test.mts src/main/lockfile.test.mts src/main/navigation.test.mts src/main/workspace-dialog.test.mts src/main/runtime.test.mts src/main/appserver-runtime.test.mts src/main/auto-update.test.mts src/main/crash-report.test.mts",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test scripts/cdp-harness.test.mts scripts/desktop-cd-usage.test.mts src/renderer/src/lib/performanceTrace.test.mts src/renderer/src/lib/approvalPolicy.test.mts src/renderer/src/lib/conversationStore.test.mts src/renderer/src/lib/modelPresentation.test.mts src/renderer/src/lib/taskPresentation.test.mts src/renderer/src/lib/taskActions.test.mts src/renderer/src/lib/appserver.integration.test.mts src/renderer/src/lib/workspaceSettings.test.mts src/renderer/src/lib/desktopPreferences.test.mts src/renderer/src/lib/composerBehavior.test.mts src/platform/index.test.mts src/main/external-url.test.mts src/main/kill-tree.test.mts src/main/lockfile.test.mts src/main/navigation.test.mts src/main/workspace-dialog.test.mts src/main/runtime.test.mts src/main/appserver-runtime.test.mts src/main/auto-update.test.mts src/main/crash-report.test.mts",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
@@ -24,9 +24,16 @@
     "screenshot:d3": "node scripts/screenshot.mts",
     "screenshot:d4": "node scripts/approval-screenshot.mts",
     "screenshot:d5": "node scripts/settings-screenshot.mts",
+    "test:gui:ux": "node scripts/gui-ux-regression.mts",
+    "stress:desktop": "node scripts/desktop-stress.mts",
+    "stress:cd:deterministic": "node scripts/desktop-cd-suite.mts --mode=deterministic --rounds=3",
+    "stress:cd:real": "node scripts/desktop-cd-suite.mts --mode=real --rounds=1",
+    "stress:cd:all": "npm run stress:cd:deterministic && npm run stress:cd:real",
+    "report:cd": "node scripts/desktop-cd-report.mts",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && npm run runtime:prepare && electron-builder --dir",
     "build:win": "npm run build && npm run runtime:prepare && electron-builder --win",
+    "build:win:zip": "npm run build && npm run runtime:prepare && electron-builder --win zip",
     "build:mac": "electron-vite build && npm run runtime:prepare -- --platform darwin && electron-builder --mac",
     "build:linux": "electron-vite build && npm run runtime:prepare -- --platform linux && electron-builder --linux"
   },
@@ -34,7 +41,8 @@
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@rxycode/protocol-client": "file:../protocol-client",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "lucide-react": "^0.468.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",

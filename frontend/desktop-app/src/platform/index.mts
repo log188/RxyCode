@@ -23,6 +23,8 @@ export interface AppserverInfo {
   repoRoot: string
   protocolVersion: string
   appVersion: string
+  appserverPid?: number | null
+  appserverStatus?: string
 }
 
 export interface AppserverPlatform {
@@ -30,6 +32,7 @@ export interface AppserverPlatform {
   getStatus(): Promise<AppserverStatus>
   start(): void
   stop(): void
+  restart?: () => Promise<void>
   pickWorkspaceDirectory(): Promise<string | null>
   onStatus(callback: (status: AppserverStatus) => void): () => void
   sendLine(line: string): void
@@ -45,6 +48,10 @@ export function createAppserverPlatform(): AppserverPlatform {
     },
     stop: () => {
       void window.api.appserver.stop()
+    },
+    restart: async () => {
+      await window.api.appserver.stop()
+      await window.api.appserver.start()
     },
     pickWorkspaceDirectory: () => window.api.workspace.pickDirectory(),
     onStatus: (callback) =>
@@ -101,6 +108,7 @@ export interface ConversationConnectionOptions {
 export interface ConversationConnection {
   readonly client: ProtocolClient | null
   attach(info: AppserverInfo): Promise<void>
+  reconnect(info: AppserverInfo): Promise<void>
   detach(reason: string): void
 }
 
@@ -170,6 +178,10 @@ export function createConversationConnection(
         }
         throw error
       }
+    },
+    async reconnect(info: AppserverInfo): Promise<void> {
+      this.detach('reconnecting to appserver')
+      await this.attach(info)
     },
     detach(reason: string): void {
       if (client === null) return

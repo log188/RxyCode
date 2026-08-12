@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 import sys
 import uuid
@@ -26,6 +27,7 @@ from .jsonrpc import (
 )
 from .runtime import install_tui_context_hook
 from .sessions import SessionStore
+from .task_store import DesktopTaskStore
 from .watchdog import ActiveJob, WatchdogState, heartbeat_interval_seconds, stall_timeout_seconds
 
 try:
@@ -41,6 +43,26 @@ _logger = logging.getLogger(__name__)
 
 _DEFAULT_PROMPT_TIMEOUT_SECONDS = 600.0
 _SHUTDOWN_PROMPT_WAIT_SECONDS = 30.0
+_REPLAY_EVENT_METHODS = {
+    "event/task_started",
+    "event/task_complete",
+    "event/error",
+    "event/plan",
+    "event/step",
+    "event/progress",
+    "event/job_status",
+    "event/tool_begin",
+    "event/tool_end",
+    "event/token_usage",
+    "event/final",
+    "event/done",
+    "event/recovery_started",
+    "event/recovery_analyzing",
+    "event/recovery_attempt",
+    "event/recovery_resolved",
+    "event/recovery_exhausted",
+}
+_MAX_REPLAY_TEXT = 24_000
 
 
 class AppServer:
@@ -51,7 +73,11 @@ class AppServer:
         self._stub = stub
         self._shutdown = False
         self._initialized = False
-        self._sessions = SessionStore()
+        # Stub servers are used by contract tests and the local fake transport;
+        # they must never read or mutate a user's persistent Desktop history.
+        # The production appserver keeps the durable store across restarts.
+        self._task_store = DesktopTaskStore(persistent=not stub)
+        self._sessions = SessionStore(task_store=self._task_store)
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -63,9 +89,37 @@ class AppServer:
         set_approval_broker(self._approval)
         self._active_session_id = "latest"
         self._prompt_tasks: set[asyncio.Task[Any]] = set()
+        # Worker notifications arrive synchronously from the AsyncRpcPipe
+        # reader, but stdout writes are asynchronous. A single FIFO writer is
+        # required so a slow tool_end cannot be overtaken by recovery/error.
+        self._notification_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._notification_writer: asyncio.Task[Any] | None = None
+        self._notification_write_failures: list[BaseException] = []
         self._job_tasks: dict[str, asyncio.Task[Any]] = {}
         self._resolved_jobs: set[str] = set()
         self._thinking_expanded = False
+
+    def _ensure_notification_writer(self) -> None:
+        if self._notification_writer is None or self._notification_writer.done():
+            self._notification_writer = asyncio.create_task(
+                self._notification_writer_loop()
+            )
+
+    async def _notification_writer_loop(self) -> None:
+        while True:
+            message = await self._notification_queue.get()
+            try:
+                await write_message(message)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                self._notification_write_failures.append(exc)
+            finally:
+                self._notification_queue.task_done()
+
+    def _schedule_notification(self, message: dict[str, Any]) -> None:
+        self._ensure_notification_writer()
+        self._notification_queue.put_nowait(message)
 
     def _session_lock(self, session_id: str) -> asyncio.Lock:
         lock = self._session_locks.get(session_id)
@@ -76,7 +130,7 @@ class AppServer:
 
     async def _host_for_session(self, session_id: str) -> AgentHost:
         host = self._session_hosts.get(session_id)
-        if host is not None and host.alive():
+        if host is not None and host.alive() and not host.degraded:
             return host
         if host is not None:
             await host.kill_async()
@@ -98,6 +152,7 @@ class AppServer:
             forward_server_request=self._send_server_request,
             main_loop=asyncio.get_running_loop(),
         )
+        await host.start()
         self._session_hosts[session_id] = host
         return host
 
@@ -107,12 +162,141 @@ class AppServer:
             await host.kill_async()
 
     async def _emit_model(self, model: BaseModel) -> None:
-        await write_message(model_to_notification(model))
+        message = model_to_notification(model)
+        self._persist_notification(message)
+        self._schedule_notification(message)
+        await self._drain_emit_writes()
+
+    def _persist_notification(self, message: dict[str, Any]) -> None:
+        """Persist replayable session events without coupling the renderer to Python.
+
+        Host notifications and typed server notifications use two different
+        transport paths, so both call this single synchronous adapter.  The
+        store is outside the workspace and receives a redacted JSON-safe copy;
+        credentials and authorization material never enter the replay log.
+        """
+        if not isinstance(message, dict):
+            return
+        method = message.get("method")
+        params = message.get("params")
+        if not isinstance(method, str) or not isinstance(params, dict):
+            return
+        if method.startswith("child_session/") or method.startswith("approval/"):
+            persist_event = True
+        else:
+            persist_event = method in _REPLAY_EVENT_METHODS
+        if not persist_event:
+            # Streaming deltas are intentionally not written one by one. The
+            # final event and tool/recovery records are sufficient to rebuild
+            # a completed task, while skipping deltas avoids both prompt-like
+            # content in the durable task index and an fsync per token.
+            return
+        session_id = params.get("root_session_id") or params.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            return
+
+        def redact(value: Any, key: str = "") -> Any:
+            lowered = key.lower()
+            if any(secret in lowered for secret in ("api_key", "apikey", "authorization", "password", "secret")):
+                return "[REDACTED]"
+            if isinstance(value, dict):
+                return {str(k): redact(v, str(k)) for k, v in value.items()}
+            if isinstance(value, list):
+                return [redact(item, key) for item in value]
+            if isinstance(value, str):
+                safe = re.sub(
+                    r"(?i)(authorization|api[_-]?key|password|secret|access[_-]?token)"
+                    r"\s*[:=]\s*(?:bearer\s+)?[^\s,;]+",
+                    lambda match: f"{match.group(1)}=[REDACTED]",
+                    value,
+                )
+                safe = re.sub(
+                    r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}",
+                    "Bearer [REDACTED]",
+                    safe,
+                )
+                safe = re.sub(
+                    r"(?i)(--(?:api-key|token|password|secret))\s+[^\s]+",
+                    r"\1 [REDACTED]",
+                    safe,
+                )
+                if len(safe) > _MAX_REPLAY_TEXT:
+                    safe = safe[:_MAX_REPLAY_TEXT] + "\n[replay text truncated]"
+                return safe
+            try:
+                json.dumps(value)
+                return value
+            except (TypeError, ValueError):
+                return str(value)
+
+        safe_params = redact(params)
+        try:
+            self._task_store.append_event(
+                session_id,
+                {"method": method, "params": safe_params},
+            )
+        except Exception:
+            _logger.exception("failed to persist session event for %s", session_id)
+
+        if method == "event/job_status":
+            state = safe_params.get("state")
+            if isinstance(state, str):
+                self._sessions.update_status(
+                    session_id,
+                    "queued" if state in {"submitted", "queued"} else state,
+                )
+        elif method == "event/done":
+            state = safe_params.get("status")
+            if isinstance(state, str):
+                self._sessions.update_status(session_id, state)
+        elif method in {"event/token_usage", "event/final"}:
+            self._sessions.update_usage(
+                session_id,
+                {
+                    "input_tokens": safe_params.get("input_tokens"),
+                    "output_tokens": safe_params.get("output_tokens"),
+                    "cache_hit_tokens": safe_params.get("cache_hit_tokens"),
+                    "cache_write_tokens": safe_params.get("cache_write_tokens"),
+                    "cache_hit_rate": safe_params.get("cache_hit_rate"),
+                    "reporting_status": safe_params.get("reporting_status", "not_reported"),
+                },
+            )
+
+    async def _drain_emit_writes(self) -> list[BaseException]:
+        """Wait for the notification FIFO, surfacing any write failures.
+
+        Called before every
+        terminal response (success, error, timeout, cancel) so the result never
+        overtakes already-emitted notifications; the caller should degrade the
+        watchdog when the returned list is non-empty.
+        """
+        await asyncio.wait_for(self._notification_queue.join(), timeout=10.0)
+        failures = list(self._notification_write_failures)
+        self._notification_write_failures.clear()
+        if failures:
+            _logger.error(
+                "lost %d emit write(s): %s", len(failures), failures[0]
+            )
+        return failures
 
     async def _emit_job_state(self, session_id: str, job_id: str, state: str) -> None:
+        self._sessions.update_status(
+            session_id,
+            "queued" if state in {"submitted", "queued"} else state,
+        )
         await self._emit_model(
             JobStatusUpdate(session_id=session_id, job_id=job_id, state=state)
         )
+
+    async def _drain_emit_and_degrades(self, job_id: str) -> None:
+        """Drain pending emit writes and degrade the watchdog on failure.
+
+        Used by every terminal job path so a lost stream event is reflected in
+        /status regardless of how the job ends.
+        """
+        write_failures = await self._drain_emit_writes()
+        if write_failures:
+            self._watchdog.degrade(f"emit write failure during job {job_id}")
 
     async def _respond(self, request_id: Any, result: Any) -> None:
         await write_message({"jsonrpc": "2.0", "id": request_id, "result": result})
@@ -133,13 +317,18 @@ class AppServer:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending_server[request_id] = future
-        await write_message(
-            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-        )
         try:
+            await write_message(
+                {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+            )
             return await future
         finally:
+            # Always drop the pending future, even if write_message raises
+            # before the response arrives — otherwise it would leak.  Cancel an
+            # unfinished future so no dangling await remains.
             self._pending_server.pop(request_id, None)
+            if not future.done():
+                future.cancel()
 
     def _resolve_server_response(self, message: dict[str, Any]) -> bool:
         request_id = message.get("id")
@@ -149,10 +338,12 @@ class AppServer:
         if future is None or future.done():
             return False
         if "error" in message:
-            error = message.get("error") or {}
-            future.set_exception(
-                RuntimeError(str(error.get("message", "server request failed")))
-            )
+            error = message.get("error")
+            if isinstance(error, dict):
+                detail = str(error.get("message", "server request failed"))
+            else:
+                detail = str(error or "server request failed")
+            future.set_exception(RuntimeError(detail))
             return True
         result = message.get("result")
         if not isinstance(result, dict):
@@ -173,6 +364,9 @@ class AppServer:
     ) -> None:
         if job_id in self._resolved_jobs:
             return
+        # Drain any in-flight emit writes so a lost stream event surfaces in
+        # /status regardless of how the job ends (stall, error, cancel, ...).
+        await self._drain_emit_and_degrades(job_id)
         self._resolved_jobs.add(job_id)
         self._watchdog.finish_job(job_id)
         self._job_tasks.pop(job_id, None)
@@ -188,6 +382,8 @@ class AppServer:
         reason = (
             f"job stalled >{stall_timeout_seconds()}s (session {stalled.session_id})"
         )
+        # Save the task *before* _fail_job (which pops it from _job_tasks).
+        task = self._job_tasks.get(stalled.job_id)
         await self._fail_job(
             session_id=stalled.session_id,
             job_id=stalled.job_id,
@@ -197,7 +393,6 @@ class AppServer:
             kill_host=True,
             degrade_reason=reason,
         )
-        task = self._job_tasks.get(stalled.job_id)
         if task is not None and not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -231,15 +426,56 @@ class AppServer:
         if not isinstance(workspace, str) or not workspace.strip():
             await self._respond_error(request_id, -32602, "workspace_root is required")
             return
-        record = self._sessions.create(Path(workspace))
+        model_id = str(params.get("model") or "").strip() or None
+        provider_id: str | None = None
+        if model_id is None:
+            try:
+                from .model_routes import list_models
+
+                models = list_models()
+                model_id = str(models.get("active") or "").strip() or None
+                for item in models.get("models", []):
+                    if isinstance(item, dict) and item.get("id") == model_id:
+                        value = item.get("provider_id")
+                        provider_id = str(value) if value else None
+                        break
+            except Exception:
+                # Session creation must remain usable when model discovery is
+                # unavailable; the worker will report the provider error on
+                # the first prompt or explicit task-level switch.
+                model_id = None
+        record = self._sessions.create(
+            Path(workspace), model_id=model_id, provider_id=provider_id
+        )
         self._active_session_id = record.session_id
         await self._respond(
             request_id,
             {
                 "session_id": record.session_id,
                 "workspace_root": str(record.workspace_root),
+                "model_id": record.model_id,
+                "provider_id": record.provider_id,
             },
         )
+        # Warm the first worker after the durable session response. The UI can
+        # render the new task immediately while bootstrap happens in the
+        # background, removing the cold-start cost from the first prompt.
+        if not self._stub:
+            warm = asyncio.create_task(self._warm_session_host(record.session_id))
+            self._prompt_tasks.add(warm)
+            warm.add_done_callback(self._prompt_tasks.discard)
+
+    async def _warm_session_host(self, session_id: str) -> None:
+        try:
+            async with self._session_lock(session_id):
+                host = await self._host_for_session(session_id)
+                await host.ensure_bootstrapped(timeout=30.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Warming is an optimization. A later prompt still owns the
+            # authoritative error path and can create a fresh worker.
+            _logger.warning("background worker warm failed for %s", session_id, exc_info=True)
 
     async def _run_prompt(
         self,
@@ -251,6 +487,7 @@ class AppServer:
         timeout_seconds: float | None,
         mode: str = "build",
         thinking_expanded: bool | None = None,
+        permission_mode: str | None = None,
     ) -> None:
         record = self._sessions.get(session_id)
         if record is None:
@@ -283,7 +520,19 @@ class AppServer:
 
                 def emit_message(message: dict[str, Any]) -> None:
                     self._watchdog.touch_job(job_id)
-                    write_message_sync(message)
+                    self._persist_notification(message)
+                    try:
+                        asyncio.get_running_loop()
+                    except RuntimeError:
+                        # Legacy path: called from the host's reader thread.
+                        write_message_sync(message)
+                    else:
+                        # Async path: called from the AsyncRpcPipe reader task
+                        # on the event loop — schedule the write via to_thread
+                        # so stdout backpressure never blocks the loop.  Track
+                        # the task so the result can be ordered after all
+                        # already-emitted notifications.
+                        self._schedule_notification(message)
 
                 async def _execute_prompt() -> dict[str, Any]:
                     host = await self._host_for_session(session_id)
@@ -295,6 +544,7 @@ class AppServer:
                         emit=emit_message,
                         mode=mode,
                         thinking_expanded=expand,
+                        permission_mode=permission_mode,
                     )
 
                 try:
@@ -316,6 +566,12 @@ class AppServer:
                     )
                     return
                 except asyncio.CancelledError:
+                    # Stop the worker-side prompt so it cannot keep running
+                    # (and emitting) after the job was cancelled.
+                    host = self._session_hosts.get(session_id)
+                    if host is not None and host.alive():
+                        with contextlib.suppress(Exception):
+                            await host.interrupt(timeout=2.0)
                     if job_id not in self._resolved_jobs:
                         await self._fail_job(
                             session_id=session_id,
@@ -345,6 +601,13 @@ class AppServer:
                 status = str(payload.get("status", "failed"))
                 if status != "succeeded":
                     await self._emit_job_state(session_id, job_id, "failed")
+                else:
+                    self._sessions.update_status(session_id, "succeeded")
+
+                # Order the result after all already-emitted notifications so
+                # the client never observes the result arrive before them, and
+                # degrade the watchdog if any stream event was lost.
+                await self._drain_emit_and_degrades(job_id)
 
                 await self._respond(
                     request_id,
@@ -355,6 +618,10 @@ class AppServer:
                         "thinking": payload.get("thinking"),
                         "input_tokens": payload.get("input_tokens"),
                         "output_tokens": payload.get("output_tokens"),
+                        "cache_hit_tokens": payload.get("cache_hit_tokens"),
+                        "cache_write_tokens": payload.get("cache_write_tokens"),
+                        "cache_hit_rate": payload.get("cache_hit_rate"),
+                        "reporting_status": payload.get("reporting_status", "not_reported"),
                     },
                 )
                 self._resolved_jobs.add(job_id)
@@ -370,6 +637,17 @@ class AppServer:
         if self._sessions.get(session_id) is None:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
+        if (
+            self._watchdog.degraded
+            and self._watchdog.degrade_reason.startswith(
+                ("job stalled", "transport degraded")
+            )
+        ):
+            # Stall handling kills the affected worker before returning the
+            # error. Admit the next prompt, even when another session still
+            # has an active job, so one stalled session cannot block unrelated
+            # concurrent work.
+            self._watchdog.recover()
         if self._watchdog.degraded:
             await self._respond_error(
                 request_id,
@@ -404,6 +682,15 @@ class AppServer:
             thinking_expanded = None
         else:
             thinking_expanded = bool(thinking_raw)
+        permission_mode_raw = params.get("permission_mode")
+        permission_mode = (
+            str(permission_mode_raw).strip().lower()
+            if permission_mode_raw is not None
+            else None
+        )
+        if permission_mode not in {None, "confirm_all", "auto_edit", "full_auto"}:
+            await self._respond_error(request_id, -32602, "invalid permission_mode")
+            return
         await self._run_prompt(
             session_id=session_id,
             text=text,
@@ -412,6 +699,7 @@ class AppServer:
             timeout_seconds=timeout_seconds,
             mode=mode,
             thinking_expanded=thinking_expanded,
+            permission_mode=permission_mode,
         )
 
     async def _handle_set_thinking_expanded(
@@ -468,16 +756,21 @@ class AppServer:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
         host = self._session_hosts.get(session_id)
-        cancelled = False
+        outcome = {"cancelled": False, "failed": False, "killed": False}
         if host is not None and host.alive():
             try:
-                result = await asyncio.to_thread(
-                    host._request, "interrupt", {}, timeout=5.0
-                )
-                cancelled = bool(result.get("cancelled"))
-            except Exception:
+                result = await host.interrupt(timeout=5.0)
+                outcome = {
+                    "cancelled": bool(result.get("cancelled")),
+                    "failed": bool(result.get("failed")),
+                    "killed": bool(result.get("killed")),
+                }
+            except Exception as exc:
+                _logger.warning("session/interrupt failed for %s: %s", session_id, exc)
                 await self._kill_session_host(session_id)
-        await self._respond(request_id, {"cancelled": cancelled, "session_id": session_id})
+                outcome = {"cancelled": False, "failed": True, "killed": True}
+        outcome["session_id"] = session_id
+        await self._respond(request_id, outcome)
 
     async def _heartbeat_loop(self) -> None:
         interval = heartbeat_interval_seconds()
@@ -485,6 +778,11 @@ class AppServer:
             await asyncio.sleep(interval)
             for stalled in list(self._watchdog.stalled_jobs()):
                 await self._handle_stalled_job(stalled)
+            for session_id, host in list(self._session_hosts.items()):
+                if host.degraded and not self._watchdog.degraded:
+                    self._watchdog.degrade(
+                        f"transport degraded (session {session_id})"
+                    )
             await self._emit_model(
                 ServerHeartbeat(
                     uptime_seconds=time.monotonic() - self._started_at,
@@ -499,6 +797,179 @@ class AppServer:
             _logger.info("shutdown requested: %s", reason)
         self._shutdown = True
         await self._respond(request_id, {"ok": True})
+
+    def _emit_host_notification(self, message: dict[str, Any]) -> None:
+        """Forward worker notifications without blocking the event loop."""
+        self._persist_notification(message)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            write_message_sync(message)
+            return
+        self._schedule_notification(message)
+
+    async def _handle_subagent_rpc(
+        self, method: str, params: dict[str, Any], request_id: Any
+    ) -> None:
+        root_session_id = str(
+            params.get("root_session_id")
+            or params.get("parent_session_id")
+            or self._active_session_id
+        )
+
+        if self._sessions.get(root_session_id) is None:
+            if method == "subagents/capability":
+                await self._respond(
+                    request_id,
+                    {
+                        "protocol_version": 1,
+                        "subagents_enabled": False,
+                        "task": False,
+                        "mention": False,
+                        "child_tasks": False,
+                    },
+                )
+                return
+            await self._respond_error(
+                request_id, -32001, f"unknown session: {root_session_id}"
+            )
+            return
+
+        forwarded = dict(params)
+        forwarded["root_session_id"] = root_session_id
+        if method in {"agent/invoke", "task/start"}:
+            forwarded.setdefault("parent_session_id", root_session_id)
+
+        try:
+            host = await self._host_for_session(root_session_id)
+            await host.ensure_bootstrapped(timeout=30.0)
+            result = await host.run_subagent_rpc(
+                method,
+                forwarded,
+                timeout=30.0,
+                emit=self._emit_host_notification,
+            )
+        except Exception as exc:
+            await self._respond_error(request_id, -32000, str(exc))
+            return
+        await self._respond(request_id, result)
+
+    @staticmethod
+    def _session_summary(record: Any) -> dict[str, Any]:
+        return {
+            "session_id": record.session_id,
+            "title": record.title,
+            "workspace_root": str(record.workspace_root),
+            "model_id": record.model_id,
+            "provider_id": record.provider_id,
+            "status": record.status,
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+            "trashed_at": record.trashed_at,
+            "child_count": 0,
+            "usage": dict(record.usage),
+        }
+
+    async def _handle_sessions_list(self, params: dict[str, Any], request_id: Any) -> None:
+        include_trashed = bool(params.get("include_trashed", False))
+        await self._respond(
+            request_id,
+            {"sessions": [self._session_summary(record) for record in self._sessions.list(include_trashed=include_trashed)]},
+        )
+
+    async def _handle_session_events(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        if self._sessions.get(session_id) is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        cursor = int(params.get("cursor", 0) or 0)
+        events, next_cursor, gap = self._task_store.events(session_id, cursor)
+        await self._respond(
+            request_id,
+            {"events": events, "next_cursor": next_cursor, "gap_detected": gap},
+        )
+
+    async def _handle_session_rename(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        title = str(params.get("title", ""))
+        try:
+            record = self._sessions.rename(session_id, title)
+        except KeyError:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        except ValueError as exc:
+            await self._respond_error(request_id, -32602, str(exc))
+            return
+        await self._respond(request_id, self._session_summary(record))
+
+    async def _handle_session_trash(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        try:
+            record = self._sessions.trash(session_id)
+        except KeyError:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        await self._respond(request_id, self._session_summary(record))
+        # Do not make a reversible UI operation wait for process teardown.
+        # The host is owned by this session and can be cleaned up in the
+        # background after the client has received the durable trash result.
+        cleanup = asyncio.create_task(self._kill_session_host(session_id))
+        self._prompt_tasks.add(cleanup)
+        cleanup.add_done_callback(self._prompt_tasks.discard)
+
+    async def _handle_session_restore(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        try:
+            record = self._sessions.restore(session_id)
+        except KeyError:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        await self._respond(request_id, self._session_summary(record))
+
+    async def _handle_session_purge(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        record = self._sessions.get(session_id)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if record.trashed_at is None:
+            await self._respond_error(request_id, -32003, "trash the session before purging it")
+            return
+        await self._kill_session_host(session_id)
+        self._sessions.purge(session_id)
+        await self._respond(request_id, {"ok": True, "session_id": session_id})
+
+    async def _handle_session_set_model(
+        self, params: dict[str, Any], request_id: Any
+    ) -> None:
+        """Switch one task's worker model and persist the selection."""
+        session_id = str(params.get("session_id", ""))
+        model_id = str(params.get("model_id", "")).strip()
+        record = self._sessions.get(session_id)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if not model_id:
+            await self._respond_error(request_id, -32602, "model_id is required")
+            return
+        try:
+            host = await self._host_for_session(session_id)
+            await host.ensure_bootstrapped(timeout=30.0)
+            result = await host.set_model(model_id, timeout=30.0)
+        except Exception as exc:
+            await self._respond_error(request_id, -32000, str(exc))
+            return
+        provider_id = result.get("provider_id") if isinstance(result, dict) else None
+        self._sessions.set_model(session_id, model_id, str(provider_id) if provider_id else None)
+        await self._respond(
+            request_id,
+            {
+                "ok": True,
+                "session_id": session_id,
+                "model_id": model_id,
+                "provider_id": provider_id,
+            },
+        )
 
     async def _dispatch(self, message: dict[str, Any]) -> None:
         if is_client_response(message):
@@ -523,6 +994,20 @@ class AppServer:
 
         if method == "session/new":
             await self._handle_session_new(params, request_id)
+        elif method == "sessions/list":
+            await self._handle_sessions_list(params, request_id)
+        elif method == "session/events":
+            await self._handle_session_events(params, request_id)
+        elif method == "session/rename":
+            await self._handle_session_rename(params, request_id)
+        elif method == "session/trash":
+            await self._handle_session_trash(params, request_id)
+        elif method == "session/restore":
+            await self._handle_session_restore(params, request_id)
+        elif method == "session/purge":
+            await self._handle_session_purge(params, request_id)
+        elif method == "session/set_model":
+            await self._handle_session_set_model(params, request_id)
         elif method == "session/prompt":
             task = asyncio.create_task(self._handle_prompt(params, request_id))
             self._prompt_tasks.add(task)
@@ -539,24 +1024,17 @@ class AppServer:
             await self._handle_shutdown(params, request_id)
 
         # ── Phase B: subagent JSON-RPC methods ──────────────────────
-        elif method == "agent/invoke":
-            from .subagent_routes import invoke_agent
-
-            result = await invoke_agent(params)
-            await self._respond(request_id, result)
-        elif method == "task/start":
-            from .subagent_routes import start_task
-
-            result = await start_task(params)
-            await self._respond(request_id, result)
-        elif method == "subagents/list":
-            from .subagent_routes import list_agents
-
-            await self._respond(request_id, list_agents())
-        elif method == "subagents/capability":
-            from .subagent_routes import capability
-
-            await self._respond(request_id, capability())
+        elif method in {
+            "agent/invoke",
+            "task/start",
+            "subagents/list",
+            "subagents/capability",
+            "child_sessions/list",
+            "child_sessions/events",
+            "child_sessions/cancel",
+            "child_sessions/retry",
+        }:
+            await self._handle_subagent_rpc(method, params, request_id)
 
         # ── Phase 4 D5: model / credential JSON-RPC methods ──────────
         elif method == "models/list":
@@ -646,5 +1124,14 @@ class AppServer:
                 self._heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._heartbeat_task
+            # Cancel in-flight emit writes with a bounded wait so blocked
+            # to_thread writes cannot drag the server shutdown out.
+            writer = self._notification_writer
+            if writer is not None:
+                writer.cancel()
+                with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                    await asyncio.wait_for(writer, timeout=2.0)
+            for exc in self._notification_write_failures:
+                _logger.error("emit write failed during shutdown: %r", exc)
             for session_id in list(self._session_hosts):
                 await self._kill_session_host(session_id)

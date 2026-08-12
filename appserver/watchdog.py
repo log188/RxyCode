@@ -57,6 +57,19 @@ class WatchdogState:
         self.degraded = True
         self.degrade_reason = reason
 
+    def recover(self) -> None:
+        """Clear a recoverable appserver-wide degradation latch.
+
+        A stalled job is isolated and its worker is discarded by the server.
+        Keeping this state latched forever makes every later prompt fail even
+        after a fresh worker can be created. Transport objects still expose
+        their own terminal ``degraded`` state; this method only resets the
+        watchdog's aggregate admission gate after the server has repaired the
+        failed job.
+        """
+        self.degraded = False
+        self.degrade_reason = ""
+
     def stalled_jobs(self) -> list[ActiveJob]:
         limit = stall_timeout_seconds()
         now = time.monotonic()

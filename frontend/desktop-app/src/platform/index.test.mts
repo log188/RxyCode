@@ -272,6 +272,50 @@ test('detach rejects pending requests and unsubscribes; reattach sends a fresh i
   assert.equal(initializes[1]?.id, 1)
 })
 
+test('createAppserverPlatform restart stops and starts the appserver', async () => {
+  const calls: string[] = []
+  const fakeWindow = {
+    api: {
+      appserver: {
+        getStatus: async () => 'running',
+        start: async () => { calls.push('start'); return 'starting' },
+        stop: async () => { calls.push('stop'); return 'stopped' },
+        onStatus: () => () => {},
+        onLog: () => () => {},
+        sendLine: async () => {},
+        onLine: () => () => {},
+        getInfo: async () => INFO
+      },
+      workspace: { pickDirectory: async () => null }
+    }
+  } as unknown as Window
+  const holder = globalThis as { window?: unknown }
+  const previous = holder.window
+  holder.window = fakeWindow
+  try {
+    await createAppserverPlatform().restart?.()
+    assert.deepEqual(calls, ['stop', 'start'])
+  } finally {
+    if (previous === undefined) delete holder.window
+    else holder.window = previous
+  }
+})
+
+test('reconnect replaces the stale client and performs a fresh initialize', async () => {
+  const fake = createFakePlatform()
+  const connection = createConversationConnection({
+    platform: fake.platform,
+    onNotification: () => {}
+  })
+  await attachWithResponse(connection, fake.emitLine)
+  const reconnecting = connection.reconnect(INFO)
+  const secondInitialize = JSON.parse(fake.lines.at(-1) ?? '{}') as { id: number }
+  fake.emitLine(initializeResponse(secondInitialize.id))
+  await reconnecting
+  assert.equal(fake.lineSubscribers(), 1)
+  assert.equal(fake.lines.filter((line) => JSON.parse(line).method === 'initialize').length, 2)
+})
+
 test('stopped -> running -> stopped -> running creates a fresh client per running transition', async () => {
   const fake = createFakePlatform()
   const connection = createConversationConnection({

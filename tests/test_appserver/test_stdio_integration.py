@@ -140,6 +140,16 @@ def appserver_proc():
         encoding="utf-8",
         bufsize=1,
     )
+    import threading as _t
+
+    def _drain():
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            text = line.rstrip()
+            if text:
+                print(f"[appserver-fixture-stderr] {text}", flush=True)
+
+    _t.Thread(target=_drain, daemon=True).start()
     try:
         yield proc
     finally:
@@ -159,15 +169,17 @@ def appserver_proc():
 
 def test_appserver_full_conversation_round_trip(appserver_proc):
     client = AppserverClient(appserver_proc)
+    from protocol.version import PROTOCOL_VERSION
+
     init = client.request(
         "initialize",
         {
             "client_name": "pytest",
             "client_version": "0.0.0",
-            "protocol_version": "1.0.0",
+            "protocol_version": PROTOCOL_VERSION,
         },
     )
-    assert init["protocol_version"] == "1.0.0"
+    assert init["protocol_version"] == PROTOCOL_VERSION
 
     session = client.request(
         "session/new",
@@ -440,6 +452,81 @@ def test_appserver_watchdog_stall_kills_job():
         assert error_response["code"] == -32004
         assert "failed" in job_states
         assert saw_degraded_heartbeat
+
+        # A stalled job kills only the affected worker. The appserver must
+        # recover its prompt path so the next user message is not rejected by
+        # a permanently degraded global latch.
+        recovered = client.request(
+            "session/prompt",
+            {
+                "session_id": session["session_id"],
+                "text": "hello after stalled job",
+            },
+            timeout=10.0,
+        )
+        assert recovered["status"] == "succeeded"
+    finally:
+        if proc.poll() is None:
+            try:
+                if proc.stdin:
+                    proc.stdin.write(
+                        json.dumps({"jsonrpc": "2.0", "id": 99, "method": "shutdown"})
+                        + "\n"
+                    )
+                    proc.stdin.flush()
+            except Exception:
+                pass
+            proc.terminate()
+            proc.wait(timeout=10)
+
+
+def test_appserver_stalled_session_does_not_block_another_session():
+    env = _appserver_env()
+    env["RXYCODE_APPSERVER_STALL_SECONDS"] = "2"
+    env["RXYCODE_APPSERVER_HEARTBEAT_SECONDS"] = "1"
+    proc = _appserver_proc_with_env(env)
+    try:
+        client = AppserverClient(proc)
+        client.request(
+            "initialize",
+            {
+                "client_name": "pytest",
+                "client_version": "0.0.0",
+                "protocol_version": "1.0.0",
+            },
+        )
+        first = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+        second = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+        first_prompt = client.send(
+            "session/prompt",
+            {"session_id": first["session_id"], "text": "hang:forever"},
+        )
+        second_prompt = client.send(
+            "session/prompt",
+            {"session_id": second["session_id"], "text": "hang:forever"},
+        )
+
+        first_failed = False
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            message = client.readline(timeout=0.5)
+            if message is None:
+                continue
+            if message.get("id") == first_prompt and "error" in message:
+                first_failed = True
+                break
+        assert first_failed, "expected one stalled session to fail"
+
+        third = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+        recovered = client.request(
+            "session/prompt",
+            {"session_id": third["session_id"], "text": "hello while sibling is stalled"},
+            timeout=10.0,
+        )
+        assert recovered["status"] == "succeeded"
+        # Keep the second request id referenced so a late terminal response is
+        # not mistaken for an untracked test request during teardown.
+        assert second_prompt > first_prompt
     finally:
         if proc.poll() is None:
             try:
