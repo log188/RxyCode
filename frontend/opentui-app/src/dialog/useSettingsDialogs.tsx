@@ -11,6 +11,7 @@ import {
   useDialog,
   DialogSession,
   DialogModel,
+  DialogEffort,
   DialogAddModel,
   DialogSettings,
   DialogPermission,
@@ -134,6 +135,18 @@ export function useSettingsDialogs(cb: SettingsDialogCallbacks) {
     );
   }, [dialog, close, openAddModel, shortMsg]);
 
+  const openEffort = useCallback(() => {
+    dialog.replace(
+      <DialogEffort
+        onClose={close}
+        onChanged={(effort, message) => {
+          shortMsg(message);
+          cbRef.current.fetchStatus();
+        }}
+      />,
+    );
+  }, [dialog, close, shortMsg]);
+
   const openSession = useCallback(() => {
     dialog.replace(
       <DialogSession
@@ -216,6 +229,10 @@ export function useSettingsDialogs(cb: SettingsDialogCallbacks) {
       }
       if (name === "/model" || name === "/models" || action === "model") {
         openModel();
+        return;
+      }
+      if (name === "/effort") {
+        openEffort();
         return;
       }
       if (name === "/addmodel" || action === "addmodel") {
@@ -314,6 +331,7 @@ export function useSettingsDialogs(cb: SettingsDialogCallbacks) {
     openLanguage,
     openSession,
     openModel,
+    openEffort,
     openAddModel,
     openMemory,
     openSkills,

@@ -88,6 +88,8 @@ Each entry under `models:` is a dict keyed by model name. Recognized fields
 | `provider_id` / `provider_name` | Grouping metadata for `/model` (see `add_model()`) |
 | `provider` | **Explicit** provider name; bypasses `matches()` probing (short-circuits in `providers.resolve()`) |
 
+**全局思考强度档位（`effort` 键，2026-08-12）**：配置顶层 `effort` 键 = 全局思考强度档位（厂商档位值如 `medium`，或抽象档位 `fast`/`balanced`/`deep`）。读写入口：`config/model_manager.py` 的 `get_effort()` / `set_effort()`；消费方：`core/agent_v2.py::_build_llm_from_config`（优先级：显式传入 > 全局设置 > `balanced`）；设置入口：CLI `/effort` 命令与 `models/set_active` 的 `effort` optional_field。
+
 **`api_key` resolution priority** (`resolve_model_config()`, `config/settings.py`):
 
 1. `api_key_env` — read the env var into `api_key`. A literal `api_key` value in

@@ -12,12 +12,14 @@ export type ModelInfo = {
   category?: string;
   provider_name?: string;
   provider_id?: string;
-  // Phase 3 M6：可选输出上限摘要（旧服务器缺失时 undefined）
+  // Phase 3 M6：可选输出上限摘要（旧服务器缺失�?undefined�?/
   max_tokens_mode?: "auto" | "explicit";
   resolved_max_tokens?: number;
   limit_source?: string;
   context_window?: number | null;
   warning?: string | null;
+  // /effort 扩展（2026-08-12）：该模型的厂商档位全集（空 = 不支持档位选择）。
+  effort_options?: string[];
 };
 
 export async function probeModels(): Promise<{
@@ -42,6 +44,40 @@ export async function probeModels(): Promise<{
       ok: false,
       models: [],
       active: "",
+      error: err instanceof Error ? err.message : "无法连接 API 服务",
+    };
+  }
+}
+
+export async function fetchEffortOptions(): Promise<{
+  ok: boolean;
+  models: ModelInfo[];
+  active: string;
+  effort: string | null;
+  error?: string;
+}> {
+  try {
+    const resp = await axios.get(`${API_BASE}/models`, {
+      timeout: 8000,
+      headers: authorizationHeaders(),
+    });
+    const data = resp.data as {
+      models?: ModelInfo[];
+      active?: string;
+      effort?: string | null;
+    };
+    return {
+      ok: true,
+      models: data.models ?? [],
+      active: data.active ?? "",
+      effort: typeof data.effort === "string" && data.effort ? data.effort : null,
+    };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      models: [],
+      active: "",
+      effort: null,
       error: err instanceof Error ? err.message : "无法连接 API 服务",
     };
   }

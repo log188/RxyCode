@@ -30,7 +30,8 @@ rollback via `RXYCODE_TUI=ink`.
 | opentui-app/src/ApprovalDialog.tsx | Tool approval UI |
 | opentui-app/src/Markdown.tsx | Markdown rendering |
 | opentui-app/src/streamReducer.ts | Streaming message state |
-| opentui-app/src/commands.ts / commandRouter.ts | Slash-command parsing/routing |
+| opentui-app/src/commands.ts / commandRouter.ts | Slash-command parsing/routing（含 `/effort`：2026-08-12，选择思考强度，档位随当前模型，local 命令） |
+| opentui-app/src/dialog/DialogEffort.tsx | `/effort` 档位选择对话框（复用 DialogSelect，档位来自 `models/list` 的 `effort_options`） |
 | opentui-app/src/Modal.tsx / brand.ts / statusBar.ts | Shared UI primitives |
 
 ## Key Files (Ink — fallback)

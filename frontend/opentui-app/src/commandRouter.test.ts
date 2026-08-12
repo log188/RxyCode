@@ -103,3 +103,30 @@ describe("formatCommandResult", () => {
     expect(formatCommandResult(null, "/x")).toContain("/x");
   });
 });
+
+describe("classifyInput /effort", () => {
+  test("/effort is a local command", () => {
+    const c = classifyInput("/effort");
+    expect(c.kind).toBe("command");
+    if (c.kind === "command") {
+      expect(c.name).toBe("/effort");
+      expect(c.args).toBe("");
+      expect(c.local).toBe(true);
+    }
+  });
+
+  test("/effort with args keeps args", () => {
+    const c = classifyInput("/effort medium");
+    expect(c.kind).toBe("command");
+    if (c.kind === "command") {
+      expect(c.name).toBe("/effort");
+      expect(c.args).toBe("medium");
+      expect(c.local).toBe(true);
+    }
+  });
+
+  test("/effort appears in command catalog with Chinese description", () => {
+    const catalog = filterCommands("/effort");
+    expect(catalog.some((c) => c.name === "/effort" && c.description.includes("思考强度"))).toBe(true);
+  });
+});

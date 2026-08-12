@@ -3,6 +3,7 @@ export { DialogSelect, shouldApplyMouseHover, buildSelectRows, formatSearchField
 export type { DialogSelectOption } from "./DialogSelect.tsx";
 export { DialogSession } from "./DialogSession.tsx";
 export { DialogModel } from "./DialogModel.tsx";
+export { DialogEffort } from "./DialogEffort.tsx";
 export { DialogAddModel } from "./DialogAddModel.tsx";
 export {
   DialogSettings,

@@ -153,6 +153,7 @@ export type Method27 = "models/remove";
 export type Id = string;
 export type Method28 = "models/set_active";
 export type Id1 = string;
+export type Effort = string | null;
 export type Method29 = "models/test_connection";
 export type Id2 = string;
 export type Method30 = "credentials/upsert";
@@ -630,10 +631,15 @@ export interface ModelsRemoveRequest {
  * Switch the active model.
  *
  * Maps ``models/set_active``.
+ *
+ * ``effort``（optional_field，2026-08-12）：同时设置全局思考强度档位
+ * （/effort 命令与设置页共用；厂商档位值或 fast/balanced/deep 抽象档位）。
+ * 缺失 = 不改动当前档位。
  */
 export interface ModelsSetActiveRequest {
   method?: Method28;
   id: Id1;
+  effort?: Effort;
   [k: string]: unknown;
 }
 /**

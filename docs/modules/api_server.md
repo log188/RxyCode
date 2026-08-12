@@ -229,6 +229,8 @@ python api_server.py     # equivalent direct entry (__main__ -> run_api_server)
 Startup refuses non-loopback binds without `RXYCODE_ALLOW_REMOTE_API=1`; remote
 mode additionally requires TLS cert/key files (see Local API Security).
 
+**斜杠命令扩展（2026-08-12）**：`/command` 新增 `/effort [档位]`——设置/查询全局思考强度档位（无参数 = 查询，返回 `effort_info`；设置成功返回 `effort_changed` 并即时写入当前 agent 的 `model_config.effort`）；`/status` 返回 `effort` 字段；`GET /models`（api_server_models.py）返回每模型的 `effort_options` 与全局 `effort`。
+
 ## Dependencies
 
 - **Consumers**: Ink TUI fallback frontend (AGENTS.md), external integrations

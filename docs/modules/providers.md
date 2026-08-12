@@ -28,6 +28,8 @@ provider 描述"这一族模型和 OpenAI 默认行为有什么不同"，无状�
 | prompt_variant | 提示词变体键 | `"default"` | 同上（A9 机制） |
 | usage_fields | 字段名映射（cache_read/reasoning） | 见 UsageFieldMap | 同上 |
 | extra_body | 透传参数 | `{}` | 同上 |
+| effort_presets | 抽象档位映射 fast/balanced/deep → 厂商参数（A21） | `{}` | 同上（DeepSeek/OpenAI/Kimi-k3/GLM-5.2 非空） |
+| **effort_options** | **厂商档位全集（/effort 命令与设置页档位列表；空 = 不支持档位选择，2026-08-12）** | `()` | 同上（DeepSeek `("low","high","max")`、OpenAI `("low","medium","high")`、Kimi-k3 `("low","high","max")`、GLM-5.2 `("max","xhigh","high","medium","low","minimal","none")`） |
 
 `UsageFieldMap` 默认值（`config/model_capabilities.py`）：
 

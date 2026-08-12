@@ -13,7 +13,7 @@ and `api_server.py` can share one schema instead of ad-hoc SSE field names.
 |------|------|
 | `__init__.py` | Package marker |
 | `version.py` | `PROTOCOL_VERSION` (currently `1.0.0`) |
-| `requests.py` | Client -> server (`initialize`, `session/*` incl. `set_thinking_expanded` / `warm`, `shutdown`) |
+| `requests.py` | Client -> server (`initialize`, `session/*` incl. `set_thinking_expanded` / `warm`, `shutdown`, `models/*` incl. `ModelsSetActiveRequest.effort`（2026-08-12：optional_field，全局思考强度档位）） |
 | `notifications.py` | Server -> client one-way events |
 | `server_requests.py` | Server -> client messages that need a reply (approval, question) |
 | `types.py` | Shared literals (`RiskLevelName`, `RunStatus`, ...) |
