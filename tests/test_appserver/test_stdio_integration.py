@@ -461,12 +461,53 @@ def test_appserver_prompt_timeout_does_not_block_next_prompt(appserver_proc):
     assert recovered["status"] == "succeeded"
 
 
+def test_appserver_silent_prompt_does_not_trigger_false_watchdog_stall():
+    """A live provider may be silent while waiting; silence is not a dead worker."""
+    env = _appserver_env()
+    env["RXYCODE_APPSERVER_STALL_SECONDS"] = "2"
+    env["RXYCODE_APPSERVER_HEARTBEAT_SECONDS"] = "1"
+    env["RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS"] = "0.5"
+    proc = _appserver_proc_with_env(env)
+    try:
+        client = AppserverClient(proc)
+        client.request(
+            "initialize",
+            {
+                "client_name": "pytest",
+                "client_version": "0.0.0",
+                "protocol_version": "1.0.0",
+            },
+        )
+        session = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+        result = client.request(
+            "session/prompt",
+            {"session_id": session["session_id"], "text": "silent:3"},
+            timeout=10.0,
+        )
+        assert result["status"] == "succeeded"
+        assert result["text"] == "stub:silent-complete"
+    finally:
+        if proc.poll() is None:
+            try:
+                if proc.stdin:
+                    proc.stdin.write(
+                        json.dumps({"jsonrpc": "2.0", "id": 99, "method": "shutdown"})
+                        + "\n"
+                    )
+                    proc.stdin.flush()
+            except Exception:
+                pass
+            proc.terminate()
+            proc.wait(timeout=10)
+
+
 
 
 def test_appserver_watchdog_stall_kills_job():
     env = _appserver_env()
     env["RXYCODE_APPSERVER_STALL_SECONDS"] = "2"
     env["RXYCODE_APPSERVER_HEARTBEAT_SECONDS"] = "1"
+    env["RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS"] = "0"
     proc = _appserver_proc_with_env(env)
     try:
         client = AppserverClient(proc)
@@ -540,6 +581,7 @@ def test_appserver_stalled_session_does_not_block_another_session():
     env = _appserver_env()
     env["RXYCODE_APPSERVER_STALL_SECONDS"] = "2"
     env["RXYCODE_APPSERVER_HEARTBEAT_SECONDS"] = "1"
+    env["RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS"] = "0"
     proc = _appserver_proc_with_env(env)
     try:
         client = AppserverClient(proc)

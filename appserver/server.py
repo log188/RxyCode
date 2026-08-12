@@ -508,10 +508,14 @@ class AppServer:
                 await self._emit_job_state(session_id, job_id, "running")
 
                 run_id = uuid.uuid4().hex
-                self._watchdog.register_job(job_id, session_id, request_id)
 
                 def emit_message(message: dict[str, Any]) -> None:
                     self._watchdog.touch_job(job_id)
+                    if message.get("method") == "event/heartbeat":
+                        # Worker liveness is an appserver concern, not a
+                        # renderer event. Do not leak a synthetic activity row
+                        # or append it to the replay log.
+                        return
                     self._persist_notification(message)
                     try:
                         asyncio.get_running_loop()
@@ -529,6 +533,11 @@ class AppServer:
                 async def _execute_prompt() -> dict[str, Any]:
                     host = await self._host_for_session(session_id)
                     await host.ensure_bootstrapped(timeout=wall_timeout)
+                    # Bootstrap is a separate cold-start phase. It has the
+                    # outer prompt timeout, but must not be judged as a
+                    # stalled *running* job before the worker can emit its
+                    # liveness heartbeat.
+                    self._watchdog.register_job(job_id, session_id, request_id)
                     return await host.run_prompt(
                         text=text,
                         run_id=run_id,

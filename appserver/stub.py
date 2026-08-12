@@ -48,6 +48,13 @@ class StubAgent:
         if text.startswith("slow:"):
             await asyncio.sleep(0.5)
             return f"stub:{text[5:]}"
+        if text.startswith("silent:"):
+            try:
+                seconds = max(0.0, float(text[7:]))
+            except ValueError:
+                seconds = 3.0
+            await asyncio.sleep(seconds)
+            return "stub:silent-complete"
         if text.startswith("hang:"):
             await asyncio.sleep(3600.0)
             return f"stub:{text[5:]}"

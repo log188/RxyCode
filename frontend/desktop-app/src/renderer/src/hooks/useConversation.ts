@@ -108,6 +108,8 @@ export function useConversation(
   )
   const performanceTraceRef = useRef(new PerformanceTraceRegistry())
   const reconnectingRef = useRef<Promise<boolean> | null>(null)
+  const reconnectTransportRef = useRef<((targetSessionId?: string) => Promise<boolean>) | null>(null)
+  const recoverableSessionsRef = useRef(new Set<string>())
 
   useEffect(() => {
     stateRef.current = state
@@ -262,6 +264,17 @@ export function useConversation(
         replay.next_cursor,
         replay.gap_detected
       ))
+      if (recoverableSessionsRef.current.has(sessionId)) {
+        // A replay can contain the last persisted `running` status when the
+        // appserver returned a recoverable stall before it emitted a terminal
+        // event. That historical status must not block the next user turn.
+        setState((current) => ({
+          ...current,
+          runningBySession: { ...current.runningBySession, [sessionId]: false },
+          runStateBySession: { ...current.runStateBySession, [sessionId]: 'queued' },
+          errorBySession: { ...current.errorBySession, [sessionId]: null }
+        }))
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setConnectionError(`session event recovery failed: ${message}`)
@@ -453,7 +466,7 @@ export function useConversation(
   }, [])
 
   const createSession = useCallback(async (model?: { modelId?: string; providerId?: string | null }): Promise<boolean> => {
-    const client = connectionRef.current?.client
+    const client = await ensureClient()
     if (client === null || client === undefined || info === null) return false
     try {
       const created = await client.requestWithTimeout<{
@@ -486,7 +499,7 @@ export function useConversation(
   }, [])
 
   const renameTask = useCallback(async (sessionId: string, title: string): Promise<boolean> => {
-    const client = connectionRef.current?.client
+    const client = await ensureClient(sessionId)
     if (client === null || client === undefined) return false
     const previous = stateRef.current.sessions.find((session) => session.sessionId === sessionId)?.title ?? ''
     setState((current) => renameSession(current, sessionId, title))
@@ -501,7 +514,7 @@ export function useConversation(
   }, [])
 
   const trashTask = useCallback(async (sessionId: string): Promise<boolean> => {
-    const client = connectionRef.current?.client
+    const client = await ensureClient(sessionId)
     if (client === null || client === undefined) return false
     // The server persists the soft-delete before cleaning up its worker. The
     // task list must reflect that durable intent immediately; process cleanup
@@ -521,7 +534,7 @@ export function useConversation(
   }, [])
 
   const restoreTask = useCallback(async (sessionId: string): Promise<boolean> => {
-    const client = connectionRef.current?.client
+    const client = await ensureClient(sessionId)
     if (client === null || client === undefined) return false
     setState((current) => restoreSession(current, sessionId))
     try {
@@ -535,7 +548,7 @@ export function useConversation(
   }, [])
 
   const purgeTask = useCallback(async (sessionId: string): Promise<boolean> => {
-    const client = connectionRef.current?.client
+    const client = await ensureClient(sessionId)
     if (client === null || client === undefined) return false
     try {
       await client.requestWithTimeout('session/purge', { session_id: sessionId }, 10_000)
@@ -548,7 +561,7 @@ export function useConversation(
 
   const setTaskModel = useCallback(
     async (sessionId: string, modelId: string, providerId: string | null = null): Promise<boolean> => {
-      const client = connectionRef.current?.client
+      const client = await ensureClient(sessionId)
       if (client === null || client === undefined) return false
       if (stateRef.current.runningBySession[sessionId] === true) return false
       try {
@@ -567,7 +580,7 @@ export function useConversation(
     []
   )
 
-  const reconnectTransport = useCallback(async (): Promise<boolean> => {
+  const reconnectTransport = useCallback(async (targetSessionId?: string): Promise<boolean> => {
     if (reconnectingRef.current !== null) return reconnectingRef.current
     const reconnect = (async (): Promise<boolean> => {
       const currentInfo = infoRef.current
@@ -596,9 +609,9 @@ export function useConversation(
         setProtocolClient(reconnectedClient)
         setConnectionError(null)
         if (reconnectedClient !== null) {
-          const activeSessionId = stateRef.current.activeSessionId
-          if (activeSessionId !== null) {
-            await replayCurrentSession(reconnectedClient, activeSessionId)
+          const replaySessionId = targetSessionId ?? stateRef.current.activeSessionId
+          if (replaySessionId !== null && replaySessionId !== undefined) {
+            await replayCurrentSession(reconnectedClient, replaySessionId)
           }
         }
         return true
@@ -614,12 +627,37 @@ export function useConversation(
     return reconnect
   }, [platform, replayCurrentSession])
 
+  reconnectTransportRef.current = reconnectTransport
+
+  const ensureClient = useCallback(async (targetSessionId?: string): Promise<ProtocolClient | null> => {
+    const existing = connectionRef.current?.client
+    if (existing !== null && existing !== undefined) return existing
+    const reconnect = reconnectTransportRef.current
+    if (reconnect === null) return null
+    if (!(await reconnect(targetSessionId))) return null
+    return connectionRef.current?.client ?? null
+  }, [])
+
   const sendMessage = useCallback(async (text: string, permissionMode?: PermissionMode): Promise<void> => {
-    const client = connectionRef.current?.client
     const trimmed = text.trim()
     const sessionId = stateRef.current.activeSessionId
-    if (client === null || client === undefined || sessionId === null || trimmed === '') return
-    if (stateRef.current.runningBySession[sessionId] === true) return
+    if (sessionId === null || trimmed === '') return
+    const recoveredTurn = recoverableSessionsRef.current.delete(sessionId)
+    const timeline = stateRef.current.timelineBySession[sessionId] ?? []
+    const latestPromptIndex = timeline.findLastIndex((item) => item.kind === 'user_prompt')
+    const hasTerminalAfterLatestPrompt = timeline.slice(latestPromptIndex + 1).some(
+      (item) => item.kind === 'final_answer' || item.kind === 'error'
+    )
+    if (stateRef.current.runningBySession[sessionId] === true && !recoveredTurn && !hasTerminalAfterLatestPrompt) return
+    let client = connectionRef.current?.client
+    if (client === null || client === undefined) {
+      const recovered = await reconnectTransport(sessionId)
+      client = recovered ? connectionRef.current?.client ?? null : null
+    }
+    if (client === null) {
+      setState((current) => applyError(current, sessionId, '无法连接到 appserver，请稍后重试。'))
+      return
+    }
     const trace = performanceTraceRef.current
     trace.startRun(sessionId)
     trace.mark(sessionId, 'send_click')
@@ -687,7 +725,8 @@ export function useConversation(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (isRecoverableConnectionError(message)) {
-        const recovered = await reconnectTransport()
+        recoverableSessionsRef.current.add(sessionId)
+        const recovered = await reconnectTransport(sessionId)
         if (recovered) {
           setState((current) => {
             const timeline = current.timelineBySession[sessionId] ?? []
@@ -705,6 +744,7 @@ export function useConversation(
           })
           return
         }
+        recoverableSessionsRef.current.delete(sessionId)
       }
       setState((current) => applyError(current, sessionId, message))
     }

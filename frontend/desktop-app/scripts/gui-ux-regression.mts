@@ -49,10 +49,34 @@ async function main(): Promise<void> {
       await harness.waitForSelector('[data-testid="composer-stop"]', 10_000)
       await waitFor(async () => (await harness.has('[data-testid="composer-stop"]')) ? null : true, 20_000, 'Enter task terminal')
     })
+    await check('UX-02b recoverable stall reconnects before the next turn', async () => {
+      await harness.typePrompt('timeout demo')
+      await harness.pressKey('Enter')
+      await harness.waitForSelector('[data-testid^="timeline-recovery-"]', 10_000)
+      const recovered = await harness.evaluate<string>(`document.querySelector('[data-testid^="timeline-recovery-"] .activity-label')?.textContent ?? ''`)
+      if (!recovered.includes('auto') && !recovered.includes('reconnect') && !recovered.includes('恢复')) {
+        throw new Error(`recoverable stall was not rendered as recovery: ${recovered}`)
+      }
+      if (await harness.has('.timeline-error')) throw new Error('intermediate transport stall became a final error')
+      const finalCountBeforeRetry = await harness.evaluate<number>(`document.querySelectorAll('[data-testid="final-answer"]').length`)
+      await harness.typePrompt('after timeout reconnect')
+      await harness.pressKey('Enter')
+      await waitFor(async () => (await harness.evaluate<number>(`document.querySelectorAll('[data-testid="final-answer"]').length`)) > finalCountBeforeRetry ? true : null, 10_000, 'post-reconnect final answer')
+    })
     await check('UX-03 approval closes after decision', async () => {
       await harness.typePrompt('approval demo')
       await harness.pressKey('Enter')
-      await waitFor(async () => (await harness.has('.approval-dialog .approve')) ? true : null, 20_000, 'approval dialog')
+      try {
+        await waitFor(async () => (await harness.has('.approval-dialog .approve')) ? true : null, 20_000, 'approval dialog')
+      } catch (error) {
+        const debug = await harness.evaluate(`(() => ({
+          composerDisabled: document.querySelector('[data-testid="composer-input"]')?.disabled ?? null,
+          composerValue: document.querySelector('[data-testid="composer-input"]')?.value ?? '',
+          timeline: document.querySelector('[data-testid="task-timeline"]')?.textContent ?? '',
+          pending: document.querySelector('[data-testid="diagnostics-pending-rpc"]')?.textContent ?? ''
+        }))()`)
+        throw new Error(`${error instanceof Error ? error.message : String(error)} debug=${JSON.stringify(debug)} lines=${JSON.stringify(await harness.evaluate('window.__rxyGuiUxLines ?? []'))}`)
+      }
       await harness.evaluate(`document.querySelector('.approval-dialog .approve')?.click()`)
       await waitFor(async () => (await harness.has('.approval-dialog')) ? null : true, 2_000, 'approval dialog close')
       await waitFor(async () => (await harness.has('[data-testid="composer-stop"]')) ? null : true, 20_000, 'approved task terminal')
@@ -63,11 +87,16 @@ async function main(): Promise<void> {
     })
     await check('UX-04 light theme uses semantic light surfaces', async () => {
       await harness.evaluate(`document.documentElement.dataset.theme = 'light'`)
-      const colors = await harness.evaluate<{ body: string; composer: string; settings?: string }>(`(() => ({
+      const colors = await harness.evaluate<{ body: string; composer: string }>(`(() => ({
         body: getComputedStyle(document.body).backgroundColor,
         composer: getComputedStyle(document.querySelector('.composer-surface')).backgroundColor
       }))()`)
       if (colors.body === 'rgb(17, 19, 24)' || colors.composer === 'rgb(17, 19, 24)') throw new Error(`dark surface leaked into light theme: ${JSON.stringify(colors)}`)
+      await harness.evaluate(`document.querySelector('.settings-button')?.click()`)
+      await harness.waitForSelector('.settings-page', 2_000)
+      const settingsSurface = await harness.evaluate<string>(`getComputedStyle(document.querySelector('.settings-page')).backgroundColor`)
+      if (settingsSurface === 'rgb(31, 32, 37)' || settingsSurface === 'rgb(17, 19, 24)') throw new Error(`dark dialog leaked into light theme: ${settingsSurface}`)
+      await harness.evaluate(`document.querySelector('.settings-close')?.click()`)
       await harness.evaluate(`document.documentElement.dataset.theme = 'dark'`)
     })
     await check('UX-05 full access requires confirmation', async () => {
@@ -159,10 +188,12 @@ async function main(): Promise<void> {
       await harness.waitForSelector('.nav-sheet .session-item.active', 2_000)
       await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="trash-task-${secondId}"]')?.click()`)
       await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('已删除任务') ? true : null, 2_000, 'delete success toast')
+      if (await harness.has(`.nav-sheet [data-testid="session-${secondId}"]`)) throw new Error('deleted task remained in active task list')
       await harness.evaluate(`document.querySelector('.nav-sheet .trash-toggle')?.click()`)
       await harness.waitForSelector(`.nav-sheet [data-testid="restore-task-${secondId}"]`, 2_000)
       await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="restore-task-${secondId}"]')?.click()`)
       await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('已恢复任务') ? true : null, 2_000, 'restore success toast')
+      await waitFor(async () => (await harness.has(`.nav-sheet [data-testid="session-${secondId}"]`)) ? true : null, 2_000, 'restored task visible')
       await harness.evaluate(`document.querySelector('.nav-sheet .sheet-close')?.click()`)
     })
     await check('UX-13 inspector opens only on demand from a tool activity', async () => {

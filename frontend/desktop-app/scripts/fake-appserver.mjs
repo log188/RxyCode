@@ -470,6 +470,15 @@ async function runPrompt(requestId, sessionId, text) {
     state: 'running'
   })
 
+  if (text.includes('timeout demo')) {
+    // Simulate the production watchdog response. There is deliberately no
+    // final event: the renderer must reconnect and represent this as an
+    // intermediate recovery, not a terminal task error.
+    await sleep(80)
+    respondError(requestId, -32004, 'appserver degraded: job stalled >120.0s (session ' + sessionId + ')')
+    return
+  }
+
   if (text.includes('fail demo')) {
     await sleep(300)
     notify('event/message_delta', {

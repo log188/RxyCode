@@ -264,6 +264,34 @@ class AgentWorker:
         self._ensure_writer()
         self._write_queue.put_nowait(message)
 
+    async def _prompt_heartbeat(self, session_id: str) -> None:
+        """Keep the appserver watchdog alive while the provider is silent.
+
+        A model request or a long-running local tool can legitimately produce
+        no user-visible event for a while.  The watchdog must distinguish that
+        from a dead worker, so this heartbeat is deliberately not persisted as
+        a task event and the renderer does not render it as activity.
+        """
+        raw_interval = os.environ.get(
+            "RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS", "10"
+        )
+        try:
+            interval = float(raw_interval)
+        except (TypeError, ValueError):
+            interval = 10.0
+        if interval <= 0:
+            return
+        interval = max(0.25, min(interval, 30.0))
+        while True:
+            await asyncio.sleep(interval)
+            self._schedule_write(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "event/heartbeat",
+                    "params": {"session_id": session_id},
+                }
+            )
+
     async def _flush_pending_writes(self) -> None:
         """Wait for all queued notifications to hit stdout before a result.
 
@@ -430,7 +458,9 @@ class AgentWorker:
             return sink
 
         coalescer: StreamCoalescer | None = None
+        heartbeat_task: asyncio.Task[Any] | None = None
         try:
+            heartbeat_task = asyncio.create_task(self._prompt_heartbeat(session_id))
             if stream_coalesce_enabled():
                 coalescer = StreamCoalescer(make_stream_sink(session_id))
                 tui.set_coalescer(coalescer)
@@ -508,6 +538,10 @@ class AgentWorker:
             self._mark_answered(request_id)
             return
         finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat_task
             # Unified teardown: covers Session construction failures and any
             # error between coalescer.start() and the prompt body.  Idempotent
             # when the except branches already wound down.
