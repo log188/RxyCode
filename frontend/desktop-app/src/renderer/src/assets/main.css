@@ -832,6 +832,19 @@ button:disabled {
 .model-row.active {
   border-color: rgba(120, 200, 120, 0.5);
 }
+.model-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.model-group-title {
+  margin: 8px 2px 0;
+  color: var(--cc-muted, rgba(255, 255, 255, 0.72));
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .model-main {
   display: flex;
   flex-direction: column;

@@ -110,6 +110,21 @@ class TestTaskResultSchema:
         else:
             assert payload["status"] == "completed"
 
+    def test_unreported_usage_is_explicitly_nullable(self, schema, jsonschema_validator):
+        result = TaskResult(
+            request_id="req_null_usage",
+            child_session_id="ses_child_null_usage",
+            status=ChildStatus.CANCELLED,
+            usage=UsageRecord(steps=1),
+        )
+        from dataclasses import asdict
+        payload = json.loads(json.dumps(asdict(result), ensure_ascii=False))
+        if jsonschema_validator:
+            import jsonschema
+            jsonschema.validate(payload, {"$ref": "#/definitions/task_result", **schema})
+        assert payload["usage"]["input_tokens"] is None
+        assert payload["usage"]["cache_hit_tokens"] is None
+
 
 class TestSchemaVsDataclasses:
     """Schema and dataclasses stay in sync."""

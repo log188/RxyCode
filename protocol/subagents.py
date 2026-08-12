@@ -343,11 +343,28 @@ class UsageRecord:
     """Token and step usage for a child session."""
 
     steps: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_hit_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_hit_tokens: int | None = None
     wall_time_ms: int = 0
     retry_count: int = 0
+    reporting_status: Literal["reported", "partial", "not_reported"] = "not_reported"
+
+    def __post_init__(self) -> None:
+        """Derive an honest reporting state when callers provide token fields.
+
+        Child runtimes may know input/output while a provider does not expose
+        cache hits.  That is partial reporting, not a zero cache hit.  Keep an
+        explicit caller-provided state untouched so cancellation and legacy
+        adapters can preserve their own classification.
+        """
+        if self.reporting_status != "not_reported":
+            return
+        values = (self.input_tokens, self.output_tokens, self.cache_hit_tokens)
+        if not any(value is not None for value in values):
+            return
+        derived = "reported" if all(value is not None for value in values) else "partial"
+        object.__setattr__(self, "reporting_status", derived)
 
 
 @dataclass(frozen=True)

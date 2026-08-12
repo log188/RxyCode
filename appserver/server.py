@@ -44,6 +44,9 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_PROMPT_TIMEOUT_SECONDS = 600.0
 _SHUTDOWN_PROMPT_WAIT_SECONDS = 30.0
 _REPLAY_EVENT_METHODS = {
+    "event/task_started",
+    "event/task_complete",
+    "event/error",
     "event/plan",
     "event/step",
     "event/progress",

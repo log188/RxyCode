@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from appserver.sessions import SessionStore
@@ -136,3 +137,63 @@ def test_server_replay_skips_stream_deltas_and_redacts_tool_secrets(tmp_path: Pa
     assert "do not persist prompt-like text" not in serialized
     assert "sk-live-secret" not in serialized
     assert "[REDACTED]" in serialized
+
+
+def test_server_replay_keeps_terminal_error_and_task_lifecycle_events(tmp_path: Path):
+    server = AppServer(stub=True)
+    server._task_store = DesktopTaskStore(tmp_path / "tasks.json")
+    server._sessions = SessionStore(task_store=server._task_store)
+    record = server._sessions.create(tmp_path / "workspace", title="Failed audit")
+
+    for method, params in (
+        ("event/task_started", {"session_id": record.session_id}),
+        ("event/error", {"session_id": record.session_id, "message": "provider unavailable"}),
+        ("event/task_complete", {"session_id": record.session_id, "ok": False}),
+    ):
+        server._persist_notification({"method": method, "params": params})
+
+    events, cursor, gap = server._task_store.events(record.session_id, 0)
+    assert cursor == 3
+    assert gap is False
+    assert [event["method"] for event in events] == [
+        "event/task_started",
+        "event/error",
+        "event/task_complete",
+    ]
+
+
+def test_task_store_cursor_is_monotonic_when_protocol_event_has_its_own_seq(tmp_path: Path):
+    store = DesktopTaskStore(tmp_path / "tasks.json")
+    store.upsert(session_id="s1", title="Replay", workspace_root=tmp_path)
+
+    first = store.append_event("s1", {"method": "event/tool_end", "seq": 42})
+    second = store.append_event("s1", {"method": "event/recovery_started", "seq": 1})
+
+    events, cursor, gap = store.events("s1", 0)
+    assert (first, second) == (1, 2)
+    assert cursor == 2
+    assert gap is False
+    assert [event["seq"] for event in events] == [1, 2]
+    assert events[0]["protocol_seq"] == 42
+    assert events[1]["protocol_seq"] == 1
+
+
+def test_task_store_migrates_legacy_protocol_seq_into_storage_cursor(tmp_path: Path):
+    path = tmp_path / "tasks.json"
+    path.write_text(json.dumps({
+        "tasks": {},
+        "events": {
+            "s1": [
+                {"seq": 42, "method": "event/tool_end", "params": {}},
+                {"seq": 7, "method": "event/final", "params": {}},
+            ]
+        },
+    }), encoding="utf-8")
+
+    store = DesktopTaskStore(path)
+    events, cursor, gap = store.events("s1", 0)
+
+    assert cursor == 2
+    assert gap is False
+    assert [event["seq"] for event in events] == [1, 2]
+    assert [event["protocol_seq"] for event in events] == [42, 7]

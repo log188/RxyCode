@@ -4,16 +4,9 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DesktopCdpHarness, repositoryDir, waitFor, type CleanupProof } from './cdp-harness.mts'
 import { desktopCdScenarios, type DesktopCdScenario } from './desktop-cd-scenarios.mts'
+import { emptyUsage, extractChildUsage, type UsageMetrics } from './desktop-cd-usage.mts'
 
 type Mode = 'deterministic' | 'real'
-
-interface UsageMetrics {
-  source: 'token_event' | 'final' | 'prompt_result' | 'not_reported'
-  input_tokens: number | null
-  output_tokens: number | null
-  cache_hit_tokens: number | null
-  cache_hit_rate: number | null
-}
 
 interface ScenarioResult {
   id: string
@@ -45,6 +38,7 @@ interface ScenarioResult {
     serial_baseline_ms: number | null
     concurrency_ratio: number | null
   }
+  performance_trace: Record<string, unknown>
   screenshots: string[]
   dom_snapshot: string
   event_log: string
@@ -83,7 +77,7 @@ function extractUsage(messages: Array<Record<string, any>>, sessionIds: string[]
   const final = messages.findLast((message) => message.method === 'event/final' && belongs(message))?.params
   const source = tokenEvent ?? final
   if (source === undefined) {
-    return { source: 'not_reported', input_tokens: null, output_tokens: null, cache_hit_tokens: null, cache_hit_rate: null }
+    return emptyUsage()
   }
   const input = token(source.input_tokens)
   const cache = token(source.cache_hit_tokens)
@@ -92,30 +86,10 @@ function extractUsage(messages: Array<Record<string, any>>, sessionIds: string[]
     input_tokens: input,
     output_tokens: token(source.output_tokens),
     cache_hit_tokens: cache,
-    cache_hit_rate: input !== null && input > 0 && cache !== null ? cache / input : null
-  }
-}
-
-function extractChildUsage(messages: Array<Record<string, any>>): UsageMetrics {
-  const terminal = messages
-    .filter((message) => String(message.method ?? '').match(/^child_session\/(completed|failed|cancelled|timed_out)$/))
-    .map((message) => message.params?.payload?.usage)
-    .filter((usage) => usage && typeof usage === 'object')
-  const input = terminal.reduce((sum, usage) => sum + Number(usage.input_tokens ?? 0), 0)
-  const output = terminal.reduce((sum, usage) => sum + Number(usage.output_tokens ?? 0), 0)
-  if (terminal.length === 0) {
-    return { source: 'not_reported', input_tokens: null, output_tokens: null, cache_hit_tokens: null, cache_hit_rate: null }
-  }
-  const cacheReported = terminal.every((usage) => token(usage.cache_hit_tokens) !== null)
-  const cache = cacheReported
-    ? terminal.reduce((sum, usage) => sum + Number(usage.cache_hit_tokens), 0)
-    : null
-  return {
-    source: 'final',
-    input_tokens: input,
-    output_tokens: output,
-    cache_hit_tokens: cache,
-    cache_hit_rate: input > 0 && cache !== null ? cache / input : null
+    cache_hit_rate: input !== null && input > 0 && cache !== null ? cache / input : null,
+    reporting_status: source.reporting_status === 'reported' || source.reporting_status === 'partial'
+      ? source.reporting_status
+      : input !== null || token(source.output_tokens) !== null || cache !== null ? 'partial' : 'not_reported'
   }
 }
 
@@ -536,6 +510,7 @@ async function runOne(
       serial_baseline_ms: concurrency.serialBaselineMs,
       concurrency_ratio: concurrency.ratio
     },
+    performance_trace: {},
     screenshots,
     dom_snapshot: domPath,
     event_log: eventPath,
@@ -586,6 +561,9 @@ async function runRound(round: number): Promise<{ results: ScenarioResult[]; cle
       const messages = parseProtocol(after.slice(before.length))
       result.usage = extractUsage(messages, result.sessions)
       result.child_usage = extractChildUsage(messages)
+      result.performance_trace = await harness.evaluate<Record<string, unknown>>(
+        'window.__rxyDesktopPerformance ?? { activeSessionId: null, sessions: {} }'
+      )
       result.child_sessions = [...new Set(messages
         .filter((message) => String(message.method ?? '').startsWith('child_session/'))
         .map((message) => String(message.params?.session_id ?? ''))

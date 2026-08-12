@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { desktopCdScenarios } from './desktop-cd-scenarios.mts'
+import { reportedTotals, weightedCacheRate } from './desktop-cd-usage.mts'
 
 interface ResultFile {
   mode: 'deterministic' | 'real'
@@ -88,15 +89,13 @@ function validate(file: ResultFile, expectedRounds: number, strictScenarioGate =
     throw new Error('deterministic: DTS-19 missed the <0.7 concurrency gate')
   }
   const responsive = file.results.find((result) => result.id === 'DTS-29' && result.round === expectedRounds)
-  if (!responsive || responsive.screenshots.length < 5) throw new Error(`${file.mode}: responsive theme matrix missing`)
-}
-
-function reportedTotals(results: Array<Record<string, any>>, field: 'usage' | 'child_usage') {
-  const reported = results.filter((result) => result[field]?.input_tokens !== null)
-  const input = reported.reduce((sum, result) => sum + Number(result[field].input_tokens ?? 0), 0)
-  const output = reported.reduce((sum, result) => sum + Number(result[field].output_tokens ?? 0), 0)
-  const cache = reported.reduce((sum, result) => sum + Number(result[field].cache_hit_tokens ?? 0), 0)
-  return { reported: reported.length, input, output, cache }
+  // Deterministic is the reproducible visual gate. Real-provider runs keep
+  // raw evidence even when a slow/failed model never reaches the responsive
+  // checkpoint; otherwise report generation would erase the failure we need
+  // to inspect.
+  if (file.mode === 'deterministic' && (!responsive || responsive.screenshots.length < 5)) {
+    throw new Error(`${file.mode}: responsive theme matrix missing`)
+  }
 }
 
 const deterministic = readResult('deterministic-results.json')
@@ -108,9 +107,11 @@ validate(real, 1, false)
 const realResults = real.results
 const primary = reportedTotals(realResults, 'usage')
 const child = reportedTotals(realResults, 'child_usage')
-const combinedInput = primary.input + child.input
-const combinedCache = primary.cache + child.cache
-const weightedCacheRate = combinedInput > 0 ? combinedCache / combinedInput : null
+const combinedInput = primary.input !== null && child.input !== null ? primary.input + child.input : null
+const combinedCache = primary.cache !== null && child.cache !== null ? primary.cache + child.cache : null
+const combinedCacheRate = combinedInput !== null && combinedCache !== null && combinedInput > 0
+  ? combinedCache / combinedInput
+  : weightedCacheRate(realResults)
 const totalWall = realResults.reduce((sum, result) => sum + Number(result.timing?.wall_ms ?? 0), 0)
 const parallel = realResults.find((result) => result.id === 'DTS-19')
 const realFailures = realResults.filter((result) => result.error)
@@ -165,6 +166,7 @@ ${result.final_answer}
 - Primary usage：${JSON.stringify(result.usage)}
 - Child usage：${JSON.stringify(result.child_usage)}
 - Timing：${JSON.stringify(result.timing)}
+- Renderer performance trace：${JSON.stringify(result.performance_trace ?? {})}
 - Screenshots：${result.screenshots.join(', ')}
 - Event log：${result.event_log}
 `).join('\n')
@@ -195,7 +197,7 @@ Phase 4 Desktop 已从两栏聊天壳改造成任务指挥台：左侧持续显�
 
 - Primary input/output/cache-hit：${primary.reported === 0 ? 'not_reported' : `${primary.input}/${primary.output}/${primary.cache}`}（覆盖 ${primary.reported}/30）
 - Child input/output/cache-hit：${child.reported === 0 ? 'not_reported' : `${child.input}/${child.output}/${child.cache}`}（覆盖 ${child.reported}/30）
-- 加权缓存命中率：${weightedCacheRate === null ? 'not_reported' : `${(weightedCacheRate * 100).toFixed(2)}%`}
+- 加权缓存命中率：${combinedCacheRate === null ? 'not_reported' : `${(combinedCacheRate * 100).toFixed(2)}%`}
 - 真实任务累计墙钟：${totalWall} ms
 - DTS-19 真实并发：overlap=${parallel?.timing?.overlap_ms ?? 'not_reported'} ms，串行等效基线=${parallel?.timing?.serial_baseline_ms ?? 'not_reported'} ms
 - 未上报指标全部保留为 \`null/not_reported\`，不进入合计或缓存命中率。

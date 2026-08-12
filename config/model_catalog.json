@@ -127,6 +127,15 @@
       }
     },
     {
+      "provider_id": "zen",
+      "model_id": "gpt-5.6-luna",
+      "model_context_window": 1050000,
+      "model_max_output_tokens": 128000,
+      "source": "phase-a:openai",
+      "source_url": "https://platform.openai.com/docs/models",
+      "as_of": "2026-08-02"
+    },
+    {
       "provider_id": "kimi",
       "model_id": "kimi-k3",
       "model_context_window": 1048576,
