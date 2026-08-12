@@ -31,7 +31,7 @@ def _bind_top_level_checkout_to_canonical_package() -> None:
     package.__file__ = str(root / "__init__.py")
     package.__path__ = [str(root)]
     sys.modules[canonical_name] = package
-    setattr(parent, "RxyCode1_1_0", package)
+    parent.RxyCode1_1_0 = package
 
 
 _bind_top_level_checkout_to_canonical_package()
