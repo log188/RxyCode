@@ -1,0 +1,37 @@
+﻿你是 RxyCode 项目的独立代码审计员（gpt-5.6-luna，zen 模式）。B8 卡第 4 轮复审。R3 两项阻断项已解决，请复审。
+
+# R3 阻断项解决情况
+1. B8 独立 commit 未提交 → 已提交：**commit f5f19a8** "feat(cache): parallel reads, background summaries, TTFT verification"
+   验收命令与输出：
+   - python -m pytest tests/test_cache/test_parallel_latency.py -q → 22 passed
+   - python -m pytest tests/test_cache -q → 335 passed, 3 skipped
+   - python -m ruff check core utils tests/test_cache → All checks passed
+   - 全量回归 tests/test_core+test_cache+test_memory+test_execution+test_tools+test_validation → 9028 passed（P7 lazy-import 遗留除外）
+   - evals GATE PASS 94.7% >= 89.5%（零回归，1 改善 refactor-extract-function）
+   - TTFT 实测记录 evals/baselines/latency-ttft.json（冷写 11844.9ms / 命中 5218.6ms / 2.27x）
+2. CB1-CB8 逐项证据 → 见下映射表
+
+# B8 完成判据 → 实现 → 测试 → 结果
+| 判据 | 实现 | 测试 | 结果 |
+|---|---|---|---|
+| 1. 只读并发+写不并行 | _execute_tools_parallel（读段 gather+Semaphore，写保持相对位置串行） | test_read_tools_run_concurrently / test_write_tools_stay_serial / test_mixed_read_write_parallel_read_only / test_parallel_read_write_relative_order_preserved | PASS |
+| 2. 后台 fork 不阻塞 | _fork_background_summary（asyncio.to_thread + deepcopy） | test_background_summary_fork_does_not_block / test_background_summary_no_prefix_mutation | PASS |
+| 3. 流式断点一致 | _raw_stream + ainvoke/astream 共用 _apply_cache_control | test_raw_stream_applies_cache_control / test_ainvoke_astream_apply_cache_control / test_stream_breakpoint_consistent_with_non_stream + 既有 test_anthropic_tools_breakpoint_in_raw_stream | PASS |
+| 4. TTFT 真实数字 | TokenStats.ttft_ms + _raw_stream 首个内容 chunk 打点 | test_ttft_field_exists_on_token_stats / test_ttft_per_request_independent / test_ttft_empty_chunk_then_content + latency-ttft.json 实测 | PASS |
+| 5. evals 无回归 | GATE 94.7% >= 89.5% 零回归 | b8-accept 结果 | PASS |
+| 6. 独立 commit | f5f19a8 + 验收输出 | 如上 | PASS |
+
+# CB1-CB8 逐项映射
+CB1 稳定前缀：并行结果按 tool_calls 原序落盘（位置索引），后台摘要 deepcopy 不改写已发送消息 → test_mixed_read_write_parallel_read_only（顺序断言）+ test_background_summary_no_prefix_mutation — PASS
+CB2 断点预算：B8 未触碰断点策略（_apply_cache_control 唯一入口不变）→ test_raw_stream_applies_cache_control 锁定 — 无影响
+CB3 OpenAI cache_control：B8 未触碰 — 无影响
+CB4 压缩不毁前缀：后台摘要只计算新列表返回，不原位改写 → test_background_summary_no_prefix_mutation + test_background_summary_returns_compacted — PASS
+CB5 度量门：TTFT 落盘 evals/baselines/latency-ttft.json（真实数字 2.27x）— PASS
+CB6 失败不缓存：并行工具错误结果含 [error...]（B7 _tool_output_is_error 识别）→ test_parallel_tool_error_marks_error_state — PASS
+CB7 动态内容不进前缀：并行/摘要不产生前缀消息 — PASS
+CB8 默认值不变：parallel_enabled 默认 False（test_parallel_default_disabled）+ evals 零回归 — PASS
+
+# 复审要求
+1. 复核 R3 两项（commit + CB 映射）
+2. 逐条核对完成判据 1-6 + CB1-CB8
+3. 输出结论：PASS / FAIL；若 FAIL 列阻断项（具体、可执行）

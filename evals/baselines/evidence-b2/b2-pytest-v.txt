@@ -1,0 +1,44 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-8.4.2, pluggy-1.5.0 -- D:\Anaconda3\python.exe
+cachedir: .pytest_cache
+rootdir: D:\agent-demo\RxyCode\RxyCode1_1_0
+configfile: pytest.ini
+plugins: anyio-4.10.0, langsmith-0.9.0, asyncio-1.4.0, base-url-2.1.0, cov-7.1.0, playwright-0.8.0, timeout-2.4.0, xdist-3.8.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 180.0s
+timeout method: thread
+timeout func_only: False
+collecting ... collected 27 items
+
+tests/test_cache/test_stable_prefix.py::TestSystemPrefixStable::test_system_prompt_stable_across_calls PASSED [  3%]
+tests/test_cache/test_stable_prefix.py::TestSystemPrefixStable::test_system_prompt_no_datetime PASSED [  7%]
+tests/test_cache/test_stable_prefix.py::TestSystemPrefixStable::test_system_prompt_no_uuid_random PASSED [ 11%]
+tests/test_cache/test_stable_prefix.py::TestSystemPrefixStable::test_system_prefix_bytes_stable_across_turns PASSED [ 14%]
+tests/test_cache/test_stable_prefix.py::TestResearchContractNotRewritingSystem::test_research_contract_does_not_rewrite_messages_0 PASSED [ 18%]
+tests/test_cache/test_stable_prefix.py::TestResearchContractNotRewritingSystem::test_research_contract_appended_after_system PASSED [ 22%]
+tests/test_cache/test_stable_prefix.py::TestToolListSorted::test_registry_get_all_sorted PASSED [ 25%]
+tests/test_cache/test_stable_prefix.py::TestToolListSorted::test_registry_get_descriptions_sorted PASSED [ 29%]
+tests/test_cache/test_stable_prefix.py::TestToolListSorted::test_registry_get_names_sorted PASSED [ 33%]
+tests/test_cache/test_stable_prefix.py::TestToolListSorted::test_global_registry_descriptions_sorted_when_tools_present SKIPPED [ 37%]
+tests/test_cache/test_stable_prefix.py::TestToolListSorted::test_get_tool_descriptions_stable_across_calls PASSED [ 40%]
+tests/test_cache/test_stable_prefix.py::TestToolListSorted::test_get_tool_names_sorted_global SKIPPED [ 44%]
+tests/test_cache/test_stable_prefix.py::TestToolListSorted::test_filtered_tool_names_sorted PASSED [ 48%]
+tests/test_cache/test_stable_prefix.py::TestPromptCacheKeyInjection::test_prompt_cache_key_injected_somewhere PASSED [ 51%]
+tests/test_cache/test_stable_prefix.py::TestPromptCacheKeyInjection::test_openai_provider_llm_kwargs_supports_cache_key PASSED [ 55%]
+tests/test_cache/test_stable_prefix.py::TestPromptCacheKeyInjection::test_deepseek_does_not_get_cache_control PASSED [ 59%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_prefix_bytes_identical_while_user_changes PASSED [ 62%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_research_contract_after_system_not_overwriting PASSED [ 66%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_research_contract_behavioral_chain PASSED [ 70%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_prompt_cache_key_only_for_openai_payload PASSED [ 74%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_unknown_model_payload_default_no_key PASSED [ 77%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_subset_policy_tools_sorted PASSED [ 81%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_full_policy_tools_sorted PASSED [ 85%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_raw_stream_payload_has_prompt_cache_key_for_openai PASSED [ 88%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_raw_stream_payload_no_key_for_deepseek PASSED [ 92%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_raw_stream_payload_no_key_for_anthropic PASSED [ 96%]
+tests/test_cache/test_stable_prefix.py::TestBehavioralRequestPrefix::test_raw_stream_payload_no_key_for_non_openai_override PASSED [100%]
+
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_cache\test_stable_prefix.py:141: no tools registered in global test registry
+SKIPPED [1] tests\test_cache\test_stable_prefix.py:157: no tools registered in global test registry
+======================== 25 passed, 2 skipped in 6.34s ========================

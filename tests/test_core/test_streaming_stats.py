@@ -4,6 +4,7 @@ Tests for utils/streaming.py - TokenStats and streaming utilities.
 Covers: token counting, cache hit rate, context tracking, warnings, reset.
 """
 import pytest
+import asyncio
 from unittest.mock import patch, MagicMock
 
 
@@ -195,6 +196,29 @@ class TestTokenStats:
         stats.add_real_usage(1000, 0, 0)
         # Rate should be 500/2000 = 25%
         assert stats.cache_hit_rate == pytest.approx(25.0, rel=0.1)
+
+    def test_usage_scopes_isolate_concurrent_async_children(self):
+        stats = self._make_stats()
+
+        async def child(input_tokens, output_tokens, cache_tokens):
+            token, usage = stats.begin_usage_scope()
+            try:
+                await asyncio.sleep(0)
+                stats.add_real_usage(input_tokens, output_tokens, cache_tokens)
+                await asyncio.sleep(0)
+                return dict(usage)
+            finally:
+                stats.end_usage_scope(token)
+
+        async def run_children():
+            return await asyncio.gather(
+                child(100, 10, 80), child(200, 20, 50)
+            )
+
+        left, right = asyncio.run(run_children())
+        assert left == {"input_tokens": 100, "output_tokens": 10, "cache_hit_tokens": 80}
+        assert right == {"input_tokens": 200, "output_tokens": 20, "cache_hit_tokens": 50}
+        assert stats.input_tokens == 300
 
 
 class TestEstimateTokens:

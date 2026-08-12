@@ -83,6 +83,22 @@ def test_preset_listing_cannot_mutate_the_module_table():
     assert "default_model_name" not in second[0]
 
 
+def test_zen_preset_is_distinct_from_go_and_infers_by_path():
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    presets = {item["id"]: item for item in model_manager.list_provider_presets()}
+    assert presets["zen"]["base_url"] == "https://opencode.ai/zen/v1"
+    assert presets["opencode-go"]["base_url"] == "https://opencode.ai/zen/go/v1"
+    assert model_manager.infer_provider_group("https://opencode.ai/zen/v1") == {
+        "id": "zen",
+        "name": "OpenCode Zen",
+    }
+    assert model_manager.infer_provider_group("https://opencode.ai/zen/go/v1") == {
+        "id": "opencode-go",
+        "name": "OpenCode Go",
+    }
+
+
 # ── discovery: success paths ────────────────────────────────────────
 
 

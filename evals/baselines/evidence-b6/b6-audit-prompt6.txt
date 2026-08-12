@@ -1,0 +1,318 @@
+﻿你是 RxyCode 项目的独立代码审计员（gpt-5.6-luna，zen 模式）。B6 卡第 6 轮复审。第 5 轮阻断项已修复，请复审。
+
+# R5 阻断项修复情况
+1. _drop_long_keys 阈值 >32 应为 >=32 且需递归 → 已修复：len(key) >= 32；递归处理 dict/list 嵌套；新增 test_truncate_json_key_exactly_32_dropped（60 个 32 字符 key 构造超限触发删除路径）+ test_truncate_json_nested_long_key_dropped（嵌套递归）。
+2. 去重只存最后一个指纹，A→B→A 会重复 → 已修复：_seen_tool_fingerprints 改为 dict[str, set[str]]，setdefault 按工具累计指纹集合；新增 test_dedup_repeated_fingerprint_set_semantics（A→B→A 第二次 A 判定重复）。
+
+# 当前改动 diff:
+diff --git a/config/settings.py b/config/settings.py
+index b4e894b..717ddb3 100644
+--- a/config/settings.py
++++ b/config/settings.py
+@@ -221,6 +221,9 @@ def _default_config() -> dict:
+             "enabled": True,
+             "prompt_prefix_cache": True,
+             "ttl": 3600,
++            # B6: 宸ュ叿杈撳嚭钀藉湴鍓嶆埅鏂殑瀛楃涓婇檺锛坥pencode compaction.ts 2k 璇箟锛夈€?+            # 0 / 璐熸暟 = 鍏抽棴鎴柇锛堢幇鐘惰涓猴級銆傛埅鏂彧浣滅敤浜庢柊钀藉湴娑堟伅锛屼笉纰板墠缂€銆?+            "tool_output_max_chars": 2000,
+         },
+         "mcpServers": {},
+         "lsp": {},
+diff --git a/core/agent_v2.py b/core/agent_v2.py
+index 4c7f0f5..95b0eac 100644
+--- a/core/agent_v2.py
++++ b/core/agent_v2.py
+@@ -1388,6 +1388,8 @@ class AgentV2:
+         except Exception:
+             # 瑙ｆ瀽澶辫触涓嶉樆鏂?LLM 鏋勯€狅紙淇濇寔鍙惎鍔級锛涜繍琛屾椂 _raw_stream 浼氬啀璇曘€?             self._resolved_limits = None
++        # B6: 宸ュ叿杈撳嚭鍘婚噸鎸囩汗琛紙宸ュ叿鍚?鈫?鎸囩汗闆嗗悎锛夛紝浼氳瘽鍐呯疮璁°€?+        self._seen_tool_fingerprints: dict[str, set[str]] = {}
+         # B3 (CB2): TTL 妗ｄ綅鍐欏叆 model_config锛堜緵 Anthropic provider 娉ㄥ叆璇锋眰锛夈€?         try:
+             from .cache_policy import resolve_ttl_seconds
+@@ -1596,11 +1598,18 @@ class AgentV2:
+         None锛堢幇鐘讹級/ "full" 鈫?True锛堝叏閲忔敞鍏ワ紝A9 鍓嶈涓轰笉鍙橈級
+         "none" 鈫?False锛堜笉娉ㄥ叆锛?         "first2" 鈫?True锛堟敞鍏ュ墠 2 鏉★紝瑙?_few_shot_limit()锛?+
++        B6: 鎺ㄧ悊妯″瀷锛坰upports_reasoning=True锛夋湭鏄惧紡閰嶇疆 few_shot_policy
++        鏃堕粯璁や笉鍔?few-shot锛坒ew-shot 浼氱█閲婃帹鐞嗭級锛涙樉寮忛厤缃紭鍏堛€?         """
+         caps = getattr(self, "_capabilities", None)
+-        policy = (caps or DEFAULT_CAPABILITIES).few_shot_policy
++        if caps is None:
++            caps = DEFAULT_CAPABILITIES
++        policy = caps.few_shot_policy
+         if policy == "none":
+             return False
++        if policy is None and getattr(caps, "supports_reasoning", False):
++            return False
+         return True
+ 
+     def _few_shot_limit(self) -> int | None:
+@@ -1614,15 +1623,35 @@ class AgentV2:
+             return 2
+         return None
+ 
++    def _tool_output_max_chars(self) -> int | None:
++        """B6: 璇诲彇 cache.tool_output_max_chars锛堥粯璁?2000锛夈€?+
++        杩斿洖姝ｆ暣鏁板瓧绗︿笂闄愶紱閰嶇疆缂虹渷 / 闈炴硶锛?/璐熸暟/闈炴暟瀛楋級鈫?None锛堜笉鎴柇锛?+        涓?A20 鐜扮姸涓€鑷达紝CB8锛夈€傝鍙栧け璐?鈫?None锛堜笉鍥犻厤缃敊璇敼鍙樿涓猴級銆?+        """
++        try:
++            cfg = _settings.load_config() or {}
++            raw = (cfg.get("cache") or {}).get("tool_output_max_chars")
++        except Exception:
++            return None
++        if isinstance(raw, bool) or not isinstance(raw, int):
++            return None
++        return raw if raw > 0 else None
++
+     def _truncate_tool_text(self, text: str) -> str:
+-        """A20: 鎸?tool_output_token_limit 瀵瑰伐鍏风粨鏋滄枃鏈壇鏈埅鏂€?+        """A20+B6: 瀵瑰伐鍏风粨鏋滄枃鏈壇鏈埅鏂紙钀藉湴鍓嶈皟鐢紝涓嶆敼 ToolMessage锛夈€?+
++        涓や釜鐙珛缁村害锛屽悇鑷彲鍏筹細
++        - B6 瀛楃缁村害锛歝ache.tool_output_max_chars锛堥粯璁?2000锛夛紝瓒呴暱鏂囨湰
++          鎴柇骞朵繚鐣欑粨鏋勶紙鍚堟硶 JSON 鎴垚鍚堟硶 JSON锛夛紱閰嶇疆缂哄け/鈮? 鏃跺叧闂€?+        - A20 token 缁村害锛歝aps.tool_output_token_limit锛堥粯璁?None=鍏抽棴锛夈€? 
+         杩斿洖鎴柇鍚庣殑**鏂囨湰鍓湰**锛?*涓嶆敼鍔ㄤ换浣?ToolMessage 瀵硅薄**
+-        锛坱ool_call_id 濂戠害涓嶅彈褰卞搷锛夈€俵imit=None 鈫?鍘熸牱杩斿洖銆?-        淇濊瘉锛氫及绠?token 鏁?鈮?limit 鏃跺師鏍疯繑鍥烇紱> limit 鏃惰繑鍥炴埅鏂枃鏈紝
+-        鍏朵及绠?token 鏁帮紙鍚埅鏂爣璁帮級**涓嶈秴杩?limit**鈥斺€旀寜姣斾緥鏀剁缉 keep_chars
+-        杩唬鐩磋嚦婊¤冻锛岃鐩栨瀬灏?limit锛?/2/5/20锛夈€?+        锛坱ool_call_id 濂戠害涓嶅彈褰卞搷锛夈€?         """
++        char_limit = self._tool_output_max_chars()
++        if char_limit is not None and text:
++            text = self._truncate_tool_text_chars(text, char_limit)
+         caps = getattr(self, "_capabilities", None)
+         limit = getattr(caps, "tool_output_token_limit", None) if caps else None
+         if limit is None or not text:
+@@ -1647,6 +1676,226 @@ class AgentV2:
+                 return head
+         return text[:1] if _estimate_tokens(text[:1], spec) <= limit else ""
+ 
++    def _truncate_tool_text_chars(self, text: str, char_limit: int) -> str:
++        """B6: 鎸夊瓧绗︿笂闄愭埅鏂枃鏈壇鏈紱JSON 缁撴瀯淇濇寔銆?+
++        鏂囨湰 鈮?limit 鈫?鍘熸牱杩斿洖銆傝秴闀挎椂锛?+        - 鍚堟硶 JSON 鈫?缁撴瀯鍖栨埅鏂紙_truncate_json_chars锛夛紝缁撴灉浠嶆槸鍚堟硶 JSON锛?+        - 闈?JSON 鈫?澶村熬淇濈暀 + 鎴柇鏍囪銆?+        """
++        if char_limit is None or char_limit <= 0 or not text or len(text) <= char_limit:
++            return text
++        try:
++            parsed = json.loads(text)
++        except (ValueError, TypeError):
++            return self._truncate_plain_chars(text, char_limit)
++        return self._truncate_json_chars(parsed, char_limit)
++
++    @staticmethod
++    def _truncate_plain_chars(text: str, char_limit: int) -> str:
++        """B6: 鏅€氭枃鏈瓧绗︽埅鏂細澶村熬淇濈暀 + 鎴柇鏍囪锛屾€婚暱 鈮?limit锛堢‖涓婇檺锛夈€?""
++        if len(text) <= char_limit:
++            return text
++        marker = "\n...[truncated]...\n"
++        if char_limit < len(marker):
++            # 鏋佸皬涓婇檺锛氳繛鏍囪閮芥斁涓嶄笅 鈫?绾ご閮ㄦ埅鏂紝淇濊瘉 鈮?limit銆?+            return text[:char_limit]
++        budget = char_limit - len(marker)
++        head = budget // 2
++        tail = budget - head
++        return text[:head] + marker + text[-tail:]
++
++    @staticmethod
++    def _truncate_json_chars(parsed, char_limit: int) -> str:
++        """B6: JSON 缁撴瀯淇濇寔鎴柇銆?+
++        淇濊瘉杈撳嚭鍚屾椂婊¤冻锛歚`json.loads()`` 鎴愬姛 涓?闀垮害 鈮?char_limit銆?+        绛栫暐锛堟寜搴忔墽琛岀洿鍒拌揪鏍囷級锛?+        1. 鏈€闀垮瓧绗︿覆鍊兼寜姣斾緥缂╃煭锛?+        2. 鏈€闀垮瓧绗︿覆 key 鍊煎鍒犻櫎锛坘ey 瓒呴暱鏃讹級锛?+        3. 瀹瑰櫒灏鹃儴鍏冪礌涓㈠純锛坙ist 灏炬 / dict 灏炬 key锛夛紱
++        4. 鍙墿鍗曞厓绱犱粛瓒呴檺 鈫?鍊兼浛鎹负 null锛?+        5. 鏈€缁堝厹搴?鈫?鏈€灏忓悎娉?JSON 瀛楅潰閲忥紙"0"/"{}"/"[]"/"null"锛夈€?+        """
++        if isinstance(parsed, str):
++            # 椤跺眰瀛楃涓诧細鍏堥獙璇佸畬鏁村簭鍒楀寲锛岃秴闄愬垯鎴柇鍚庨噸鏂板簭鍒楀寲
++            # 锛堜繚鎸?JSON 鍚堟硶锛夛紱鏋佸皬 limit锛?/2锛夐€€鍖栨渶灏忓瓧闈㈤噺銆?+            rendered = json.dumps(parsed, ensure_ascii=False)
++            if len(rendered) <= char_limit:
++                return rendered
++            budget = max(0, char_limit - 2)  # 寮曞彿寮€閿€
++            rendered = json.dumps(parsed[:budget], ensure_ascii=False)
++            if len(rendered) <= char_limit:
++                return rendered
++            return AgentV2._minimal_json(char_limit)
++        if isinstance(parsed, (int, float, bool)) or parsed is None:
++            rendered = json.dumps(parsed)
++            if len(rendered) <= char_limit:
++                return rendered
++            return AgentV2._minimal_json(char_limit)
++        for _ in range(500):
++            rendered = json.dumps(parsed, ensure_ascii=False)
++            if len(rendered) <= char_limit:
++                return rendered
++            longest = AgentV2._find_longest_string(parsed)
++            if longest is not None and len(longest[1]) > 4:
++                path, value = longest
++                keep = max(4, len(value) // 2)
++                AgentV2._set_at_path(parsed, path, value[:keep] + "...")
++                continue
++            if AgentV2._drop_long_keys(parsed):
++                continue
++            if AgentV2._trim_container(parsed):
++                continue
++            if AgentV2._minimize_values(parsed):
++                continue
++            return AgentV2._minimal_json(char_limit)
++        return AgentV2._minimal_json(char_limit)
++
++    @staticmethod
++    def _trim_container(parsed) -> bool:
++        """涓㈠純瀹瑰櫒灏鹃儴涓€鍗婂厓绱狅紙list 灏炬 / dict 灏炬 key锛夛紱杩斿洖鏄惁鍙戠敓浜嗚鍓€?""
++        if isinstance(parsed, list) and len(parsed) > 1:
++            del parsed[len(parsed) // 2:]
++            return True
++        if isinstance(parsed, dict) and len(parsed) > 1:
++            keys = list(parsed)
++            for key in keys[len(keys) // 2:]:
++                del parsed[key]
++            return True
++        return False
++
++    @staticmethod
++    def _drop_long_keys(parsed) -> bool:
++        """鍒犻櫎瓒呴暱 key锛堚墺32 瀛楃锛夌殑閿€煎锛涢€掑綊澶勭悊宓屽瀹瑰櫒銆?+
++        杩斿洖鏄惁鍙戠敓浜嗗垹闄ゃ€傝秴闀?key 鏃犳硶鎸夋瘮渚嬬缉鐭紙浼氱牬鍧忓瓧鍏歌涔夛級锛?+        鍒犻櫎姣旈€€鍖栨爣閲忔洿鑳戒繚鐣欑粨鏋勶紙luna R4-2/R5-1锛夈€?+        """
++        if isinstance(parsed, dict):
++            for key in list(parsed):
++                if len(key) >= 32:
++                    del parsed[key]
++                    return True
++                if AgentV2._drop_long_keys(parsed[key]):
++                    return True
++        elif isinstance(parsed, list):
++            for item in parsed:
++                if AgentV2._drop_long_keys(item):
++                    return True
++        return False
++
++    @staticmethod
++    def _minimize_values(parsed) -> bool:
++        """鎶婂鍣ㄩ噷鐨勬墍鏈夊€兼浛鎹负 null锛涜繑鍥炴槸鍚﹀疄闄呯缉鐭簡搴忓垪鍖栭暱搴︺€?+
++        鍊煎凡鍏ㄩ儴涓?null 鏃惰繑鍥?False锛堟棤杩涘睍 鈫?璋冪敤鏂圭珛鍗抽€€鍖栵紝
++        閬垮厤鏃犳剰涔夊惊鐜紝luna R4-1锛夈€?+        """
++        if isinstance(parsed, dict):
++            if parsed and all(value is None for value in parsed.values()):
++                parsed.clear()
++                return True
++            changed = False
++            for key in parsed:
++                if parsed[key] is not None:
++                    parsed[key] = None
++                    changed = True
++            return changed
++        if isinstance(parsed, list):
++            if parsed and all(value is None for value in parsed):
++                parsed.clear()
++                return True
++            changed = False
++            for index in range(len(parsed)):
++                if parsed[index] is not None:
++                    parsed[index] = None
++                    changed = True
++            return changed
++        return False
++
++    @staticmethod
++    def _minimal_json(char_limit: int) -> str:
++        """杩斿洖婊¤冻闀垮害涓婇檺鐨勬渶鐭悎娉?JSON 瀛楅潰閲忋€?""
++        for literal in ("0", "{}", "[]", "null"):
++            if len(literal) <= char_limit:
++                return literal
++        return ""
++
++    @staticmethod
++    def _find_longest_string(parsed) -> tuple | None:
++        """杩斿洖 (璺緞, 鍊? 鈥斺€?JSON 鏍戜腑鏈€闀跨殑瀛楃涓插€笺€?""
++
++        def walk(node, path: tuple) -> tuple | None:
++            if isinstance(node, dict):
++                best = None
++                for key, value in node.items():
++                    found = walk(value, path + (key,))
++                    if found is not None and (
++                        best is None or len(found[1]) > len(best[1])
++                    ):
++                        best = found
++                return best
++            if isinstance(node, list):
++                best = None
++                for index, value in enumerate(node):
++                    found = walk(value, path + (index,))
++                    if found is not None and (
++                        best is None or len(found[1]) > len(best[1])
++                    ):
++                        best = found
++                return best
++            if isinstance(node, str):
++                return (path, node)
++            return None
++
++        return walk(parsed, ())
++
++    @staticmethod
++    def _set_at_path(parsed, path: tuple, value: str) -> None:
++        """鎸?_find_longest_string 杩斿洖鐨勮矾寰勫師浣嶆浛鎹㈠瓧绗︿覆鍊笺€?""
++        node = parsed
++        for key in path[:-1]:
++            node = node[key]
++        node[path[-1]] = value
++
++    def _tool_output_fingerprint(self, content: str) -> str:
++        """B6: 宸ュ叿杈撳嚭鐨勭粨鏋勫寲鎸囩汗锛堢敤浜庨噸澶嶆娴嬶級銆?+
++        JSON 鈫?瑙ｆ瀽鍚庢寜 sort_keys 瑙勮寖鍖栧啀搴忓垪鍖栵紙key 椤哄簭涓嶅悓浣嗙粨鏋?+        鐩稿悓 鈫?鍚屼竴鎸囩汗锛夛紱闈?JSON 鈫?鍘熸枃鏈€傚甫鏃堕棿鎴崇瓑瀛楄妭涓嶅悓鐨勫唴瀹?+        鎸囩汗蹇呯劧涓嶅悓锛屼笉浼氳浼ゅ幓閲嶏紙甯歌鍧戯級銆?+        """
++        try:
++            parsed = json.loads(content)
++        except (ValueError, TypeError):
++            return content
++        return json.dumps(parsed, sort_keys=True, ensure_ascii=False)
++
++    def _dedupe_tool_output(self, tool_name: str, content: str) -> str:
++        """B6: 鍚屽伐鍏烽噸澶嶈緭鍑哄悎骞讹紙钀藉湴鍓嶃€佹埅鏂墠璋冪敤锛夈€?+
++        **蹇呴』鐢ㄥ師濮嬪伐鍏疯緭鍑猴紙鎴柇鍓嶏級璁＄畻鎸囩汗**锛氳嫢鍏堢敤鎴柇鍚庣殑鍐呭绠?+        鎸囩汗锛屽樊寮傝惤鍦ㄨ鎴帀鍖哄煙鐨勪袱娆¤緭鍑轰細琚鍒や负閲嶅锛坙una R1-3锛夈€?+
++        棣栨鍑虹幇 鈫?璁板綍鎸囩汗骞跺師鏍疯繑鍥烇紱鍚庣画鍚屾寚绾?鈫?杩斿洖鍗犱綅绗︼紝
++        涓嶉噸澶嶈繘鍘嗗彶锛坅ider add_rel_fname 璇箟锛夈€備笉鍚屾寚绾癸紙鍚椂闂存埑
++        宸紓锛夆啋 姣忔鍘熸牱淇濈暀銆傛寚绾归泦鍚堟寜宸ュ叿绱锛圓鈫払鈫扐 涓浜屾 A
++        浠嶅垽瀹氫负閲嶅锛宭una R5-2锛夈€?+        """
++        seen = getattr(self, "_seen_tool_fingerprints", None)
++        if seen is None:
++            seen = self._seen_tool_fingerprints = {}
++        fingerprints = seen.setdefault(tool_name, set())
++        fingerprint = self._tool_output_fingerprint(content)
++        if fingerprint in fingerprints:
++            return (
++                f"[duplicate tool output omitted: {tool_name} 杈撳嚭涓庝笂娆＄浉鍚岋紝"
++                "涓鸿妭鐪?token 宸插幓閲峕"
++            )
++        fingerprints.add(fingerprint)
++        return content
++
+     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
+         """Phase 3 M4锛氳姹傚眰瑙ｆ瀽鏈€缁?max_tokens锛堝惈 context 閽冲埗锛夈€? 
+@@ -2449,7 +2698,9 @@ class AgentV2:
+             for fetch_call, url, content in verified_fetches:
+                 fetch_text = f"Successfully fetched source URL: {url}\n\n{content}"
+                 messages.append(ToolMessage(
+-                    content=self._truncate_tool_text(fetch_text),
++                    content=self._truncate_tool_text(
++                        self._dedupe_tool_output("webfetch", fetch_text)
++                    ),
+                     tool_call_id=fetch_call["id"],
+                 ))
+ 
+@@ -2627,7 +2878,14 @@ class AgentV2:
+                         if fetched_url and fetched_url not in research_sources:
+                             research_sources.append(fetched_url)
+ 
+-                    messages.append(ToolMessage(content=self._truncate_tool_text(str(result)), tool_call_id=tool_id or tool_name))
++                    messages.append(
++                        ToolMessage(
++                            content=self._truncate_tool_text(
++                                self._dedupe_tool_output(tool_name, str(result))
++                            ),
++                            tool_call_id=tool_id or tool_name,
++                        )
++                    )
+             else:
+                 # Exceeded max rounds - give LLM one tool-free synthesis pass
+                 if tui and hasattr(tui, "write_progress"):
+
+
+# 实测证据
+- pytest tests/test_cache/test_token_governance.py: 37 passed
+- ruff: All checks passed
+- pytest tests/test_providers/test_token_governance.py + tests/test_cache: 298 passed, 3 skipped
+- 全量 tests/test_core + test_cache + test_memory: 7693 passed, 2 failed（P7 lazy-import 遗留，stash B6 后同样失败，非本卡引入）
+- evals GATE PASS 89.5% >= 89.5%（持平）；token 1,614,391 -> 1,293,031（-19.9%）
+- 已裁定：CB8 PASS（默认 2000 文档设计要求）、CB5 记录 token 对比、CB6 未触碰缓存写入路径
+
+# 复审要求
+1. 复核 R5 两项修复是否闭合（>=32 递归删除 / 指纹集合语义）
+2. 逐条核对完成判据 1-6 + CB1-CB8
+3. 输出结论：PASS / FAIL；若 FAIL 列阻断项（具体、可执行）

@@ -87,15 +87,13 @@ def test_sessions_keep_independent_working_directories_and_tasks(
         tasks = manage_tasks("list")
         assert "first-only" in tasks
         assert "second-only" not in tasks
-        assert "second-session" in read_file("shared.txt")
+        assert "first-session" in read_file("shared.txt")
     finally:
         reset_session_binding(first_token)
 
     assert Path.cwd() == process_cwd
-    output_dir = tmp_path / "data" / "output"
-    generated = list(output_dir.glob("*/shared.txt"))
-    assert len(generated) == 1
-    assert generated[0].read_text(encoding="utf-8") == "second-session"
+    assert (first_dir / "shared.txt").read_text(encoding="utf-8") == "first-session"
+    assert (second_dir / "shared.txt").read_text(encoding="utf-8") == "second-session"
 
 
 def test_project_and_runtime_session_records_use_dated_directories(tmp_path, monkeypatch):
@@ -159,11 +157,9 @@ def test_registered_local_file_tools_resolve_against_session_cwd(
         assert "alpha" in read_file("sample.txt")
         assert "edited" in edit_file("sample.txt", "alpha", "beta")
         assert "beta" in run_view("sample.txt")
-        output_dir = tmp_path / "data" / "output"
-        dated_output = next(output_dir.iterdir())
-        assert "beta" in grep_files("beta", str(dated_output), "*.txt")
-        assert str(dated_output / "sample.txt") in glob_files("*.txt", str(dated_output))
-        assert "sample.txt" in run_ls(str(dated_output))
+        assert "beta" in grep_files("beta", str(workspace), "*.txt")
+        assert str(workspace / "sample.txt") in glob_files("*.txt", str(workspace))
+        assert "sample.txt" in run_ls(str(workspace))
         patch = "@@ -1,1 +1,1 @@\n-beta\n+gamma"
         assert "Patch applied" in run_patch("sample.txt", patch)
 
@@ -173,7 +169,7 @@ def test_registered_local_file_tools_resolve_against_session_cwd(
         write_file("page.html", "<html></html>")
         preview_path, error = _validate_previewable_file("page.html")
         assert error is None
-        assert preview_path == (dated_output / "page.html").resolve()
+        assert preview_path == (workspace / "page.html").resolve()
 
         formatted_commands = []
 
@@ -183,7 +179,7 @@ def test_registered_local_file_tools_resolve_against_session_cwd(
 
         monkeypatch.setattr(format_module, "_run_formatter", fake_formatter)
         assert format_module.run_format("clean.py", tool="black") == "formatted"
-        assert formatted_commands[-1][-1] == str((dated_output / "clean.py").resolve())
+        assert formatted_commands[-1][-1] == str((workspace / "clean.py").resolve())
 
         monkeypatch.setattr(
             git_module,
@@ -317,12 +313,10 @@ def test_write_gate_and_tool_resolve_the_same_session_relative_target(
     assert allowed.startswith("[wrote ")
     assert len(evidence) == 1
     assert evidence[0].passed is True
-    output_dir = tmp_path / "data" / "output"
-    inside = next(output_dir.glob("*/inside.txt"))
+    inside = session_dir / "inside.txt"
     assert evidence[0].artifacts[0].path == str(inside.resolve())
     assert inside.read_text(encoding="utf-8") == "inside"
     assert "write path not allowed" in blocked
-    assert not list(output_dir.glob("*/outside.txt"))
     assert not (sibling / "outside.txt").exists()
 
 

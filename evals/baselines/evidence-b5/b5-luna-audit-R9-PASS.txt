@@ -1,0 +1,33 @@
+## B5 第 9 轮复审结论：PASS
+
+### 判据核对
+
+1. **append-only 会话恢复：PASS**  
+   支持历史追加、重叠去重、前缀不匹配时避免重复前缀。
+
+2. **稳定 session_id / prompt cache key：PASS**  
+   `session_id` 在 Agent 生命周期内保持稳定。
+
+3. **prewarm 签名校验：PASS**  
+   model、cwd、MCP 配置变化会使签名失效并触发重建。
+
+4. **可选 keep-alive：PASS**  
+   默认关闭；启用后具备 5 分钟间隔和调用预算保护，使用 `max_tokens=1`。
+
+5. **prewarm 请求链路：PASS**  
+   使用真实 system prompt、核心工具；完整消费流结束后才确认 warmed，异常不确认并支持下次重试。
+
+6. **命中率可观测性：PASS**  
+   真实 usage 会记录 prompt/cache hit tokens，并计算命中率。
+
+### R8 阻断项复核
+
+- `tool_calls` 元数据保留：已修复。
+- prewarm 不再首 chunk 确认：已修复。
+- prewarm 使用真实 system prompt 与工具：已修复。
+
+### CB1-CB8
+
+未发现违反项。测试、ruff、eval 及跨 turn 命中率证据均符合要求。
+
+**最终结论：PASS，无阻断项。**

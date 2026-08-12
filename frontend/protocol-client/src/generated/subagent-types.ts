@@ -154,10 +154,12 @@ export interface WorkspaceScope {
  */
 export interface UsageRecord {
   steps?: number;
-  input_tokens?: number;
-  output_tokens?: number;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_hit_tokens?: number | null;
   wall_time_ms?: number;
   retry_count?: number;
+  reporting_status?: "reported" | "partial" | "not_reported";
   [k: string]: unknown;
 }
 /**
@@ -216,6 +218,7 @@ export interface ChildSessionEvent {
   event_name: string;
   session_id: string;
   parent_session_id: string;
+  root_session_id: string;
   request_id?: string;
   seq?: number;
   timestamp?: number;

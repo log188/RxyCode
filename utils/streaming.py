@@ -11,6 +11,7 @@ Color system:
 
 import os
 import threading
+from contextvars import ContextVar, Token
 from typing import Optional
 
 from rich.console import Console
@@ -42,6 +43,9 @@ class TokenStats:
     """
 
     def __init__(self, context_max: Optional[int] = None):
+        self._usage_scope: ContextVar[dict[str, int] | None] = ContextVar(
+            f"token_usage_scope_{id(self)}", default=None
+        )
         self.input_tokens = 0
         self.output_tokens = 0
         self.cache_hits = 0
@@ -65,6 +69,17 @@ class TokenStats:
         self.application_cache_misses = {"precise": 0, "semantic": 0}
         self.application_cache_bypasses = {"precise": 0, "semantic": 0}
         self._model_name: Optional[str] = None
+        # B8: 首 token 时耗（TTFT，毫秒）。首个内容 chunk 到达时记录；
+        # 命中缓存应显著低于冷写（同前缀、同模型、同后端采样）。
+        self.ttft_ms: Optional[float] = None
+
+    def record_ttft(self, ttft_ms: float) -> None:
+        """B8: 记录一次请求的首 token 时耗（毫秒）。"""
+        self.ttft_ms = float(ttft_ms)
+
+    def reset_ttft(self) -> None:
+        """B8: 重置 TTFT（新请求开始 / 测试隔离）。"""
+        self.ttft_ms = None
 
     def set_model(self, model_name: Optional[str]) -> None:
         """Set the active model name used for pricing lookups."""
@@ -96,6 +111,20 @@ class TokenStats:
             self.cache_misses += 1
         # FIX-2: Always update cache_size, even when cache_read_tokens is 0
         self.cache_size = self.cache_hit_tokens
+        scoped = self._usage_scope.get()
+        if scoped is not None:
+            scoped["input_tokens"] += int(input_tokens or 0)
+            scoped["output_tokens"] += int(output_tokens or 0)
+            scoped["cache_hit_tokens"] += int(cache_read_tokens or 0)
+
+    def begin_usage_scope(self) -> tuple[Token, dict[str, int]]:
+        """Start task-local usage attribution while retaining global totals."""
+        usage = {"input_tokens": 0, "output_tokens": 0, "cache_hit_tokens": 0}
+        return self._usage_scope.set(usage), usage
+
+    def end_usage_scope(self, token: Token) -> None:
+        """Restore the previous task-local attribution scope."""
+        self._usage_scope.reset(token)
 
     @property
     def total_tokens(self) -> int:
@@ -118,6 +147,14 @@ class TokenStats:
     @property
     def latest_request(self) -> dict[str, int | float]:
         """B1: most recent single assistant request (Pi dual-track 'latest').
+
+        口径说明（预审收口）：
+        - 本结构是**单次请求口径**：只反映最近一次 add_real_usage 请求的
+          prompt_tokens / hit_tokens / hit_rate，不做任何累计。
+        - 会话累计口径（totals）见类级字段 prompt_tokens / cache_hit_tokens /
+          cache_hit_rate——两者语义不同，不可混用、不可直接比较。
+        - 失败/重试请求按 add_real_usage 调用序覆盖（调用方保证只对成功的
+          provider usage 调用）；无任何请求时返回全 0。
 
         Mirrors the cumulative ``cache_hit_rate`` formula but on the last
         request only, so compaction/model-switch spikes are observable
@@ -167,6 +204,10 @@ class TokenStats:
             self.cache_hits += 1
         else:
             self.cache_misses += 1
+        scoped = self._usage_scope.get()
+        if scoped is not None:
+            scoped["input_tokens"] += int(input_tokens or 0)
+            scoped["output_tokens"] += int(output_tokens or 0)
 
     def record_application_cache(
         self,

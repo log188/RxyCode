@@ -1,60 +1,140 @@
+import {
+  AlertTriangle,
+  Bot,
+  Check,
+  ChevronDown,
+  CircleDashed,
+  FileText,
+  Terminal,
+  X
+} from 'lucide-react'
 import { useEffect, useRef } from 'react'
-import type { ChatMessage, ToolCall } from '../lib/conversationStore.mts'
+import type { TimelineItem } from '../lib/conversationStore.mts'
 
 interface ChatAreaProps {
-  messages: ChatMessage[]
-  tools: ToolCall[]
+  timeline: TimelineItem[]
   running: boolean
   error: string | null
+  onOpenInspector?: (item: TimelineItem) => void
 }
 
-function ChatArea({ messages, tools, running, error }: ChatAreaProps): React.JSX.Element {
+function ToolActivity({ item, onOpenInspector }: {
+  item: Extract<TimelineItem, { kind: 'tool_activity' }>
+  onOpenInspector?: (item: TimelineItem) => void
+}): React.JSX.Element {
+  const isRunning = item.status === 'running'
+  const isRecovering = item.status === 'recovering'
+  const verb = isRecovering ? '工具调用遇到问题，正在自动恢复' : isRunning ? '正在运行' : item.status === 'ok' ? '运行了' : '运行失败'
+  return (
+    <details className={`activity-row tool-activity ${item.status}`} data-testid={`timeline-tool-${item.callId}`}>
+      <summary className="activity-summary">
+        {isRunning || isRecovering ? <CircleDashed className="activity-spinner" aria-hidden="true" size={15} /> : item.status === 'ok' ? <Check aria-hidden="true" size={15} /> : <X aria-hidden="true" size={15} />}
+        <span className="activity-label">{verb} {item.toolName}</span>
+        {item.summary !== undefined && <span className="activity-result">· {item.summary}</span>}
+        <ChevronDown className="activity-chevron" aria-hidden="true" size={14} />
+      </summary>
+      <div className="activity-details">
+        <button type="button" className="activity-inspect-button" onClick={() => onOpenInspector?.(item)}>
+          <Terminal aria-hidden="true" size={14} />
+          查看工具详情
+        </button>
+        <dl className="activity-detail-list">
+          <div><dt>工具</dt><dd>{item.toolName}</dd></div>
+          <div><dt>调用 ID</dt><dd>{item.callId}</dd></div>
+          {item.arguments !== undefined && <div><dt>参数</dt><dd><pre>{JSON.stringify(item.arguments, null, 2)}</pre></dd></div>}
+          {item.summary !== undefined && <div><dt>结果摘要</dt><dd>{item.summary}</dd></div>}
+        </dl>
+      </div>
+    </details>
+  )
+}
+
+function RecoveryActivity({ item, onOpenInspector }: {
+  item: Extract<TimelineItem, { kind: 'recovery' }>
+  onOpenInspector?: (item: TimelineItem) => void
+}): React.JSX.Element {
+  const resolved = item.state === 'recovered'
+  const exhausted = item.state === 'exhausted'
+  const label = exhausted
+    ? `自动恢复失败 · 已尝试 ${item.attempts} 次`
+    : resolved
+      ? `遇到问题并已自动恢复 · ${item.attempts} 次尝试`
+      : '工具调用遇到问题，正在自动恢复'
+  return (
+    <details className={`activity-row recovery-activity ${item.state}`} open={exhausted} data-testid={`timeline-recovery-${item.recoveryId}`}>
+      <summary className="activity-summary" onClick={() => onOpenInspector?.(item)}>
+        {exhausted ? <X aria-hidden="true" size={15} /> : resolved ? <Check aria-hidden="true" size={15} /> : <CircleDashed className="activity-spinner" aria-hidden="true" size={15} />}
+        <span className="activity-label">{label}</span>
+        {!exhausted && <ChevronDown className="activity-chevron" aria-hidden="true" size={14} />}
+      </summary>
+      <div className="activity-details recovery-details">
+        <p className="activity-muted">恢复方式：{item.recoveryKind}</p>
+        <p className="activity-muted">错误类型：{item.errorKind}</p>
+        {item.summary !== undefined && <p>{item.summary}</p>}
+        {item.details.length > 0 && (
+          <ul>{item.details.map((detail, index) => <li key={`${item.recoveryId}-${index}`}>{detail}</li>)}</ul>
+        )}
+      </div>
+    </details>
+  )
+}
+
+function TimelineEntry({ item, onOpenInspector }: { item: TimelineItem; onOpenInspector?: (item: TimelineItem) => void }): React.JSX.Element {
+  switch (item.kind) {
+    case 'user_prompt':
+      return <article className="timeline-prompt"><div className="timeline-eyebrow">你</div><p>{item.text}</p></article>
+    case 'assistant_text':
+      return item.text !== '' ? <article className="timeline-assistant"><div className="timeline-eyebrow">RxyCode</div><div className="timeline-prose">{item.text}</div></article> : <></>
+    case 'tool_activity':
+      return <ToolActivity item={item} onOpenInspector={onOpenInspector} />
+    case 'recovery':
+      return <RecoveryActivity item={item} onOpenInspector={onOpenInspector} />
+    case 'child_agent':
+      return (
+        <button type="button" className={`activity-row child-activity state-${item.state}`} onClick={() => onOpenInspector?.(item)} data-testid={`timeline-child-${item.sessionId}`}>
+          <Bot aria-hidden="true" size={15} />
+          <span className="activity-label">@{item.agentId} · {item.title}</span>
+          <span className="activity-result">{item.state === 'running' ? '正在运行' : item.state}</span>
+          {item.state === 'running' ? <CircleDashed className="activity-spinner" aria-hidden="true" size={14} /> : <ChevronDown aria-hidden="true" size={14} />}
+        </button>
+      )
+    case 'approval':
+      return <button type="button" className="activity-row approval-activity" onClick={() => onOpenInspector?.(item)}><AlertTriangle aria-hidden="true" size={15} /><span className="activity-label">等待审批 · {item.action}</span></button>
+    case 'final_answer':
+      return <article className={`final-answer status-${item.status}`} data-testid="final-answer"><div className="final-answer-heading"><FileText aria-hidden="true" size={16} /><span>Final Answer</span></div><div className="timeline-prose">{item.text}</div></article>
+    case 'error':
+      return <article className="timeline-error" role="alert"><X aria-hidden="true" size={15} /><span>{item.text}</span></article>
+  }
+}
+
+function ChatArea({ timeline, running, error, onOpenInspector }: ChatAreaProps): React.JSX.Element {
   const scrollRef = useRef<HTMLElement | null>(null)
+  const stickToBottomRef = useRef(true)
 
   useEffect(() => {
     const el = scrollRef.current
-    if (el !== null) el.scrollTop = el.scrollHeight
-  }, [messages, tools, running, error])
+    if (el !== null && stickToBottomRef.current) el.scrollTop = el.scrollHeight
+  }, [timeline, running, error])
 
-  if (messages.length === 0) {
-    return (
-      <section className="chat-area" ref={scrollRef}>
-        <div className="chat-empty">
-          <p>新建会话后，在下方输入你的需求</p>
-        </div>
-      </section>
-    )
-  }
   return (
-    <section className="chat-area" ref={scrollRef}>
-      <div className="chat-messages">
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={`message ${message.role}${message.status === 'error' ? ' error' : ''}`}
-          >
-            <div className="message-role">{message.role === 'user' ? '你' : 'Agent'}</div>
-            <div className="message-text">
-              {message.text !== '' ? message.text : message.status === 'streaming' ? '…' : ''}
-            </div>
-          </div>
-        ))}
-        {tools.length > 0 && (
-          <div className="tool-cards">
-            {tools.map((tool) => (
-              <div key={tool.callId} className={`tool-card ${tool.status}`}>
-                <span className="tool-name">{tool.toolName}</span>
-                <span className="tool-status">
-                  {tool.status === 'running' ? '运行中' : tool.status === 'ok' ? '完成' : '失败'}
-                </span>
-                {tool.summary !== undefined && <span className="tool-summary">{tool.summary}</span>}
-              </div>
-            ))}
-          </div>
-        )}
-        {running && <div className="running-indicator">运行中…</div>}
-      </div>
-      {error !== null && <div className="error-banner">{error}</div>}
+    <section
+      className="chat-area"
+      ref={scrollRef}
+      aria-live="polite"
+      onScroll={(event) => {
+        const target = event.currentTarget
+        stickToBottomRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 48
+      }}
+    >
+      {timeline.length === 0 ? (
+        <div className="chat-empty"><p>新建任务后，在下方输入你的需求。</p></div>
+      ) : (
+        <div className="timeline" data-testid="task-timeline">
+          {timeline.map((item) => <TimelineEntry key={item.id} item={item} onOpenInspector={onOpenInspector} />)}
+          {running && timeline.at(-1)?.kind !== 'tool_activity' && <div className="running-indicator"><CircleDashed className="activity-spinner" aria-hidden="true" size={15} />正在处理</div>}
+        </div>
+      )}
+      {error !== null && timeline.at(-1)?.kind !== 'error' && <div className="error-banner" role="alert">{error}</div>}
     </section>
   )
 }

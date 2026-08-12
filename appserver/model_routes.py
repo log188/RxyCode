@@ -23,7 +23,16 @@ this module is a thin transport adapter and never reimplements business logic.
 from __future__ import annotations
 
 import asyncio
+from importlib import import_module
 from typing import Any
+
+
+def _load_module(relative_name: str, top_level_name: str):
+    """Import in both installed-package and source-tree appserver modes."""
+    try:
+        return import_module(relative_name, package=__package__)
+    except ImportError:
+        return import_module(top_level_name)
 
 
 def _run(coro):
@@ -32,7 +41,7 @@ def _run(coro):
 
 
 def _redact(value: object, *secrets: str) -> str:
-    from ..api_server import _redact_sensitive
+    _redact_sensitive = _load_module("..api_server", "api_server")._redact_sensitive
 
     result = str(value)
     for secret_value in secrets:
@@ -43,12 +52,12 @@ def _redact(value: object, *secrets: str) -> str:
 
 def list_models() -> dict[str, Any]:
     """models/list — structured model list with provider grouping + limit summary."""
-    from ..config.settings import load_config
-    from ..config.model_manager import (
-        ensure_models_provider_metadata,
-        infer_provider_group,
-        prune_recent_models,
-    )
+    settings = _load_module("..config.settings", "config.settings")
+    manager = _load_module("..config.model_manager", "config.model_manager")
+    load_config = settings.load_config
+    ensure_models_provider_metadata = manager.ensure_models_provider_metadata
+    infer_provider_group = manager.infer_provider_group
+    prune_recent_models = manager.prune_recent_models
 
     cfg = ensure_models_provider_metadata(load_config(), persist=False)
     models = cfg.get("models", {})
@@ -78,7 +87,9 @@ def list_models() -> dict[str, Any]:
             "provider_id": provider_id or "",
         }
         try:
-            from ..config.model_limits import resolve_configured_max_tokens
+            resolve_configured_max_tokens = _load_module(
+                "..config.model_limits", "config.model_limits"
+            ).resolve_configured_max_tokens
 
             resolution = resolve_configured_max_tokens(
                 model_config=mcfg,
@@ -106,7 +117,9 @@ def list_models() -> dict[str, Any]:
 
 def list_presets() -> dict[str, Any]:
     """models/presets — provider connection presets (base URL only)."""
-    from ..config.model_manager import list_provider_presets
+    list_provider_presets = _load_module(
+        "..config.model_manager", "config.model_manager"
+    ).list_provider_presets
 
     return {"presets": list_provider_presets()}
 
@@ -116,7 +129,9 @@ async def discover(params: dict[str, Any]) -> dict[str, Any]:
 
     params: {api_key, base_url}
     """
-    from ..config.model_manager import discover_provider_models
+    discover_provider_models = _load_module(
+        "..config.model_manager", "config.model_manager"
+    ).discover_provider_models
 
     api_key = str(params.get("api_key", "")).strip()
     base_url = str(params.get("base_url", "")).strip()
@@ -143,14 +158,13 @@ async def onboard(params: dict[str, Any]) -> dict[str, Any]:
 
     params: {provider_model_id, api_key, base_url, nickname?}
     """
-    from ..config.model_manager import (
-        add_model,
-        list_models,
-        local_model_key,
-        probe_model_connection,
-        resolve_provider_meta,
-        set_active_model,
-    )
+    manager = _load_module("..config.model_manager", "config.model_manager")
+    add_model = manager.add_model
+    configured_models = manager.list_models
+    local_model_key = manager.local_model_key
+    probe_model_connection = manager.probe_model_connection
+    resolve_provider_meta = manager.resolve_provider_meta
+    set_active_model = manager.set_active_model
 
     provider_model_id = str(params.get("provider_model_id", "")).strip()
     api_key = str(params.get("api_key", "")).strip()
@@ -164,7 +178,7 @@ async def onboard(params: dict[str, Any]) -> dict[str, Any]:
     if not base_url:
         return {"ok": False, "error_code": "invalid", "message": "base_url must not be empty"}
 
-    from ..config.model_manager import normalize_provider_base_url
+    normalize_provider_base_url = manager.normalize_provider_base_url
 
     try:
         base_url = normalize_provider_base_url(base_url, require_https=True)
@@ -173,7 +187,7 @@ async def onboard(params: dict[str, Any]) -> dict[str, Any]:
 
     meta = resolve_provider_meta(base_url)
     config_key = local_model_key(provider_model_id, meta["id"])
-    if config_key in list_models():
+    if config_key in configured_models():
         return {"ok": False, "error_code": "exists", "message": f"Model already exists: {config_key}"}
 
     probe = await asyncio.to_thread(probe_model_connection, api_key, base_url, provider_model_id)
@@ -183,6 +197,7 @@ async def onboard(params: dict[str, Any]) -> dict[str, Any]:
 
     await asyncio.to_thread(
         add_model,
+        name=config_key,
         api_key=api_key,
         base_url=base_url,
         model_name=provider_model_id,
@@ -198,7 +213,9 @@ async def onboard_batch(params: dict[str, Any]) -> dict[str, Any]:
     params: {api_key, base_url, model_ids: [..], provider_id?, provider_name?,
              active_model_id?, skip_probe?}
     """
-    from ..config.model_manager import normalize_provider_base_url, onboard_models_batch
+    manager = _load_module("..config.model_manager", "config.model_manager")
+    normalize_provider_base_url = manager.normalize_provider_base_url
+    onboard_models_batch = manager.onboard_models_batch
 
     api_key = str(params.get("api_key", "")).strip()
     base_url = str(params.get("base_url", "")).strip()
@@ -238,7 +255,9 @@ async def onboard_batch(params: dict[str, Any]) -> dict[str, Any]:
 
 def remove(params: dict[str, Any]) -> dict[str, Any]:
     """models/remove — remove a model by config key. params: {id}"""
-    from ..config.model_manager import remove_model
+    remove_model = _load_module(
+        "..config.model_manager", "config.model_manager"
+    ).remove_model
 
     model_id = str(params.get("id", "")).strip()
     if not model_id:
@@ -249,7 +268,9 @@ def remove(params: dict[str, Any]) -> dict[str, Any]:
 
 def set_active(params: dict[str, Any]) -> dict[str, Any]:
     """models/set_active — switch the active model. params: {id}"""
-    from ..config.model_manager import set_active_model
+    set_active_model = _load_module(
+        "..config.model_manager", "config.model_manager"
+    ).set_active_model
 
     model_id = str(params.get("id", "")).strip()
     if not model_id:
@@ -260,7 +281,9 @@ def set_active(params: dict[str, Any]) -> dict[str, Any]:
 
 async def test_connection(params: dict[str, Any]) -> dict[str, Any]:
     """models/test_connection — live credential test. params: {id}"""
-    from ..config.model_manager import test_model_connection
+    test_model_connection = _load_module(
+        "..config.model_manager", "config.model_manager"
+    ).test_model_connection
 
     model_id = str(params.get("id", "")).strip()
     if not model_id:
@@ -283,11 +306,10 @@ def upsert_credential(params: dict[str, Any]) -> dict[str, Any]:
 
     params: {id, api_key}
     """
-    from ..config.model_manager import (
-        add_model,
-        load_config,
-        normalize_provider_base_url,
-    )
+    manager = _load_module("..config.model_manager", "config.model_manager")
+    add_model = manager.add_model
+    load_config = manager.load_config
+    normalize_provider_base_url = manager.normalize_provider_base_url
 
     model_id = str(params.get("id", "")).strip()
     api_key = str(params.get("api_key", "")).strip()
@@ -325,9 +347,13 @@ def delete_credential(params: dict[str, Any]) -> dict[str, Any]:
 
     params: {id}
     """
-    from ..config.credential_store import delete_credential as _delete_secret
-    from ..config.model_manager import load_config, save_config
-    from ..config.settings import get_config_path
+    credentials = _load_module("..config.credential_store", "config.credential_store")
+    manager = _load_module("..config.model_manager", "config.model_manager")
+    settings = _load_module("..config.settings", "config.settings")
+    _delete_secret = credentials.delete_credential
+    load_config = manager.load_config
+    save_config = manager.save_config
+    get_config_path = settings.get_config_path
 
     model_id = str(params.get("id", "")).strip()
     if not model_id:

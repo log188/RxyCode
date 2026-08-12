@@ -1,0 +1,142 @@
+"""B9: per-model 缓存契约层（model_catalog.json cache_contract 唯一入口）。
+
+9 家 provider 的缓存模式/命中折扣/TTL/断点/usage 字段/reasoning 契约各不相同，
+通配适配=静默失效（向 DeepSeek 注入 cache_control、向 MiMo 丢 reasoning、
+向 Kimi 不传 prompt_cache_key 都是"没报错但缓存归零"）。
+
+本模块是**唯一**契约读取入口：B2 断点分派 / B3 TTL / B4 压缩决策 / B6 token
+治理一律经此，禁止在 core/providers/ 等散落 if-elif 判模型代码。
+
+未识别模型 → 返回 None / 0（CB8：调用方兜底为现状行为）。
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+#: 契约目录（与 model_catalog.json 同源）。
+_CATALOG_PATH = Path(__file__).resolve().parents[1] / "config" / "model_catalog.json"
+
+#: 模块级缓存：provider:model -> cache_contract（或 None）。
+_contracts: dict[str, dict | None] | None = None
+
+
+def _load_contracts() -> dict[str, dict | None]:
+    """加载全部 cache_contract 索引；文件缺失/损坏 → 空索引（CB8）。"""
+    global _contracts
+    if _contracts is not None:
+        return _contracts
+    index: dict[str, dict | None] = {}
+    try:
+        data = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+        for record in data.get("records", []):
+            provider = str(record.get("provider_id") or "").strip().casefold()
+            model = str(record.get("model_id") or "").strip().casefold()
+            contract = record.get("cache_contract")
+            if not provider or not model:
+                continue
+            index[f"{provider}:{model}"] = contract if isinstance(contract, dict) else None
+    except (OSError, ValueError, KeyError):
+        pass
+    _contracts = index
+    return _contracts
+
+
+def reset_contract_cache() -> None:
+    """清空契约缓存（测试 / 热加载用）。"""
+    global _contracts
+    _contracts = None
+
+
+def get_contract(provider_id: str, model_id: str) -> dict | None:
+    """返回 provider:model 的 cache_contract；未识别 → None（CB8）。
+
+    大小写/空白不敏感（与 model_catalog 的 normalize_model_key 一致）。
+    """
+    if not provider_id or not model_id:
+        return None
+    key = f"{provider_id.strip().casefold()}:{model_id.strip().casefold()}"
+    return _load_contracts().get(key)
+
+
+def _read_path(usage: dict, path: str | None) -> int:
+    """按点分路径从 usage dict 读取 int 值；缺失/非 int → 0。"""
+    if not path:
+        return 0
+    node: Any = usage
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return 0
+        node = node.get(part)
+    return node if isinstance(node, int) and node >= 0 else 0
+
+
+def read_cached_tokens(provider_id: str, model_id: str, usage: dict) -> int:
+    """按契约 usage_fields.cached 路径读取缓存命中 token 数。
+
+    各家路径差异在此归一化：
+    - DeepSeek/MiMo/GLM: prompt_tokens_details.cached_tokens
+    - Kimi: cached_tokens（usage 顶层）
+    - Claude/MiniMax: cache_read_input_tokens
+    - OpenAI: cached_input_tokens
+    - Grok: cached_prompt_text_tokens
+    未识别模型 / 字段缺失 → 0（不把缺失当命中，常见坑 2/3）。
+    """
+    contract = get_contract(provider_id, model_id)
+    if contract is None:
+        return 0
+    return _read_path(usage, contract.get("usage_fields", {}).get("cached"))
+
+
+def read_reasoning_tokens(provider_id: str, model_id: str, usage: dict) -> int:
+    """读取 reasoning token 数（Grok/MiMo 单独计费，规范 8）。"""
+    contract = get_contract(provider_id, model_id)
+    if contract is None:
+        return 0
+    return _read_path(
+        usage, contract.get("usage_fields", {}).get("reasoning")
+    )
+
+
+def read_cost_ticks(provider_id: str, model_id: str, usage: dict) -> int:
+    """读取服务端权威成本 ticks（Grok cost_in_usd_ticks，1 tick=1e-10 USD）。"""
+    contract = get_contract(provider_id, model_id)
+    if contract is None:
+        return 0
+    return _read_path(
+        usage, contract.get("usage_fields", {}).get("cost_ticks")
+    )
+
+
+def hit_discount(provider_id: str, model_id: str) -> float | None:
+    """命中价/未命中价折扣；未识别 → None（CB8）。"""
+    contract = get_contract(provider_id, model_id)
+    if contract is None:
+        return None
+    return contract.get("cache_hit_discount")
+
+
+def reasoning_contract(provider_id: str, model_id: str) -> str | None:
+    """reasoning 契约：mandatory_echo | thinking_blocks_echo | none | no_thinking。"""
+    contract = get_contract(provider_id, model_id)
+    if contract is None:
+        return None
+    return contract.get("reasoning_contract")
+
+
+def temperature_override(provider_id: str, model_id: str) -> dict | None:
+    """thinking 开启时的温度/top_p 强制值（MiMo 1.0/0.95，规范 2）。"""
+    contract = get_contract(provider_id, model_id)
+    if contract is None:
+        return None
+    return contract.get("temperature_override")
+
+
+def requires_prompt_cache_key(provider_id: str, model_id: str) -> bool:
+    """是否要求请求级 prompt_cache_key（Kimi 必填，规范 5）。"""
+    contract = get_contract(provider_id, model_id)
+    if contract is None:
+        return False
+    return bool(contract.get("prompt_cache_key_required"))

@@ -404,17 +404,43 @@ class MemoryManager:
         if messages:
             self.long_term.save_history(messages)
 
-    def load_session(self):
+    def load_session(self, *, append_only: bool = False):
         """Load session history.
-        
-        FIX-1: Only load recent history to prevent context pollution.
-        Old implementation loaded ALL history into short-term memory.
+
+        FIX-1: By default only load recent history to prevent context pollution
+        (old implementation loaded ALL history into short-term memory).
+
+        B5 (append_only=True): 恢复完整历史并**逐条追加**（不清空 short_term、
+        不改写），保证会话恢复的前缀形态与保存时一致（append-only →
+        前缀逐轮不变，Cherry Studio 语义）。调用方负责上下文窗口管理。
         """
         messages = self.long_term.load_history()
-        if messages:
-            # Only load the last 10 messages (5 turns) to prevent pollution
-            recent_messages = messages[-10:] if len(messages) > 10 else messages
-            self.short_term.load_from_dicts(recent_messages)
+        if not messages:
+            return
+        if append_only:
+            # B5: 真正 append-only——不清空已有消息，逐条追加。
+            # luna 审计 R6：重叠语义——已有前缀必须是历史的前缀子序列，
+            # 才追加历史中重叠之后的部分；已有内容与历史头部不匹配（新会话
+            # 内容）→ 不混入历史（避免重复追加完整历史产生第二前缀形态）。
+            existing = self.short_term.get_messages_as_dicts()
+            if not existing:
+                self.short_term.append_from_dicts(messages)
+                return
+            max_overlap = min(len(existing), len(messages))
+            overlap = 0
+            for k in range(max_overlap, 0, -1):
+                if existing[-k:] == messages[:k]:
+                    overlap = k
+                    break
+            if overlap > 0:
+                tail = messages[overlap:]
+                if tail:
+                    self.short_term.append_from_dicts(tail)
+            # overlap == 0：已有内容不是历史前缀 → 不追加（不产生第二前缀）
+            return
+        # FIX-1 默认路径：只加载最近 10 条（5 轮）防污染
+        recent_messages = messages[-10:] if len(messages) > 10 else messages
+        self.short_term.load_from_dicts(recent_messages)
 
     def clear(self, *, persisted: bool = False):
         self.short_term.clear()

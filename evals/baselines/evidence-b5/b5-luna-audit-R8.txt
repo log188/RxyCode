@@ -1,0 +1,30 @@
+## 复审结论：FAIL
+
+前七轮阻断项**表面上已补齐**，但仍有新的阻断问题，不能满足 B5 完成判据和 CB 硬约束。
+
+### 判据核对
+
+| 判据 | 结论 | 说明 |
+|---|---|---|
+| 1. append-only 会话恢复 | **FAIL** | `append_from_dicts()` 丢失 assistant 的 `tool_calls` 等元数据；测试只检查消息数量和 content，未验证语义完整性。恢复后可能破坏工具调用前缀。 |
+| 2. 稳定 session/cache key | **部分通过** | 同一 Agent 内 `_session_id` 稳定，但仍固定为 `"latest"`，多会话/多 Agent 间存在 key 冲突风险。 |
+| 3. prewarm 签名校验 | **通过** | model/cwd/MCP 变化会改变签名；R7 未确认时持续重试逻辑已修复。 |
+| 4. keep-alive | **部分通过** | 默认关闭、5 分钟间隔、预算和 `max_tokens=1` 均存在；但请求实际发送时没有使用 `build_keep_alive_request()` 返回的完整请求，仅硬编码重新构造消息。 |
+| 5. prewarm/cache 重建 | **FAIL** | prewarm 使用 `[HumanMessage("warm")]`，未证明包含真实请求的 system prompt、工具、会话前缀；可能预热的是另一种 prefix。并且只收到首个 chunk 就 `_confirm_prewarm()`，流式请求后续失败仍会被标记为 warmed。 |
+| 6. 命中率可观测 | **部分通过** | `token_stats` 记录逻辑存在，但验收测试主要直接调用 `_record_usage()`，未充分证明“恢复会话 → 真实请求 → usage 记录”的完整集成链路。 |
+
+### 主要阻断项
+
+1. **会话恢复不完整**  
+   `ShortTermMemory.append_from_dicts()` 对 assistant 消息只保留 `content`，丢弃 `tool_calls`/相关 metadata，违反“完整历史逐条追加”和前缀一致性要求。
+
+2. **prewarm 成功判定不可靠**  
+   `async for` 收到第一个 chunk 后立即 `break` 并确认成功。若后续流失败，仍会记录 `warmed_at`，导致后续不再重试，直接违反“仅成功后确认”的语义。
+
+3. **prewarm 未使用真实请求前缀**  
+   预热只发送 `"warm"` 消息，未复用真实会话的 system/tools/prefix，无法证明建立的是实际请求所需的缓存前缀。
+
+4. **CB1-CB8 无法全部确认**  
+   提供的材料未逐项定义 CB1-CB8，且上述集成缺陷已足以判定当前版本不能通过硬约束审计。
+
+测试通过数量和 eval GATE PASS 不能覆盖这些语义及失败路径问题。

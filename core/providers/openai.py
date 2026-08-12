@@ -144,6 +144,9 @@ class OpenAIProvider(BaseProvider):
                 cache_min_block_tokens=1024,
                 cache_ttl_s=1800,
                 cache_breakpoints=(),
+                # B2 (CB3): OpenAI 系用请求级 prompt_cache_key=session_id
+                # 显式键控缓存（codex client.rs / kimi llm.py 语义）。
+                prompt_cache_key_required=True,
             )
         if name.startswith(("o1-", "o3-", "o4-")):
             # §7.2 问 5：旧 o 系列明文拒绝采样参数（5.6 未证实，勿外推）

@@ -55,6 +55,16 @@ class TestEventConstruction:
         assert d["session_id"] == "child_1"
         assert d["parent_session_id"] == "primary_1"
 
+    def test_event_keeps_explicit_root_for_nested_children(self):
+        event = build_event(
+            EVENT_CREATED,
+            "child_2",
+            "child_1",
+            root_session_id="primary_1",
+        )
+        assert event.root_session_id == "primary_1"
+        assert event.to_dict()["root_session_id"] == "primary_1"
+
     def test_terminal_event_name_mapping(self):
         assert terminal_event_name_for(ChildStatus.COMPLETED) == EVENT_COMPLETED
         assert terminal_event_name_for(ChildStatus.FAILED) == "child_session/failed"

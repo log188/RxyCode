@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useDiagnostics, type UpdateStatus } from '../../../platform/index.mts'
 import type { UseModelsResult } from '../hooks/useModels'
 import type { ModelEntry } from '../hooks/useModels'
+import { groupModelsByProvider } from '../lib/modelPresentation.mts'
+import type { DesktopLanguage, PermissionMode, ThemePreference } from '../lib/desktopPreferences.mts'
 
-export type SettingsTab = 'model' | 'apikey' | 'workspace' | 'diagnostics'
+export type SettingsTab = 'general' | 'model' | 'apikey' | 'workspace' | 'diagnostics'
 
 export interface SettingsPageProps {
   appVersion: string
@@ -14,10 +16,18 @@ export interface SettingsPageProps {
   onClose: () => void
   onPickWorkspace: () => void
   onClearWorkspace: () => void
+  onModelSelected?: (modelId: string) => void
   models: UseModelsResult
+  permissionMode: PermissionMode
+  onPermissionModeChange: (mode: PermissionMode) => void
+  theme: ThemePreference
+  onThemeChange: (theme: ThemePreference) => void
+  language: DesktopLanguage
+  onLanguageChange: (language: DesktopLanguage) => void
 }
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
+  { id: 'general', label: 'General' },
   { id: 'model', label: '模型' },
   { id: 'apikey', label: 'API Key' },
   { id: 'workspace', label: '工作区' },
@@ -89,16 +99,205 @@ function ApiKeyRow({
   )
 }
 
+function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; onModelSelected?: (modelId: string) => void }): React.JSX.Element {
+  const [presets, setPresets] = useState<Array<{ id: string; name: string; base_url: string; category?: string }>>([])
+  const [selectedPreset, setSelectedPreset] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [discovered, setDiscovered] = useState<Array<{ id: string }>>([])
+  const [selected, setSelected] = useState<Record<string, boolean>>({})
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const loadPresets = async (): Promise<void> => {
+    const items = await models.listPresets()
+    setPresets(items)
+    if (items.length > 0) {
+      setSelectedPreset(items[0].id)
+      setBaseUrl(items[0].base_url)
+    }
+  }
+
+  const applyPreset = (presetId: string): void => {
+    setSelectedPreset(presetId)
+    const preset = presets.find((p) => p.id === presetId)
+    if (preset) setBaseUrl(preset.base_url)
+  }
+
+  const runDiscover = async (): Promise<void> => {
+    if (apiKey.trim() === '' || baseUrl.trim() === '') {
+      setNotice('请先填写 API Key 与 Base URL')
+      return
+    }
+    setBusy(true)
+    setNotice(null)
+    try {
+      const found = await models.discover(apiKey.trim(), baseUrl.trim())
+      if (found.length === 0) {
+        setNotice('未发现模型，请检查凭据与地址')
+        setDiscovered([])
+      } else {
+        setDiscovered(found)
+        setSelected(Object.fromEntries(found.map((m) => [m.id, true])))
+        setNotice(`发现 ${found.length} 个模型`)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const submitOnboard = async (): Promise<void> => {
+    if (discovered.length === 0) {
+      setNotice('请先探测模型')
+      return
+    }
+    const ids = discovered.filter((m) => selected[m.id]).map((m) => m.id)
+    if (ids.length === 0) {
+      setNotice('请至少勾选一个模型')
+      return
+    }
+    setBusy(true)
+    setNotice(null)
+    try {
+      if (ids.length === 1) {
+        const result = await models.onboard({
+          providerModelId: ids[0],
+          apiKey: apiKey.trim(),
+          baseUrl: baseUrl.trim()
+        })
+        if (result.ok && result.id !== undefined) {
+          await models.setActive(result.id)
+          onModelSelected?.(result.id)
+        }
+        setNotice(result.ok ? `已添加 ${ids[0]}` : result.message ?? '添加失败')
+      } else {
+        const result = await models.onboardBatch({
+          apiKey: apiKey.trim(),
+          baseUrl: baseUrl.trim(),
+          modelIds: ids
+        })
+        if (result.ok) {
+          const selectedModelId = result.active ?? result.onboarded?.[0] ?? result.added?.[0]
+          if (selectedModelId !== undefined) {
+            await models.setActive(selectedModelId)
+            onModelSelected?.(selectedModelId)
+          }
+          const failed = result.failed ?? []
+          setNotice(failed.length > 0 ? `已添加 ${ids.length - failed.length} 个，失败 ${failed.length} 个` : `已添加 ${ids.length} 个模型`)
+        } else {
+          setNotice(result.message ?? '批量添加失败')
+        }
+      }
+      setDiscovered([])
+      setSelected({})
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="addmodel-card">
+      <div className="addmodel-title">添加模型</div>
+      <div className="addmodel-row">
+        <span className="label">Provider 预设</span>
+        <select
+          className="addmodel-select"
+          value={selectedPreset}
+          onChange={(event) => applyPreset(event.target.value)}
+          onFocus={() => void loadPresets()}
+        >
+          <option value="">（选择预设）</option>
+          {presets.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="addmodel-row">
+        <span className="label">Base URL</span>
+        <input
+          className="addmodel-input"
+          type="text"
+          placeholder="https://api.example.com/v1"
+          value={baseUrl}
+          onChange={(event) => setBaseUrl(event.target.value)}
+        />
+      </div>
+      <div className="addmodel-row">
+        <span className="label">API Key</span>
+        <input
+          className="addmodel-input"
+          type="password"
+          placeholder="粘贴 API Key（不回显）"
+          value={apiKey}
+          onChange={(event) => setApiKey(event.target.value)}
+        />
+      </div>
+      <div className="addmodel-actions">
+        <button
+          type="button"
+          className="addmodel-discover"
+          disabled={busy || apiKey.trim() === '' || baseUrl.trim() === ''}
+          onClick={() => void runDiscover()}
+        >
+          探测模型
+        </button>
+        {discovered.length > 0 && (
+          <button
+            type="button"
+            className="addmodel-onboard"
+            disabled={busy}
+            onClick={() => void submitOnboard()}
+          >
+            添加勾选模型
+          </button>
+        )}
+      </div>
+      {discovered.length > 0 && (
+        <div className="addmodel-discovered">
+          {discovered.map((model) => (
+            <label key={model.id} className="addmodel-check">
+              <input
+                type="checkbox"
+                checked={selected[model.id] === true}
+                onChange={(event) =>
+                  setSelected((prev) => ({ ...prev, [model.id]: event.target.checked }))
+                }
+              />
+              {model.id}
+            </label>
+          ))}
+        </div>
+      )}
+      {notice !== null && <p className="addmodel-notice">{notice}</p>}
+    </div>
+  )
+}
+
 function SettingsPage(props: SettingsPageProps): React.JSX.Element {
-  const [tab, setTab] = useState<SettingsTab>('model')
+  const [tab, setTab] = useState<SettingsTab>('general')
   const diagnostics = useDiagnostics()
   const updateStatus = diagnostics.updateStatus?.status ?? null
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        props.onClose()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [props.onClose])
+
   return (
-    <div className="settings-overlay">
-      <div className="settings-page">
+    <div className="settings-overlay" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) props.onClose()
+    }}>
+      <div className="settings-page" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header className="settings-header">
-          <div className="settings-title">设置</div>
+          <div id="settings-title" className="settings-title">Settings</div>
           <button type="button" className="settings-close" onClick={props.onClose}>
             关闭
           </button>
@@ -117,6 +316,34 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           ))}
         </nav>
         <div className="settings-content">
+          {tab === 'general' && (
+            <section className="settings-panel" data-testid="general-settings">
+              <h2>General</h2>
+              <div className="settings-option-row">
+                <div><strong>Approval mode</strong><p className="settings-hint">The mode applies to this task window. Full access always requires confirmation.</p></div>
+                <select aria-label="Approval mode" value={props.permissionMode} onChange={(event) => props.onPermissionModeChange(event.target.value as PermissionMode)}>
+                  <option value="confirm_all">Ask before changes</option>
+                  <option value="auto_edit">Auto-edit</option>
+                  <option value="full_auto">Full access</option>
+                </select>
+              </div>
+              <div className="settings-option-row">
+                <div><strong>Theme</strong><p className="settings-hint">Choose the canvas and panel appearance.</p></div>
+                <select aria-label="Theme" value={props.theme} onChange={(event) => props.onThemeChange(event.target.value as ThemePreference)}>
+                  <option value="system">System</option>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </div>
+              <div className="settings-option-row">
+                <div><strong>Language</strong><p className="settings-hint">UI language preference for the Desktop shell.</p></div>
+                <select aria-label="Language" value={props.language} onChange={(event) => props.onLanguageChange(event.target.value as DesktopLanguage)}>
+                  <option value="zh-CN">简体中文</option>
+                  <option value="en-US">English</option>
+                </select>
+              </div>
+            </section>
+          )}
           {tab === 'model' && (
             <section className="settings-panel">
               <h2>模型</h2>
@@ -124,7 +351,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 <>
                   <BlockedPanel
                     title="模型管理不可用（旧版 appserver）"
-                    detail="当前 appserver 未提供 models/* JSON-RPC 方法。请升级后端到支持 Phase 4 D5 的版本，或先用 OpenTUI / HTTP API 配置模型。"
+                    detail="当前 appserver 未提供 models/* JSON-RPC 方法。请升级后端到支持 Phase 4 D5 的版本后，再从此处管理模型。"
                   />
                   <BlockedPanel
                     title="Phase 3 上限来源摘要"
@@ -138,51 +365,59 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                     <p className="settings-error">{props.models.error}</p>
                   )}
                   {(props.models.snapshot?.models ?? []).length === 0 && (
-                    <p className="settings-hint">尚无模型。请先添加模型（模型管理在 OpenTUI / HTTP API）。</p>
+                    <p className="settings-hint">尚无模型。请在此处选择 Provider、填写 API Key 并探测可用模型。</p>
                   )}
-                  {(props.models.snapshot?.models ?? []).map((model: ModelEntry) => (
-                    <div key={model.id} className={`model-row${model.active ? ' active' : ''}`}>
-                      <div className="model-main">
-                        <span className="model-name">{model.nickname || model.name}</span>
-                        <span className="model-id">{model.id}</span>
-                        <span className="model-provider">{model.provider_name}</span>
-                        {model.active && <span className="model-badge">当前</span>}
-                        {model.limit_source !== undefined && (
-                          <span className="model-limit">
-                            max_out={model.resolved_max_tokens ?? 'auto'} · {model.limit_source}
-                            {model.warning ? ` · ⚠ ${model.warning}` : ''}
-                          </span>
-                        )}
-                      </div>
-                      <div className="model-actions">
-                        {!model.active && (
-                          <button
-                            type="button"
-                            className="model-activate"
-                            onClick={() => void props.models.setActive(model.id)}
-                          >
-                            设为当前
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="model-test"
-                          onClick={() => void props.models.testConnection(model.id)}
-                        >
-                          测试连接
-                        </button>
-                        <button
-                          type="button"
-                          className="model-remove"
-                          onClick={() => void props.models.remove(model.id)}
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </div>
+                  {groupModelsByProvider(props.models.snapshot?.models ?? []).map(([group, entries]) => (
+                    <section key={group} className="model-group" aria-labelledby={`model-group-${group}`}>
+                      <h3 id={`model-group-${group}`} className="model-group-title">{group}</h3>
+                      {entries.map((model: ModelEntry) => (
+                        <div key={model.id} className={`model-row${model.active ? ' active' : ''}`}>
+                          <div className="model-main">
+                            <span className="model-name">{model.nickname || model.name}</span>
+                            <span className="model-id">{model.id}</span>
+                            <span className="model-provider">{model.provider_name}</span>
+                            {model.active && <span className="model-badge">当前</span>}
+                            {model.limit_source !== undefined && (
+                              <span className="model-limit">
+                                max_out={model.resolved_max_tokens ?? 'auto'} · {model.limit_source}
+                                {model.warning ? ` · ${model.warning}` : ''}
+                              </span>
+                            )}
+                          </div>
+                          <div className="model-actions">
+                            {!model.active && (
+                              <button
+                                type="button"
+                                className="model-activate"
+                                onClick={() => void props.models.setActive(model.id).then((ok) => {
+                                  if (ok) props.onModelSelected?.(model.id)
+                                })}
+                              >
+                                设为当前
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="model-test"
+                              onClick={() => void props.models.testConnection(model.id)}
+                            >
+                              测试连接
+                            </button>
+                            <button
+                              type="button"
+                              className="model-remove"
+                              onClick={() => void props.models.remove(model.id)}
+                            >
+                               删除
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </section>
                   ))}
                 </div>
               )}
+              {props.models.supported && <AddModelPanel models={props.models} onModelSelected={props.onModelSelected} />}
             </section>
           )}
           {tab === 'apikey' && (

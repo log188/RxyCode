@@ -123,8 +123,16 @@ def test_apply_cache_control_skipped_when_prompt_cache_unsupported():
 
 
 def test_apply_cache_control_applies_when_supported():
+    """B3: Anthropic 系（cache_breakpoints 非空）显式注入 cache_control。"""
+    from dataclasses import replace
+
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        provider="anthropic",
+        cache_breakpoints=("system",),
+    )
     llm = UsageTrackingLLM(
-        MagicMock(), provider=providers.BaseProvider(), capabilities=DEFAULT_CAPABILITIES
+        MagicMock(), provider=providers.BaseProvider(), capabilities=caps
     )
     llm._cache_enabled = True
     msg = MagicMock(type="system", content="sys")
@@ -133,6 +141,20 @@ def test_apply_cache_control_applies_when_supported():
     out = llm._apply_cache_control(msgs)
     assert out is not msgs
     assert out[0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+
+
+def test_apply_cache_control_skips_when_no_breakpoints():
+    """B3/CB3: OpenAI 系（DEFAULT caps，breakpoints 空）不注入 cache_control。"""
+    llm = UsageTrackingLLM(
+        MagicMock(), provider=providers.BaseProvider(), capabilities=DEFAULT_CAPABILITIES
+    )
+    llm._cache_enabled = True
+    msg = MagicMock(type="system", content="sys")
+    msg.additional_kwargs = {}
+    msgs = [msg]
+    out = llm._apply_cache_control(msgs)
+    assert out is msgs
+    assert out[0].additional_kwargs.get("cache_control") is None
 
 
 # --- 6. bind_tools capability gate -----------------------------------------
@@ -160,7 +182,7 @@ async def test_raw_stream_raises_when_function_calling_unsupported():
     agent._capabilities = ModelCapabilities(supports_function_calling=False)
     agent._provider = providers.BaseProvider()
     agent._llm = MagicMock()
-    agent._llm._apply_cache_control = lambda msgs: msgs
+    agent._llm._apply_cache_control = lambda msgs, tools=None: msgs
     agent._rate_limiter = None
     agent._rate_reserved_output_tokens = 0
     agent._rate_limit_timeout = None

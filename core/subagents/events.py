@@ -65,6 +65,7 @@ class ChildSessionEvent:
     event_name: str
     session_id: str
     parent_session_id: str
+    root_session_id: str = ""
     request_id: str = ""
     seq: int = 0
     timestamp: float = field(default_factory=time.time)
@@ -249,6 +250,7 @@ def build_event(
     parent_session_id: str,
     *,
     request_id: str = "",
+    root_session_id: str = "",
     definition_version: str = "",
     redaction_metadata: str = "",
     payload: dict | None = None,
@@ -258,6 +260,7 @@ def build_event(
         event_name=event_name,
         session_id=session_id,
         parent_session_id=parent_session_id,
+        root_session_id=root_session_id or parent_session_id,
         request_id=request_id,
         definition_version=definition_version,
         redaction_metadata=redaction_metadata,

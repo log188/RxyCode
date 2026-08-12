@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "version": "b1",
+  "date": "2026-08-09",
+  "backend": "agent",
+  "model": "deepseek-v4-flash",
+  "provider": "opencode-go",
+  "base_url": "https://opencode.ai/zen/go/v1",
+  "sample_count": 2,
+  "prompt_tokens": 28907,
+  "hit_tokens": 26368,
+  "hit_rate": 91.22,
+  "calculation": "cache_hit_tokens / prompt_tokens * 100",
+  "note": "B1 现状实测（2026-08-09）。同一会话 b1-cache-sample 两轮含工具调用（read/config/settings.py + read/core/session.py）。go 模式自动前缀缓存已生效；命中率 91.22% 高于调研预期 <90%，是 opencode-go 网关自动前缀缓存的真实水平。冷启动首轮部分 miss；第二轮起前缀命中。压缩后首调为 miss 尚未在本基线体现（会话未触发压缩）。prompt_tokens 为 provider 返回的总输入 token（含命中与未命中），hit_tokens 为 cache_read 部分，二者均为 provider usage 字段经 provider 层归一化后的累计值。"
+}

@@ -185,3 +185,43 @@ jobs:
             gh release create "$GITHUB_REF_NAME" "${artifacts[@]}" \
               --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
           fi
+
+  desktop:
+    name: Build desktop app (win zip + nsis)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/desktop-app/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install desktop deps
+        working-directory: frontend/desktop-app
+        run: npm ci
+
+      - name: Build portable zip + installer
+        working-directory: frontend/desktop-app
+        env:
+          RXYCODE_REPO_DIR: ${{ github.workspace }}
+        run: npm run build:win
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rxycode-desktop-windows
+          path: |
+            frontend/desktop-app/dist/*.zip
+            frontend/desktop-app/dist/*.exe
+          if-no-files-found: error
+          retention-days: 7

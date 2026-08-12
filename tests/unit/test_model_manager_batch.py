@@ -167,6 +167,10 @@ def test_infer_provider_group_from_url():
     assert opencode["id"] == "opencode-go"
     assert opencode["name"] == "OpenCode Go"
 
+    zen = model_manager.infer_provider_group("https://opencode.ai/zen/v1")
+    assert zen["id"] == "zen"
+    assert zen["name"] == "OpenCode Zen"
+
     unknown = model_manager.infer_provider_group("https://custom.example.com/v1")
     assert unknown["id"] == "custom"
     assert unknown["name"] == "其他"

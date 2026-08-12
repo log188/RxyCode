@@ -74,10 +74,10 @@ test('stub appserver supports initialize, session/new and session/prompt over pr
     }>('initialize', {
       client_name: 'rxycode-desktop-test',
       client_version: '0.0.0-test',
-      protocol_version: '1.0.0',
+      protocol_version: '1.1.0',
       capabilities: {}
     })
-    assert.equal(initialized.protocol_version, '1.0.0')
+    assert.equal(initialized.protocol_version, '1.1.0')
     assert.equal(initialized.server_name, 'rxycode-appserver')
 
     const created = await client.requestWithTimeout<{
@@ -120,7 +120,7 @@ test('EOF shutdown while a prompt is pending never resolves the pending prompt',
     await client.requestWithTimeout('initialize', {
       client_name: 'rxycode-desktop-test',
       client_version: '0.0.0-test',
-      protocol_version: '1.0.0',
+      protocol_version: '1.1.0',
       capabilities: {}
     })
     const created = await client.requestWithTimeout<{ session_id: string }>('session/new', {
@@ -213,7 +213,7 @@ test('fake appserver approval round trip resolves an approved decision', async (
     await client.requestWithTimeout('initialize', {
       client_name: 'rxycode-desktop-test',
       client_version: '0.0.0-test',
-      protocol_version: '1.0.0',
+      protocol_version: '1.1.0',
       capabilities: {}
     })
     const created = await client.requestWithTimeout<{ session_id: string }>('session/new', {
@@ -235,6 +235,74 @@ test('fake appserver approval round trip resolves an approved decision', async (
     } catch {
       // Best-effort shutdown; kill below covers the exit path.
     }
+    child.kill()
+    await delay(300)
+  }
+})
+
+test('fake appserver preserves an asynchronously resolved approval decision', async () => {
+  const { child, client } = startFakeAppserver()
+  const toolEnds: Array<{ ok?: boolean }> = []
+  client.onNotification = (method, params) => {
+    if (method === 'event/tool_end') toolEnds.push(params as { ok?: boolean })
+  }
+  client.onServerRequest = async (method, params) => {
+    assert.equal(method, 'approval/request')
+    const request = params as { request_id: string }
+    // This mirrors the desktop UI: the callback remains pending while the
+    // user reads the dialog, then resolves after an explicit decision.
+    await delay(80)
+    return { request_id: request.request_id, decision: 'approved' }
+  }
+  try {
+    await client.requestWithTimeout('initialize', {
+      client_name: 'rxycode-desktop-test',
+      client_version: '0.0.0-test',
+      protocol_version: '1.1.0',
+      capabilities: {}
+    })
+    const created = await client.requestWithTimeout<{ session_id: string }>('session/new', {
+      workspace_root: appRoot
+    })
+    const result = await client.requestWithTimeout<StubPromptResult>(
+      'session/prompt',
+      { session_id: created.session_id, text: 'approval demo' },
+      30_000
+    )
+    assert.equal(result.status, 'succeeded')
+    assert.ok(toolEnds.some((event) => event.ok === true), 'approved action must finish successfully')
+  } finally {
+    client.rejectAllPending(new Error('test teardown'))
+    child.kill()
+    await delay(300)
+  }
+})
+
+test('fake appserver reports an explicit rejection as a failed run', async () => {
+  const { child, client } = startFakeAppserver()
+  client.onServerRequest = async (method, params) => {
+    assert.equal(method, 'approval/request')
+    const request = params as { request_id: string }
+    return { request_id: request.request_id, decision: 'rejected' }
+  }
+  try {
+    await client.requestWithTimeout('initialize', {
+      client_name: 'rxycode-desktop-test',
+      client_version: '0.0.0-test',
+      protocol_version: '1.1.0',
+      capabilities: {}
+    })
+    const created = await client.requestWithTimeout<{ session_id: string }>('session/new', {
+      workspace_root: appRoot
+    })
+    const result = await client.requestWithTimeout<StubPromptResult>(
+      'session/prompt',
+      { session_id: created.session_id, text: 'approval reject' },
+      30_000
+    )
+    assert.equal(result.status, 'failed')
+  } finally {
+    client.rejectAllPending(new Error('test teardown'))
     child.kill()
     await delay(300)
   }

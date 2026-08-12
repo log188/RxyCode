@@ -28,8 +28,12 @@ class PromptResult:
     status: str
     detail: str = ""
     thinking: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cache_hit_rate: float | None = None
+    reporting_status: str = "not_reported"
 
 
 def thinking_cursor(agent: Any) -> tuple[tuple[str, ...], str]:
@@ -67,8 +71,13 @@ def notification_to_sse_event(notification: BaseModel) -> dict[str, Any] | None:
             "run_id": notification.run_id,
             "text": notification.text,
             "thinking": notification.thinking or "",
-            "input_tokens": notification.input_tokens or 0,
-            "output_tokens": notification.output_tokens or 0,
+            # Preserve provider reporting semantics for the legacy SSE bridge.
+            # ``None`` means the provider did not report the metric; converting
+            # it to zero makes the Desktop under-report usage and cache rate.
+            "input_tokens": notification.input_tokens,
+            "output_tokens": notification.output_tokens,
+            "cache_hit_tokens": notification.cache_hit_tokens,
+            "cache_hit_rate": notification.cache_hit_rate,
         }
         if notification.session_schema_version is not None:
             event["session_schema_version"] = notification.session_schema_version
@@ -114,16 +123,27 @@ class Session:
         *,
         mode: str,
         run_id: str,
+        tui: Any | None = None,
+        permission_mode: str | None = None,
     ) -> PromptResult:
         """Run one user turn through AgentV2 and emit terminal protocol events."""
         previous_input = token_stats.input_tokens
         previous_output = token_stats.output_tokens
+        previous_cache_hit_tokens = token_stats.cache_hit_tokens
         cursor = thinking_cursor(agent)
 
         try:
-            answer = await agent.run(text, mode=mode)
+            if permission_mode is None:
+                answer = await agent.run(text, mode=mode)
+            else:
+                from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import permission_mode_override
+
+                with permission_mode_override(permission_mode):
+                    answer = await agent.run(text, mode=mode)
         except Exception as exc:
             detail = str(exc)
+            if tui is not None and hasattr(tui, "exhaust_active_recovery"):
+                tui.exhaust_active_recovery(detail)
             self.emit(
                 ErrorNotification(
                     session_id=self.session_id,
@@ -137,26 +157,34 @@ class Session:
         status, detail = classify_agent_result(answer)
         delta_input = token_stats.input_tokens - previous_input
         delta_output = token_stats.output_tokens - previous_output
+        delta_cache_hit_tokens = token_stats.cache_hit_tokens - previous_cache_hit_tokens
+        cache_hit_rate = (
+            max(delta_cache_hit_tokens, 0) / max(delta_input, 1) * 100
+            if delta_input > 0
+            else 0.0
+        )
         thinking = thinking_since(agent, cursor)
 
-        if delta_input or delta_output:
-            self.emit(
-                TokenUsage(
-                    session_id=self.session_id,
-                    input_tokens=max(delta_input, 0),
-                    output_tokens=max(delta_output, 0),
-                )
-            )
+        usage_reported = bool(delta_input or delta_output or delta_cache_hit_tokens)
+        usage_kwargs = {
+            "input_tokens": max(delta_input, 0) if usage_reported else None,
+            "output_tokens": max(delta_output, 0) if usage_reported else None,
+            "cache_hit_tokens": max(delta_cache_hit_tokens, 0) if usage_reported else None,
+            "cache_hit_rate": cache_hit_rate if usage_reported else None,
+            "reporting_status": "reported" if usage_reported else "not_reported",
+        }
+        self.emit(TokenUsage(session_id=self.session_id, **usage_kwargs))
 
         if status == "succeeded":
+            if tui is not None and hasattr(tui, "resolve_active_recovery"):
+                tui.resolve_active_recovery()
             self.emit(
                 FinalAnswer(
                     session_id=self.session_id,
                     run_id=run_id,
                     text=answer,
                     thinking=thinking or None,
-                    input_tokens=delta_input,
-                    output_tokens=delta_output,
+                    **usage_kwargs,
                     session_schema_version=self.session_schema_version,
                 )
             )
@@ -165,10 +193,11 @@ class Session:
                 status=status,
                 detail=detail,
                 thinking=thinking,
-                input_tokens=delta_input,
-                output_tokens=delta_output,
-            )
+                    **usage_kwargs,
+                )
 
+        if tui is not None and hasattr(tui, "exhaust_active_recovery"):
+            tui.exhaust_active_recovery(detail)
         self.emit(
             ErrorNotification(
                 session_id=self.session_id,
@@ -182,8 +211,7 @@ class Session:
             status=status,
             detail=detail,
             thinking=thinking,
-            input_tokens=delta_input,
-            output_tokens=delta_output,
+            **usage_kwargs,
         )
 
     def interrupt(self, agent: Any) -> bool:

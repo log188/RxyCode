@@ -402,7 +402,9 @@ app.whenReady().then(() => {
     return {
       repoRoot: manager.repoRootDir,
       protocolVersion: schema.protocol_version,
-      appVersion: packageJson.version
+      appVersion: packageJson.version,
+      appserverPid: manager.pid,
+      appserverStatus: manager.status
     }
   })
 

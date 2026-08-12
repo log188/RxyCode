@@ -14,7 +14,6 @@ import httpx
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from ..core.session_runtime import resolve_write_path
 from ..utils.safe_http import (
     ResponseTooLargeError,
     fetch_public_response,
@@ -59,10 +58,27 @@ def _resolve_download_path(
 
     if save_path:
         requested = Path(save_path).expanduser()
-        if requested.suffix:
-            target = resolve_write_path(requested)
+        if requested.is_absolute():
+            if requested.suffix:
+                target = requested.resolve()
+            else:
+                target = requested.resolve() / inferred_name
+        elif requested.suffix:
+            # Relative download destinations are output artifacts, not a
+            # request to write into the active workspace.  This preserves
+            # the tool's existing safety boundary while still allowing an
+            # explicit absolute path for callers that own that directory.
+            from ..config.settings import get_output_dir
+
+            output_dir = get_output_dir().resolve()
+            target = (output_dir / requested).resolve()
+            target.relative_to(output_dir)
         else:
-            target = resolve_write_path(requested / inferred_name)
+            from ..config.settings import get_output_dir
+
+            output_dir = get_output_dir().resolve()
+            target = (output_dir / requested / inferred_name).resolve()
+            target.relative_to(output_dir)
     else:
         from ..config.settings import get_output_dir
 

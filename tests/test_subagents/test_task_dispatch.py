@@ -29,6 +29,8 @@ from RxyCode.RxyCode1_1_0.core.subagents.manager import (
     ModeMismatchError,
     TaskPermissionDeniedError,
 )
+from RxyCode.RxyCode1_1_0.core.subagents.events import EventStore
+from RxyCode.RxyCode1_1_0.core.subagents.sessions import create_child_session, transition
 from RxyCode.RxyCode1_1_0.core.subagents.modes import (
     SubagentConfig,
     SubagentFeatureFlags,
@@ -269,6 +271,32 @@ class TestPolicyComputation:
         policy = manager._compute_policy(request, definition)
         assert policy.budget.max_steps <= 12
 
+    def test_default_token_budget_comes_from_server_model_policy(self, registry, enabled_config):
+        enabled_config.default_max_tokens = 262144
+        manager = ChildSessionManager(registry=registry, config=enabled_config)
+
+        policy = manager._compute_policy(_task_request(), manager.registry.get("explore"))
+
+        assert policy.budget.max_tokens == 262144
+
+    def test_agent_definition_can_narrow_model_derived_token_budget(self, enabled_config):
+        enabled_config.default_max_tokens = 262144
+        registry = AgentDefinitionRegistry()
+        registry.register_builtin(AgentDefinition(
+            id="bounded",
+            description="bounded",
+            mode=AgentMode.SUBAGENT,
+            extra={"max_tokens": 4096},
+        ))
+        manager = ChildSessionManager(registry=registry, config=enabled_config)
+
+        policy = manager._compute_policy(
+            TaskRequest(parent_session_id="p1", agent_id="bounded", prompt="test"),
+            registry.get("bounded"),
+        )
+
+        assert policy.budget.max_tokens == 4096
+
     def test_requested_workspace_never_widens(self, registry, enabled_config):
         """Requesting leased_write on a read_only agent → capped to read_only."""
         reg = AgentDefinitionRegistry()
@@ -334,6 +362,29 @@ class TestSuccessfulDispatch:
         # Terminal event
         assert any("child_session/completed" == e or "child_session/failed" == e for e in events)
 
+    def test_events_are_persisted_and_emitted_with_full_lineage(self, manager):
+        store = EventStore()
+        emitted = []
+        manager.set_event_store(store)
+        manager.set_event_emitter(lambda name, payload: emitted.append((name, payload)))
+
+        result = asyncio.run(manager.dispatch(_task_request()))
+
+        assert store.latest_cursor() >= 4
+        created = store.events_for_session(result.child_session_id)[0]
+        assert created.root_session_id == "ses_primary_1"
+        assert created.parent_session_id == "ses_primary_1"
+        assert created.request_id
+        assert created.payload["agent_id"] == "explore"
+        assert emitted[0][1]["event_id"] == created.event_id
+        assert emitted[0][1]["seq"] == created.seq
+        terminal = store.events_for_session(result.child_session_id)[-1]
+        assert terminal.payload["usage"]["steps"] >= 1
+        assert "input_tokens" in terminal.payload["usage"]
+        assert terminal.payload["summary"] == result.summary
+        assert terminal.payload["artifacts"] == list(result.artifacts)
+        assert terminal.payload["evidence"] == list(result.evidence)
+
     def test_request_id_correlation(self, manager):
         from dataclasses import replace
         request = replace(_task_request(), request_id="req_custom_123")
@@ -357,6 +408,97 @@ class TestSuccessfulDispatch:
 
         tree = manager.get_tree("ses_primary_1")
         assert len(tree.list_active()) == 0
+
+    def test_leased_write_conflict_is_terminal_and_explainable(self, manager):
+        manager.registry.register_user(AgentDefinition(
+            id="writer",
+            description="isolated writer",
+            mode=AgentMode.SUBAGENT,
+            workspace_scope=WorkspaceMode.LEASED_WRITE,
+            permission=PermissionSpec(
+                edit=ToolPermission.from_raw("allow"),
+                read=ToolPermission.from_raw("allow"),
+            ),
+        ))
+        manager._lease_manager.acquire("other-child", ["src/shared.py"])
+        events = []
+        manager.set_event_emitter(lambda name, payload: events.append((name, payload)))
+
+        result = asyncio.run(manager.dispatch(TaskRequest(
+            parent_session_id="ses_primary_1",
+            agent_id="writer",
+            prompt="update the shared module",
+            trigger=TriggerKind.MENTION,
+            requested_workspace=WorkspaceScope(
+                mode=WorkspaceMode.LEASED_WRITE,
+                leased_paths=("src/shared.py",),
+            ),
+        )))
+
+        assert result.status == ChildStatus.FAILED
+        assert result.error is not None
+        assert result.error.code == "workspace.conflict"
+        assert events[-1][0] == "child_session/failed"
+        assert events[-1][1]["payload"]["error"]["code"] == "workspace.conflict"
+        assert manager.active_lease_count == 1
+
+    def test_concurrency_limit_is_enforced_by_the_manager(self, manager):
+        definition = manager.registry.get("explore")
+        assert definition is not None
+        occupied_request = _task_request(parent="ses_primary_1")
+        occupied = create_child_session(
+            occupied_request,
+            EffectiveTaskPolicy(
+                budget=BudgetSpec(max_concurrent_children=1),
+                permission=definition.permission,
+            ),
+            definition=definition,
+        )
+        occupied.root_session_id = "ses_primary_1"
+        manager.get_tree("ses_primary_1").add(occupied)
+        transition(occupied, ChildStatus.QUEUED)
+        transition(occupied, ChildStatus.RUNNING)
+
+        request = _task_request(parent="ses_primary_1")
+        request = TaskRequest(
+            parent_session_id=request.parent_session_id,
+            agent_id=request.agent_id,
+            prompt=request.prompt,
+            trigger=request.trigger,
+            requested_budget=BudgetSpec(max_concurrent_children=1),
+        )
+        result = asyncio.run(manager.dispatch(request))
+
+        assert result.status == ChildStatus.FAILED
+        assert result.error is not None
+        assert result.error.code == "budget.concurrency"
+
+    def test_retry_uses_original_request_and_creates_new_child(self, manager):
+        first = asyncio.run(manager.dispatch(_task_request()))
+
+        retried = asyncio.run(
+            manager.retry_session(
+                "ses_primary_1", first.child_session_id, request_id="req-retry-1"
+            )
+        )
+
+        assert retried.request_id == "req-retry-1"
+        assert retried.child_session_id != first.child_session_id
+
+    def test_cancel_persists_terminal_event_before_returning(self, manager):
+        request = _task_request()
+        definition = manager.registry.get("explore")
+        session = create_child_session(
+            request, manager._compute_policy(request, definition), definition=definition
+        )
+        session.root_session_id = "ses_primary_1"
+        manager.get_tree("ses_primary_1").add(session)
+        store = EventStore()
+        manager.set_event_store(store)
+
+        manager.cancel_session("ses_primary_1", session.session_id)
+
+        assert store.terminal_status_for(session.session_id) == "child_session/cancelled"
 
 
 # ============================================================================

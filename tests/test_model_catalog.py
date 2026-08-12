@@ -129,3 +129,14 @@ def test_bundled_catalog_matches_schema():
     data = json.loads(Path(DEFAULT_CATALOG_PATH).read_text(encoding="utf-8"))
     jsonschema.validate(instance=data, schema=schema)
     assert schema.get("schema_version") or True  # schema 存在
+
+
+def test_bundled_catalog_contains_zen_luna_with_provider_specific_limits():
+    catalog = ModelCatalog.load(DEFAULT_CATALOG_PATH)
+    record, key, _ = catalog.lookup("zen", "gpt-5.6-luna")
+
+    assert key is not None
+    assert record is not None
+    assert record.provider_id == "zen"
+    assert record.model_id == "gpt-5.6-luna"
+    assert record.model_max_output_tokens == 128000

@@ -93,6 +93,11 @@ def test_mcp_explanation_and_file_save_are_not_download_intent():
     assert detect_download_intent("写一份MCP协议介绍保存到 mcp_intro.md") is None
 
 
+def test_using_an_installed_skill_tool_is_not_a_skill_download_request():
+    text = "Use the installed skill tool exactly once with name=tdd, then summarize its guidance."
+    assert detect_download_intent(text) is None
+
+
 def test_mcp_install_intent_still_detected():
     assert detect_download_intent("安装 mcp server 叫 filesystem") == (
         "mcp",

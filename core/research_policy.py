@@ -70,6 +70,35 @@ _CURRENCY_PAIR_EN = re.compile(
     re.IGNORECASE,
 )
 
+# A request that names a local workspace *and* directs the agent to use local
+# inspection tools is not a freshness/research request.  In particular, the
+# word "current" in "current workspace" must not trigger _FRESH_EN: doing so
+# used to send a Desktop code audit through the synchronous web-search path.
+_LOCAL_WORKSPACE_EN = re.compile(
+    r"\b(?:current|local)\s+(?:workspace|worktree|repository|repo|codebase|"
+    r"project|directory|folder)\b",
+    re.IGNORECASE,
+)
+_LOCAL_WORKSPACE_ZH = (
+    "当前工作区", "本地工作区", "当前目录", "本地目录", "项目目录", "代码库", "仓库",
+)
+_LOCAL_TOOL_CALL = re.compile(
+    r"\b(?:glob|grep|read|ls|cat|open)\b|调用\s*(?:glob|grep|read|ls|cat|open)",
+    re.IGNORECASE,
+)
+# A bounded local inspection workflow often has a release/compatibility word
+# in its requested answer.  When it explicitly prohibits network tools, that
+# constraint must win over keyword freshness detection; otherwise a Desktop
+# audit is diverted to websearch before it can run its requested glob/grep/read
+# sequence.  This does not apply to a bare "do not use web" factual question:
+# a local inspection tool must also be named.
+_NEGATED_WEB_TOOL_CONSTRAINT = re.compile(
+    r"\b(?:do\s+not|don't|never)\s+"
+    r"(?:call|use|run|execute|invoke|browse|search)\b[^.\n]*\b"
+    r"(?:websearch|web|internet|online)\b",
+    re.IGNORECASE,
+)
+
 _HTTP_URL = re.compile(r"https?://[^\s<>\[\]{}\"'`]+", re.IGNORECASE)
 _TRAILING_URL_PUNCTUATION = ".,;:!?)]}"
 
@@ -143,6 +172,21 @@ def is_successful_research_fetch(result: str) -> bool:
 
 def get_research_policy(query: str) -> ResearchPolicy:
     text = query.strip()
+    local_workspace_task = (
+        bool(_LOCAL_WORKSPACE_EN.search(text))
+        or any(term in text for term in _LOCAL_WORKSPACE_ZH)
+    ) and bool(_LOCAL_TOOL_CALL.search(text))
+    constrained_local_inspection = bool(_LOCAL_TOOL_CALL.search(text)) and bool(
+        _NEGATED_WEB_TOOL_CONSTRAINT.search(text)
+    )
+    if local_workspace_task or constrained_local_inspection:
+        return ResearchPolicy(
+            requires_web=False,
+            cache_read_allowed=True,
+            cache_write_allowed=True,
+            citations_required=False,
+        )
+
     requires_web = (
         any(term in text for term in _FRESH_ZH)
         or bool(_FRESH_EN.search(text))

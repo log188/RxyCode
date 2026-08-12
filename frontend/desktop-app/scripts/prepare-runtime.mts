@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
  * Phase4-D6 runtime staging.
  *
@@ -25,7 +25,6 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const EXPECTED_RXYCODE_VERSION = '1.2.6'
 
 function fail(message: string): never {
   console.error(`RUNTIME_PREPARE_FAIL ${message}`)
@@ -107,6 +106,13 @@ function keepVendoredFile(repo: string, src: string): boolean {
   ) {
     return false
   }
+  // The desktop shell must never be vendored into itself: when
+  // RXYCODE_REPO_DIR points at the same checkout that contains
+  // frontend/desktop-app, copying would recurse into its build/runtime
+  // staging (cpSync ERR_FS_CP_EINVAL).
+  if (parts[0] === 'frontend' && parts[1] === 'desktop-app') {
+    return false
+  }
   if (top === 'log' && (name.endsWith('.out') || name === 'status.json' || name.endsWith('.log'))) {
     return false
   }
@@ -146,11 +152,12 @@ if (!existsSync(join(repo, 'appserver', '__main__.py'))) {
 }
 const pyproject = readFileSync(join(repo, 'pyproject.toml'), 'utf8')
 const versionMatch = pyproject.match(/^version\s*=\s*"([^"]+)"/m)
-if (versionMatch === null || versionMatch[1] !== EXPECTED_RXYCODE_VERSION) {
-  fail(
-    `expected rxycode ${EXPECTED_RXYCODE_VERSION} in pyproject.toml, found ${versionMatch?.[1] ?? 'none'}`
-  )
+if (versionMatch === null) {
+  fail('unable to read rxycode version from pyproject.toml')
 }
+const rxycodeVersion = versionMatch[1]
+// No hard-coded version pin: the release pipeline guarantees pyproject's
+// version matches the tag; the runtime bundles whatever the checkout has.
 
 // 2) python source (full install)
 const probe = spawnSync(
@@ -239,7 +246,7 @@ writeFileSync(
       platform,
       arch,
       pythonVersion,
-      rxycodeVersion: EXPECTED_RXYCODE_VERSION,
+      rxycodeVersion,
       createdAt: new Date().toISOString()
     },
     null,
@@ -275,5 +282,5 @@ if (start.status !== 0) {
 
 const total = dirSize(outDir)
 console.log(
-  `RUNTIME_PREPARE_OK out=${outDir} pythonVersion=${pythonVersion} rxycodeVersion=${EXPECTED_RXYCODE_VERSION} protocolVersion=${protocolVersion} totalBytes=${total}`
+  `RUNTIME_PREPARE_OK out=${outDir} pythonVersion=${pythonVersion} rxycodeVersion=${rxycodeVersion} protocolVersion=${protocolVersion} totalBytes=${total}`
 )

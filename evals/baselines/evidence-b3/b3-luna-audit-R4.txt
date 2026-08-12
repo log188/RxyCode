@@ -1,0 +1,87 @@
+# B3 第 4 轮复审结论：FAIL
+
+前三轮两个主要阻断项已修复：
+
+- TTL 已解析并注入 `extra_body.cache_ttl`
+- Anthropic tools payload 已真实注入 `cache_control`
+- `ainvoke/astream/_raw_stream` 已传递 `tools`
+
+但仍有以下阻断问题。
+
+## 阻断项 1：provider 分派不完整，CB3 未被强制保证
+
+`UsageTrackingLLM._apply_cache_control` 只硬编码阻止了 DeepSeek：
+
+```python
+if provider_name == "deepseek" or caps_provider == "deepseek":
+    return messages
+```
+
+随后只要 `cache_breakpoints` 非空就会注入 `cache_control`。因此以下错误配置仍会给 OpenAI 注入断点：
+
+```python
+caps.provider = "openai"
+caps.cache_breakpoints = ("system",)
+```
+
+这违反 CB3“OpenAI/DeepSeek 不注入 `cache_control`”。不能仅依赖 capabilities 配置正确，应在运行时强制 provider 判断。
+
+建议：
+
+```python
+if caps_provider != "anthropic" and provider_name != "anthropic":
+    return messages
+```
+
+或使用统一的 Anthropic provider-family 判断函数。
+
+## 阻断项 2：`tool_pair_integrity` 未真正验证“tool 紧跟对应 assistant”
+
+当前实现用 `outstanding` 集合追踪 tool call，因此以下非法序列会被判定为合法：
+
+```text
+assistant(tool_call=c1)
+assistant(普通消息)
+tool(tool_call_id=c1)
+```
+
+此外，`tool_call_id` 缺失的孤儿 tool 消息也会返回 `True`：
+
+```python
+elif cid:
+    return False
+...
+last_tool_cid = cid
+```
+
+这与函数文档声明的“tool 消息必须跟在带对应 tool_call 的 assistant 之后”不一致，也未形成可靠的 API 400 防线。
+
+应至少：
+
+- 要求 tool 消息直接位于对应 assistant tool-call 之后，或处于明确允许的连续 tool-result形态；
+- `tool_call_id` 缺失时返回 `False`；
+- 覆盖 assistant/tool 中间插入普通消息的测试。
+
+## 判据核对
+
+| 判据 | 结果 |
+|---|---|
+| 1. 断点预算 ≤4、tools→system→messages | 基本通过 |
+| 2. TTL 5m/1h 解析及 Anthropic 注入 | 通过 |
+| 3. provider 分派及 CB3 | **失败** |
+| 4. 末条 user 断点、避免修改原对象 | 通过 |
+| 5. tool pair 完整性 | **失败** |
+| 6. DeepSeek 自动前缀命中验证 | 基本通过 |
+
+## CB1-CB8
+
+- CB1：通过
+- CB2：通过
+- CB3：**失败，OpenAI 错误 capabilities 下仍可注入**
+- CB4：通过，Anthropic tools payload 有真实注入
+- CB5：通过，调用链已传递 `tools`
+- CB6：通过，末条 user 标记不修改原对象
+- CB7：**失败，tool pair 校验不充分**
+- CB8：兼容路径保留，但仍需确认与“unsupported model unchanged”的严格定义一致
+
+现有测试和验收证据不足以覆盖上述异常配置及非法消息序列。因此本轮不能通过。

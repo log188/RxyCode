@@ -159,9 +159,10 @@ def test_family_governance_fields_default_none(u, model):
 # ---- 真实消费点：_truncate_tool_text（文本副本，不改 ToolMessage） ----------
 
 
-def test_truncate_tool_text_none_no_change():
-    """tool_output_token_limit=None → 原样返回（现状不截断）。"""
+def test_truncate_tool_text_none_no_change(monkeypatch):
+    """tool_output_token_limit=None 且 B6 字符维度关闭 → 原样返回（token 维度现状）。"""
     agent = _new_agent(DEFAULT_CAPABILITIES, [])
+    monkeypatch.setattr(agent, "_tool_output_max_chars", lambda: None)
     text = "x" * 5000
     assert agent._truncate_tool_text(text) == text
 

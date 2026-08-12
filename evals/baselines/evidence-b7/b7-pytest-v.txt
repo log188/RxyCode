@@ -1,0 +1,58 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.9, pytest-8.4.2, pluggy-1.5.0 -- D:\Anaconda3\python.exe
+cachedir: .pytest_cache
+rootdir: D:\agent-demo\RxyCode\RxyCode1_1_0\.worktrees\phase-b-cache2
+configfile: pytest.ini
+plugins: anyio-4.10.0, langsmith-0.9.0, asyncio-1.4.0, base-url-2.1.0, cov-7.1.0, playwright-0.8.0, timeout-2.4.0, xdist-3.8.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 180.0s
+timeout method: thread
+timeout func_only: False
+collecting ... collected 44 items
+
+tests/test_cache/test_no_rework.py::test_error_feedback_message_has_guidance PASSED [  2%]
+tests/test_cache/test_no_rework.py::test_error_feedback_skips_success PASSED [  4%]
+tests/test_cache/test_no_rework.py::test_error_feedback_appended_after_breakpoint PASSED [  6%]
+tests/test_cache/test_no_rework.py::test_stuck_detector_default_threshold PASSED [  9%]
+tests/test_cache/test_no_rework.py::test_stuck_detector_four_same_actions_cut PASSED [ 11%]
+tests/test_cache/test_no_rework.py::test_stuck_detector_alternating_pattern PASSED [ 13%]
+tests/test_cache/test_no_rework.py::test_stuck_detector_normal_work_not_stuck PASSED [ 15%]
+tests/test_cache/test_no_rework.py::test_stuck_detector_same_tool_diff_args_not_stuck PASSED [ 18%]
+tests/test_cache/test_no_rework.py::test_stuck_detector_repeated_errors_count PASSED [ 20%]
+tests/test_cache/test_no_rework.py::test_stuck_detector_threshold_configurable PASSED [ 22%]
+tests/test_cache/test_no_rework.py::test_stuck_detector_reset PASSED     [ 25%]
+tests/test_cache/test_no_rework.py::test_failure_result_not_cached PASSED [ 27%]
+tests/test_cache/test_no_rework.py::test_tool_error_state_blocks_caching PASSED [ 29%]
+tests/test_cache/test_no_rework.py::test_task_important_enough_single_keyword PASSED [ 31%]
+tests/test_cache/test_no_rework.py::test_tool_error_state_reset_per_request PASSED [ 34%]
+tests/test_cache/test_no_rework.py::test_synthesis_tool_error_marks_state PASSED [ 36%]
+tests/test_cache/test_no_rework.py::test_llm_exception_answer_not_cached PASSED [ 38%]
+tests/test_cache/test_no_rework.py::test_git_snapshot_captures_status PASSED [ 40%]
+tests/test_cache/test_no_rework.py::test_git_snapshot_capture_failure_tolerated PASSED [ 43%]
+tests/test_cache/test_no_rework.py::test_git_snapshot_restore_rolls_back_changes PASSED [ 45%]
+tests/test_cache/test_no_rework.py::test_git_snapshot_restore_without_capture_safe PASSED [ 47%]
+tests/test_cache/test_no_rework.py::test_capture_called_before_llm_stream PASSED [ 50%]
+tests/test_cache/test_no_rework.py::test_reviewer_retry_default_disabled PASSED [ 52%]
+tests/test_cache/test_no_rework.py::test_reviewer_retry_budget_protection PASSED [ 54%]
+tests/test_cache/test_no_rework.py::test_reviewer_retry_tie_prefers_fewer_calls PASSED [ 56%]
+tests/test_cache/test_no_rework.py::test_reviewer_retry_default_no_budget_from_config PASSED [ 59%]
+tests/test_cache/test_no_rework.py::test_reviewer_retry_disabled_returns_answer PASSED [ 61%]
+tests/test_cache/test_no_rework.py::test_reviewer_retry_budget_limits_calls PASSED [ 63%]
+tests/test_cache/test_no_rework.py::test_reviewer_retry_no_regeneration_when_budget_exhausted PASSED [ 65%]
+tests/test_cache/test_no_rework.py::test_reviewer_retry_regeneration_result_not_dropped PASSED [ 68%]
+tests/test_cache/test_no_rework.py::test_git_snapshot_captures_once PASSED [ 70%]
+tests/test_cache/test_no_rework.py::test_git_snapshot_restored_on_stuck PASSED [ 72%]
+tests/test_cache/test_no_rework.py::test_tool_journal_dir_configurable PASSED [ 75%]
+tests/test_cache/test_no_rework.py::test_tool_journal_custom_directory_isolated PASSED [ 77%]
+tests/test_cache/test_no_rework.py::test_parse_dsml_single_invoke PASSED [ 79%]
+tests/test_cache/test_no_rework.py::test_parse_dsml_multiple_invokes PASSED [ 81%]
+tests/test_cache/test_no_rework.py::test_parse_dsml_plain_answer_none PASSED [ 84%]
+tests/test_cache/test_no_rework.py::test_parse_dsml_empty_invoke_skipped PASSED [ 86%]
+tests/test_cache/test_no_rework.py::test_parse_dsml_parameter_escaping PASSED [ 88%]
+tests/test_cache/test_no_rework.py::test_parse_dsml_tool_calls_variant PASSED [ 90%]
+tests/test_cache/test_no_rework.py::test_parse_dsml_pipe_separator_variant PASSED [ 93%]
+tests/test_cache/test_no_rework.py::test_parse_dsml_fullwidth_pipe_variant PASSED [ 95%]
+tests/test_cache/test_no_rework.py::test_parse_dsml_with_surrounding_text PASSED [ 97%]
+tests/test_cache/test_no_rework.py::test_stuck_detector_breaks_outer_loop PASSED [100%]
+
+============================= 44 passed in 9.22s ==============================

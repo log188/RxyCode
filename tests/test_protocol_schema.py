@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from protocol.notifications import NOTIFICATION_MODELS
+from protocol.notifications import TokenUsage
 from protocol.requests import CLIENT_REQUEST_MODELS
 from protocol.schema import export_schema
 from protocol.server_requests import SERVER_REQUEST_MODELS
@@ -68,3 +69,37 @@ def test_schema_freeze_detects_field_changes() -> None:
     mutated = json.dumps(schema, indent=2, ensure_ascii=False) + "\n"
     committed = SCHEMA_PATH.read_text(encoding="utf-8")
     assert mutated != committed
+
+
+def test_token_usage_accepts_explicitly_unreported_metrics() -> None:
+    usage = TokenUsage(
+        session_id="session-1",
+        input_tokens=None,
+        output_tokens=None,
+        cache_hit_tokens=None,
+    )
+    assert usage.input_tokens is None
+    assert usage.output_tokens is None
+    assert usage.cache_hit_tokens is None
+
+
+def test_subagent_rpc_methods_are_part_of_the_main_protocol_schema() -> None:
+    schema = export_schema()
+    request_methods = {
+        definition["properties"]["method"]["const"]
+        for name, definition in schema["$defs"].items()
+        if name.endswith("Request")
+        and isinstance(definition, dict)
+        and "method" in definition.get("properties", {})
+        and "const" in definition["properties"]["method"]
+    }
+    assert {
+        "subagents/capability",
+        "subagents/list",
+        "agent/invoke",
+        "task/start",
+        "child_sessions/list",
+        "child_sessions/events",
+        "child_sessions/cancel",
+        "child_sessions/retry",
+    } <= request_methods

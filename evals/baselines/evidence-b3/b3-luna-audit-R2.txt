@@ -1,0 +1,26 @@
+结论：**FAIL**
+
+阻断项：
+
+1. **tools 断点未真正参与统一分配**  
+   `_apply_cache_control()` 固定调用：
+   ```python
+   apply_breakpoint_budget(messages, tools=None, ...)
+   ```
+   因此 `allocate_breakpoints()` 永远无法分配 `"tools"`，`tools→system→messages` 的实际优先级未生效。仅由 provider 层“后续处理”不足以证明 B3 统一入口已覆盖 tools。
+
+2. **未按 `caps.cache_breakpoints` 限制实际断点类型**  
+   `apply_breakpoint_budget()` 只把 `cache_breakpoints` 当作非空开关：
+   ```python
+   if not breakpoints: ...
+   allocated = allocate_breakpoints(tools or [], system_text, msg_list)
+   ```
+   例如 `caps.cache_breakpoints=("system",)` 且存在 user 消息时，仍会分配 `["system", "messages"]`。这违反“按 caps 声明的分配序/能力”语义，可能在不支持 tail/message breakpoint 的 provider 上注入断点。
+
+3. **DeepSeek 约束不是代码强制保证**  
+   `_apply_cache_control()` 根据 `caps.cache_breakpoints` 判断，而非 provider 类型。若 DeepSeek capabilities 错误配置了非空 `cache_breakpoints`，仍会注入 `cache_control`，违反 CB3。应显式按 provider 禁止，或在能力模型层做不可绕过的约束。
+
+4. **tool 配对完整性仅提供独立校验，未接入断点应用路径**  
+   `tool_pair_integrity()` 从未在 `apply_breakpoint_budget()` 或 `_apply_cache_control()` 中调用；当前实现没有真正执行“合并连续 tool_result / 防止拆对”，测试只验证了独立函数。
+
+已确认修复项：TTL 解析返回、DeepSeek `_record_usage` 接线、预算上限 ≤4、末条 user 不修改原对象等均有对应实现和测试。但上述问题使 CB1-CB8 不能全部通过，需修复后重新复审。

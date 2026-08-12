@@ -1,0 +1,7 @@
+﻿
+C:\Windows\TEMP\opencode\b1_evals_full.log:2999:|-- GATEFINAL_SIGNOFF_2026-07-28.md (1.4KB)
+C:\Windows\TEMP\opencode\b1_evals_full.log:3443:317:     Cache-hit extraction is delegated to the provider layer
+C:\Windows\TEMP\opencode\b1_evals_full.log:4812:Eval suite complete: 18/19 passed (94.7%)
+C:\Windows\TEMP\opencode\b1_evals_full.log:4851:GATE: PASS (pass rate 94.7% >= baseline 89.5%)
+
+

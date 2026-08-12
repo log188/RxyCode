@@ -1,0 +1,54 @@
+## 复审结论：PASS
+
+### R9 两项阻断项
+
+1. **synthesis 工具错误状态**
+   - `_synthesis_with_tools()` 在工具结果匹配 `[error...]` 时设置：
+     ```python
+     self._tool_error_occurred = True
+     ```
+   - 同时追加错误反馈 `ToolMessage`。
+   - `test_synthesis_tool_error_marks_state` 已覆盖。
+   - **判定：已闭合。**
+
+2. **跨顶层请求状态污染**
+   - `run()` 在设置 `_task_effect` 后立即执行：
+     ```python
+     self._tool_error_occurred = False
+     ```
+   - 后续请求不会继承前一请求的工具错误状态。
+   - `test_tool_error_state_reset_per_request` 已覆盖。
+   - **判定：已闭合。**
+
+### 完成判据 1–6
+
+| 判据 | 结果 |
+|---|---|
+| 1 | PASS |
+| 2 | PASS |
+| 3 | PASS |
+| 4 | PASS |
+| 5 | PASS |
+| 6 | PASS |
+
+### CB1–CB8
+
+| 阻断项 | 结果 |
+|---|---|
+| CB1 | PASS |
+| CB2 | PASS |
+| CB3 | PASS |
+| CB4 | PASS |
+| CB5 | PASS |
+| CB6 | PASS |
+| CB7 | PASS |
+| CB8 | PASS |
+
+### 验证证据
+
+- 缓存相关测试：44 passed
+- 全量回归：9004 passed（仅 P7 lazy-import 遗留除外）
+- Ruff：通过
+- Evals Gate：94.7% ≥ 89.5%，零回归
+
+**最终结论：PASS，无剩余阻断项。**

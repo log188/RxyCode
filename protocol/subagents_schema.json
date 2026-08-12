@@ -270,16 +270,52 @@
           "type": "integer"
         },
         "input_tokens": {
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "output_tokens": {
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cache_hit_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "wall_time_ms": {
           "type": "integer"
         },
         "retry_count": {
           "type": "integer"
+        },
+        "reporting_status": {
+          "type": "string",
+          "enum": [
+            "reported",
+            "partial",
+            "not_reported"
+          ],
+          "default": "not_reported"
         }
       }
     },
@@ -353,7 +389,8 @@
       "required": [
         "event_name",
         "session_id",
-        "parent_session_id"
+        "parent_session_id",
+        "root_session_id"
       ],
       "properties": {
         "event_id": {
@@ -366,6 +403,9 @@
           "type": "string"
         },
         "parent_session_id": {
+          "type": "string"
+        },
+        "root_session_id": {
           "type": "string"
         },
         "request_id": {

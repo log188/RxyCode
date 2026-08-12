@@ -27,22 +27,40 @@ def get_bound_tui() -> Any | None:
 
 
 def install_tui_context_hook() -> None:
-    """Route ``utils.tui.get_tui()`` through the bound ProtocolTui when set."""
+    """Route every supported TUI import path through the bound ProtocolTui.
+
+    The stdio appserver is launched as top-level ``appserver`` while AgentV2
+    imports ``RxyCode.RxyCode1_1_0.utils.tui``.  Python loads those as distinct
+    module objects, so patch both paths rather than assuming a single module
+    namespace.
+    """
+    modules: list[Any] = []
     try:
         from ..utils import tui as tui_mod
+        modules.append(tui_mod)
     except ImportError:
+        pass
+    try:
         from utils import tui as tui_mod
+        modules.append(tui_mod)
+    except ImportError:
+        pass
+    try:
+        from RxyCode.RxyCode1_1_0.utils import tui as tui_mod
+        modules.append(tui_mod)
+    except ImportError:
+        pass
 
-    if getattr(tui_mod, "_appserver_context_hook_installed", False):
-        return
+    for tui_mod in modules:
+        if getattr(tui_mod, "_appserver_context_hook_installed", False):
+            continue
+        original_get = tui_mod.get_tui
 
-    original_get = tui_mod.get_tui
+        def context_aware_get_tui(*, _original_get: Any = original_get) -> Any:
+            bound = get_bound_tui()
+            if bound is not None:
+                return bound
+            return _original_get()
 
-    def context_aware_get_tui() -> Any:
-        bound = get_bound_tui()
-        if bound is not None:
-            return bound
-        return original_get()
-
-    tui_mod.get_tui = context_aware_get_tui
-    tui_mod._appserver_context_hook_installed = True
+        tui_mod.get_tui = context_aware_get_tui
+        tui_mod._appserver_context_hook_installed = True

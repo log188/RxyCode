@@ -18,6 +18,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -81,10 +82,10 @@ from RxyCode.RxyCode1_1_0.log.log_helpers import (
 from RxyCode.RxyCode1_1_0.log.logger import get_bound_run_id, run_id_context
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.mcp.client import load_mcp_servers
-from RxyCode.RxyCode1_1_0.memory.compressor import ContextCompressor
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
 from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as _circuit_breaker
+from RxyCode.RxyCode1_1_0.recovery.tracker import RecoveryKind
 from RxyCode.RxyCode1_1_0.tools.registry import registry
 from RxyCode.RxyCode1_1_0.tools.task_tool import clear_session_tasks
 from RxyCode.RxyCode1_1_0.tools.workflow_tool import clear_session_workflows
@@ -101,6 +102,63 @@ from .providers.base import BaseProvider
 from .providers.tokenizers import count_tokens
 
 _logger = logging.getLogger(__name__)
+
+
+def _get_recovery_tracker():
+    """Return a real request-local tracker, never a legacy compatibility hook.
+
+    The CLI/legacy runtime may expose ``recovery_tracker`` as a callable hook
+    or may expose no tracker at all.  Transport recovery is optional outside
+    the protocol appserver, so those surfaces must keep their original error
+    semantics instead of failing while trying to report telemetry.
+    """
+    tui = get_tui()
+    tracker = getattr(tui, "recovery_tracker", None) if tui is not None else None
+    if tracker is None or callable(tracker):
+        return None
+    if not all(hasattr(tracker, name) for name in ("active", "detect", "attempt", "resolve", "exhaust")):
+        return None
+    return tracker
+
+
+def _notify_llm_transport_retry(attempt: int, max_attempts: int, error_kind: str) -> None:
+    """Expose bounded model transport retries through the request-local TUI."""
+    tracker = _get_recovery_tracker()
+    if tracker is None:
+        return
+    active = tracker.active
+    if active is None:
+        active = tracker.detect(
+            source_call_id="llm_transport",
+            recovery_kind=RecoveryKind.TRANSPORT_RETRY,
+            error_kind=error_kind,
+            max_attempts=max_attempts,
+        )
+    if active.recovery_kind != RecoveryKind.TRANSPORT_RETRY:
+        return
+    tracker.attempt(
+        active.recovery_id,
+        attempt=attempt,
+        strategy="same_tool",
+        display_summary=f"Model transport error; retrying ({attempt}/{max_attempts})",
+    )
+
+
+def _resolve_llm_transport_recovery() -> None:
+    tracker = _get_recovery_tracker()
+    active = tracker.active if tracker is not None else None
+    if active is not None and active.recovery_kind == RecoveryKind.TRANSPORT_RETRY:
+        tracker.resolve(active.recovery_id, display_summary="Model transport recovered")
+
+
+def _exhaust_llm_transport_recovery(error_kind: str) -> None:
+    tracker = _get_recovery_tracker()
+    active = tracker.active if tracker is not None else None
+    if active is not None and active.recovery_kind == RecoveryKind.TRANSPORT_RETRY:
+        tracker.exhaust(
+            active.recovery_id,
+            final_error=f"Model transport recovery exhausted ({error_kind})",
+        )
 
 VALID_AGENT_MODES = frozenset({"build", "plan", "compose"})
 PLAN_READONLY_TOOL_NAMES = frozenset({
@@ -276,6 +334,146 @@ def _estimate_tokens(text, spec: str = "tiktoken:o200k_base") -> int:
     return count_tokens(text, spec)
 
 
+def _tool_output_is_error(result_text: str) -> bool:
+    """B7: 判断工具输出是否为失败结果。
+
+    以 ``[error ...]`` 前缀（_execute_tool / tool_orchestrator 的统一
+    失败格式）开头的视为失败；其余视为成功。空输出视为成功（不误报）。
+    """
+    text = (result_text or "").strip()
+    return text.lower().startswith("[error")
+
+
+def _extract_error_hint(result_text: str) -> str:
+    """从失败结果中提取简短错误提示（去掉 [error executing X: 前缀）。"""
+    text = (result_text or "").strip()
+    if text.lower().startswith("[error executing "):
+        tail = text[len("[error executing "):]
+        if ":" in tail:
+            tail = tail.split(":", 1)[1].strip()
+        return tail[:200]
+    if text.lower().startswith("[error"):
+        return text[:200]
+    return ""
+
+
+def _should_cache_answer(answer: str, *, tool_error_occurred: bool = False) -> bool:
+    """B7: 失败结果不缓存（共性 8：任何新增缓存路径对失败结果一律 miss）。
+
+    空答案 / ``[error ...]`` 前缀的错误串 / 本轮发生工具错误的场景
+    （luna R8-2：工具失败后模型生成普通文本，如"无法完成该操作"，
+    同样禁止写入应用缓存，避免下次直接复用失败结果）一律不缓存。
+    """
+    if tool_error_occurred:
+        return False
+    if not answer:
+        return False
+    return not _tool_output_is_error(answer)
+
+
+def _parse_dsml_tool_calls(answer: str) -> list[dict] | None:
+    """B7: 解析 DSML 文本格式的工具调用（deepseek FC 偶发输出兜底）。
+
+    deepseek-v4-flash 声明 supports_function_calling=True，但采样时偶发
+    输出 DSML 文本而非原生 tool_calls。实测存在两种标签变体：
+      - 标准：``<dsml><tool_calls><invoke name="X">...</invoke></tool_calls></dsml>``
+      - 变体：``<||DSML||tool_calls><||DSML||invoke name="X">...``
+        （``||`` 分隔符风格，实测 U+FF5C 全角竖线）
+    agent 若无兜底，文本会直接进入答案（pattern 检查失败）。
+
+    输出与 ``_fast_reply_with_tools`` 重组结果同构的 ``list[dict]``：
+    ``[{"name", "args", "id", "type": "tool_call"}]``。无 DSML 或解析失败
+    返回 None（不干扰正常路径）。
+    """
+    if not answer or ("tool_calls" not in answer and "invoke" not in answer):
+        return None
+    # 归一化标签变体：<dsml>、<||DSML||>、<____DSML____> 等任意前缀
+    # （含实测 U+FF5C 全角竖线）统一剥掉，保留标准标签名。
+    normalized = re.sub(
+        r"</?\s*[^<>]*?(\s*(?:tool_calls|invoke|parameter)\b)",
+        lambda m: (
+            ("</" if m.group(0).lstrip().startswith("</") else "<")
+            + m.group(1).strip()
+        ),
+        answer,
+        flags=re.IGNORECASE,
+    )
+    if "<tool_calls>" not in normalized and "<invoke" not in normalized:
+        return None
+    # luna R1-4: DSML 前后可能混有普通说明文本 → 只提取 <tool_calls>..</tool_calls>
+    # 片段（无外层包裹时退化为整体）。提取后仍有 <invoke> 才算有效。
+    block = re.search(r"<tool_calls>.*?</tool_calls>", normalized, re.DOTALL)
+    candidate = block.group(0) if block else normalized
+    if "<invoke" not in candidate:
+        return None
+    try:
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring(f"<root>{candidate}</root>")
+    except (ET.ParseError, ValueError):
+        return None
+    # 定位 tool_calls 容器（可嵌套在 <dsml>/<root> 内，递归查找）。
+    container = root if root.tag == "tool_calls" else None
+    if container is None:
+        container = next(iter(root.iter("tool_calls")), None)
+    if container is None:
+        return None
+    calls: list[dict] = []
+    for index, invoke in enumerate(container.findall("invoke")):
+        name = invoke.get("name") or ""
+        if not name:
+            continue
+        args: dict = {}
+        for param in invoke.findall("parameter"):
+            key = param.get("name") or ""
+            if not key:
+                continue
+            value = param.text or ""
+            # 数字参数尽量保持数字类型（offset/limit 等）。
+            try:
+                if "." in value:
+                    args[key] = float(value)
+                else:
+                    args[key] = int(value)
+            except ValueError:
+                args[key] = value
+        calls.append(
+            {
+                "name": name,
+                "args": args,
+                "id": f"dsml_{index}",
+                "type": "tool_call",
+            }
+        )
+    return calls
+
+
+def _error_feedback_wrap(
+    messages,
+    tool_name: str,
+    result_text: str,
+    *,
+    tool_id: str,
+    feedback_fn,
+):
+    """B7: 错误回喂包装（测试辅助）：把引导语消息原地追加在断点之后。
+
+    仅当 result_text 为失败结果时追加引导语 ToolMessage；成功结果
+    不追加（返回原列表引用）。前缀消息（system 等）保持字节不变。
+    """
+    if not _tool_output_is_error(result_text):
+        return messages
+    from langchain_core.messages import ToolMessage
+
+    messages.append(
+        ToolMessage(
+            content=feedback_fn(tool_name, result_text),
+            tool_call_id=tool_id or tool_name,
+        )
+    )
+    return messages
+
+
 def _usage_counts(resp, messages=None) -> tuple[int, int]:
     """Extract provider usage without mutating process-wide counters."""
     usage = getattr(resp, "usage_metadata", None)
@@ -352,6 +550,15 @@ def _record_usage(
         cache_read = provider.extract_cache_read(usage_dict, caps)
         if prompt_toks > 0 or completion_toks > 0:
             token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
+            # B3 (CB3): DeepSeek 自动前缀验证——不注入 cache_control，用
+            # prompt_cache_hit_tokens 验证前缀是否生效，失败记录警告而非静默。
+            if getattr(provider, "name", "") == "deepseek":
+                try:
+                    from .cache_policy import verify_deepseek_prefix
+
+                    verify_deepseek_prefix(prompt_toks, cache_read)
+                except Exception:  # pragma: no cover - 验证失败不阻断请求
+                    pass
             return prompt_toks, completion_toks
 
     # 3. Fallback: tiktoken estimation
@@ -481,19 +688,21 @@ class UsageTrackingLLM:
                 self._cache_enabled = False
         return self._cache_enabled
 
-    def _apply_cache_control(self, messages):
-        """Bug C fix: mark the leading system prompt as a cache breakpoint.
+    def _apply_cache_control(self, messages, tools=None):
+        """B3: apply provider-dispatched cache breakpoints (opencode budget).
 
-        DeepSeek (and OpenAI-compatible prefix caching) only caches a prompt
-        prefix when a message carries `cache_control`.  Without this, the
-        (large, stable) system prompt is re-prefilled on every call, which
-        caps the cache hit rate at incidental prefix overlap (~60%) and adds
-        avoidable latency.  Applying it on the first SystemMessage gives a
-        ~100% system-prompt cache hit across turns.
+        从 B2 之前的"单一 system 断点"升级为按 provider 能力分派的断点策略
+        （PHASE-B §5 B3）：
 
-        This wrapper is the single chokepoint for ALL LLM calls (fast path,
-        every graph node, sub-agents, and bind_tools/with_structured_output
-        re-wrappings), so one injection here covers the whole pipeline.
+        - Anthropic 系（caps.cache_breakpoints 非空）：显式 cache_control
+          ephemeral 打点，分配序 tools→system→messages（≤4 断点预算）。
+        - OpenAI 系：不注入 cache_control（B2 走 prompt_cache_key=session_id，
+          CB3）。
+        - DeepSeek 系：不注入 cache_control（自动前缀 + 命中字段验证，
+          CB3）。
+
+        保留能力门（supports_prompt_cache）与 cache.prompt_prefix_cache 开关；
+        未开启配置或模型不支持缓存时行为与现状一致（CB8）。
         """
         if not self._ensure_cache_flag():
             return messages
@@ -505,23 +714,79 @@ class UsageTrackingLLM:
             return messages
         if not messages:
             return messages
-        first = messages[0]
-        # LangChain message objects expose `.type`; only the system message
-        # is a stable prefix worth caching.
-        msg_type = getattr(first, "type", None)
-        if msg_type != "system":
+        # 用 vars() 判断属性是否真实存在，避免 __getattr__ 委托到 _llm 造成误判
+        # （wrapper._llm 为 MagicMock 时 self._provider 会委托出非 None 假值）。
+        has_provider = "_provider" in vars(self)
+        has_caps = "_capabilities" in vars(self)
+        caps = getattr(self, "_capabilities", None) if has_caps else None
+        breakpoints = getattr(caps, "cache_breakpoints", ()) if caps is not None else ()
+        # CB8 兼容：无 caps（旧调用路径/测试 wrapper/未知模型）时保持改造前
+        # 语义——对首条 system 注入 cache_control（旧行为不回归）。
+        if not has_caps or not has_provider:
+            first = messages[0]
+            if getattr(first, "type", None) != "system":
+                return messages
+            ak = getattr(first, "additional_kwargs", None) or {}
+            if "cache_control" in ak:
+                return messages
+            cached = SystemMessage(
+                content=first.content,
+                additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
+            )
+            return [cached] + list(messages[1:])
+        # B3 (luna B9-R1): 显式断点由契约 cache_mode 裁决（explicit_breakpoints
+        # 才分派），不再硬编码 anthropic 白名单——Qwen 等显式断点厂商同样生效。
+        # 未识别模型回退 caps（CB8，保持 anthropic 白名单语义）。
+        provider_name = ""
+        if has_provider:
+            provider_name = str(getattr(self._provider, "name", "") or "")
+        caps_provider = str(getattr(caps, "provider", "") or "")
+        contract_mode = None
+        try:
+            from .catalog import get_contract
+
+            contract = get_contract(
+                caps_provider or provider_name,
+                str(self.model_config.get("model_name") or ""),
+            )
+            if contract is not None:
+                contract_mode = contract.get("cache_mode")
+        except Exception:  # pragma: no cover - 契约异常回退现状
+            pass
+        if contract_mode is not None:
+            # 契约明确：仅 explicit_breakpoints 注入显式断点。
+            if contract_mode != "explicit_breakpoints":
+                return messages
+        else:
+            # CB8：未识别模型保持 anthropic 白名单现状。
+            if (
+                provider_name != "anthropic"
+                and caps_provider != "anthropic"
+            ):
+                return messages
+        # 统一走断点预算入口（allocate_breakpoints 分配序 + ≤4 上限 + TTL 解析）。
+        # B9: 契约显式断点厂商（Qwen 等）caps.cache_breakpoints 可能为空——
+        # 契约声明 explicit_breakpoints 时按 breakpoints_max 注入标准断点序。
+        if not breakpoints and contract_mode == "explicit_breakpoints":
+            try:
+                if (contract.get("breakpoints_max") or 0) > 0:
+                    breakpoints = ("tools", "system", "messages", "tail")
+            except Exception:  # pragma: no cover
+                pass
+        if not breakpoints:
             return messages
-        ak = getattr(first, "additional_kwargs", None) or {}
-        if "cache_control" in ak:
-            return messages
-        cached = SystemMessage(
-            content=first.content,
-            additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
+        from .cache_policy import apply_breakpoint_budget
+
+        result, _allocated, _ttl = apply_breakpoint_budget(
+            messages,
+            tools=tools,
+            caps=caps,
+            cfg=getattr(self, "_cfg", None),
         )
-        return [cached] + list(messages[1:])
+        return result
 
     async def ainvoke(self, messages, **kwargs):
-        messages = self._apply_cache_control(messages)
+        messages = self._apply_cache_control(messages, tools=kwargs.get("tools"))
         grant = await self._acquire_rate_limit(messages)
         usage: tuple[int, int] | None = None
         try:
@@ -552,7 +817,7 @@ class UsageTrackingLLM:
             )
 
     async def astream(self, messages, **kwargs):
-        messages = self._apply_cache_control(messages)
+        messages = self._apply_cache_control(messages, tools=kwargs.get("tools"))
         grant = await self._acquire_rate_limit(messages)
         last_chunk = None
         partial_output_tokens = 0
@@ -659,11 +924,17 @@ class UsageTrackingLLM:
         last_exc: BaseException | None = None
         for attempt in range(max_retries + 1):
             try:
-                return await self._llm.ainvoke(messages, **kwargs)
+                response = await self._llm.ainvoke(messages, **kwargs)
+                _resolve_llm_transport_recovery()
+                return response
             except Exception as exc:  # noqa: BLE001 - narrowed by _is_transport_retryable
                 last_exc = exc
                 if attempt >= max_retries or not _is_transport_retryable(exc):
+                    _exhaust_llm_transport_recovery(type(exc).__name__)
                     raise
+                _notify_llm_transport_retry(
+                    attempt + 1, max_retries + 1, type(exc).__name__
+                )
                 _logger.warning(
                     "LLM transport error (attempt %d/%d, %s); retrying in %.1fs",
                     attempt + 1,
@@ -689,12 +960,18 @@ class UsageTrackingLLM:
                 try:
                     first = await ait.__anext__()
                 except StopAsyncIteration:
+                    _resolve_llm_transport_recovery()
                     return None, ait
+                _resolve_llm_transport_recovery()
                 return first, ait
             except Exception as exc:  # noqa: BLE001 - narrowed by _is_transport_retryable
                 last_exc = exc
                 if attempt >= max_retries or not _is_transport_retryable(exc):
+                    _exhaust_llm_transport_recovery(type(exc).__name__)
                     raise
+                _notify_llm_transport_retry(
+                    attempt + 1, max_retries + 1, type(exc).__name__
+                )
                 _logger.warning(
                     "LLM stream transport error (attempt %d/%d, %s); retrying in %.1fs",
                     attempt + 1,
@@ -750,6 +1027,9 @@ class AgentV2:
     def __init__(self, model_name: Optional[str] = None):
         self._cfg = _settings.load_config()
         self._session_id = "latest"
+        # B5: 预热状态（惰性初始化；PrewarmState 签名校验 + keep-alive 调度）
+        self._prewarm = None
+        self._keep_alive_state = None
 
         # Resolve model config (same logic as old Agent)
         if model_name and model_name in self._cfg.get("models", {}):
@@ -1345,6 +1625,23 @@ class AgentV2:
         except Exception:
             # 解析失败不阻断 LLM 构造（保持可启动）；运行时 _raw_stream 会再试。
             self._resolved_limits = None
+        # B6: 工具输出去重指纹表（工具名 → 指纹集合），会话内累计。
+        self._seen_tool_fingerprints: dict[str, set[str]] = {}
+        # B7: 本轮是否发生工具错误（缓存防护，luna R8-2）。
+        self._tool_error_occurred = False
+        # B7: 死循环检测器（fast path 工具循环开始时重建；此处兜底占位）。
+        from RxyCode.RxyCode1_1_0.core.stuck_detector import StuckDetector
+
+        self._stuck_detector: StuckDetector = StuckDetector(threshold=3)
+        # B7: Git 快照（LLM 调用前捕获，坏结局回滚）。
+        self._git_snapshot = None
+        # B3 (CB2): TTL 档位写入 model_config（供 Anthropic provider 注入请求）。
+        try:
+            from .cache_policy import resolve_ttl_seconds
+
+            model_config["cache_ttl"] = resolve_ttl_seconds(cfg or {})
+        except Exception:  # pragma: no cover
+            pass
 
         raw_llm = ChatOpenAI(**provider.llm_kwargs(model_config, caps))
 
@@ -1546,10 +1843,17 @@ class AgentV2:
         None（现状）/ "full" → True（全量注入，A9 前行为不变）
         "none" → False（不注入）
         "first2" → True（注入前 2 条，见 _few_shot_limit()）
+
+        B6: 推理模型（supports_reasoning=True）未显式配置 few_shot_policy
+        时默认不加 few-shot（few-shot 会稀释推理）；显式配置优先。
         """
         caps = getattr(self, "_capabilities", None)
-        policy = (caps or DEFAULT_CAPABILITIES).few_shot_policy
+        if caps is None:
+            caps = DEFAULT_CAPABILITIES
+        policy = caps.few_shot_policy
         if policy == "none":
+            return False
+        if policy is None and getattr(caps, "supports_reasoning", False):
             return False
         return True
 
@@ -1564,15 +1868,35 @@ class AgentV2:
             return 2
         return None
 
+    def _tool_output_max_chars(self) -> int | None:
+        """B6: 读取 cache.tool_output_max_chars（默认 2000）。
+
+        返回正整数字符上限；配置缺省 / 非法（0/负数/非数字）→ None（不截断，
+        与 A20 现状一致，CB8）。读取失败 → None（不因配置错误改变行为）。
+        """
+        try:
+            cfg = _settings.load_config() or {}
+            raw = (cfg.get("cache") or {}).get("tool_output_max_chars")
+        except Exception:
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return None
+        return raw if raw > 0 else None
+
     def _truncate_tool_text(self, text: str) -> str:
-        """A20: 按 tool_output_token_limit 对工具结果文本副本截断。
+        """A20+B6: 对工具结果文本副本截断（落地前调用，不改 ToolMessage）。
+
+        两个独立维度，各自可关：
+        - B6 字符维度：cache.tool_output_max_chars（默认 2000），超长文本
+          截断并保留结构（合法 JSON 截成合法 JSON）；配置缺失/≤0 时关闭。
+        - A20 token 维度：caps.tool_output_token_limit（默认 None=关闭）。
 
         返回截断后的**文本副本**；**不改动任何 ToolMessage 对象**
-        （tool_call_id 契约不受影响）。limit=None → 原样返回。
-        保证：估算 token 数 ≤ limit 时原样返回；> limit 时返回截断文本，
-        其估算 token 数（含截断标记）**不超过 limit**——按比例收缩 keep_chars
-        迭代直至满足，覆盖极小 limit（1/2/5/20）。
+        （tool_call_id 契约不受影响）。
         """
+        char_limit = self._tool_output_max_chars()
+        if char_limit is not None and text:
+            text = self._truncate_tool_text_chars(text, char_limit)
         caps = getattr(self, "_capabilities", None)
         limit = getattr(caps, "tool_output_token_limit", None) if caps else None
         if limit is None or not text:
@@ -1596,6 +1920,360 @@ class AgentV2:
             if _estimate_tokens(head, spec) <= limit:
                 return head
         return text[:1] if _estimate_tokens(text[:1], spec) <= limit else ""
+
+    def _truncate_tool_text_chars(self, text: str, char_limit: int) -> str:
+        """B6: 按字符上限截断文本副本；JSON 结构保持。
+
+        文本 ≤ limit → 原样返回。超长时：
+        - 合法 JSON → 结构化截断（_truncate_json_chars），结果仍是合法 JSON；
+        - 非 JSON → 头尾保留 + 截断标记。
+        """
+        if char_limit is None or char_limit <= 0 or not text or len(text) <= char_limit:
+            return text
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            return self._truncate_plain_chars(text, char_limit)
+        return self._truncate_json_chars(parsed, char_limit)
+
+    @staticmethod
+    def _truncate_plain_chars(text: str, char_limit: int) -> str:
+        """B6: 普通文本字符截断：头尾保留 + 截断标记，总长 ≤ limit（硬上限）。"""
+        if len(text) <= char_limit:
+            return text
+        marker = "\n...[truncated]...\n"
+        if char_limit < len(marker):
+            # 极小上限：连标记都放不下 → 纯头部截断，保证 ≤ limit。
+            return text[:char_limit]
+        budget = char_limit - len(marker)
+        head = budget // 2
+        tail = budget - head
+        return text[:head] + marker + text[-tail:]
+
+    @staticmethod
+    def _truncate_json_chars(parsed, char_limit: int) -> str:
+        """B6: JSON 结构保持截断。
+
+        保证输出同时满足：``json.loads()`` 成功 且 长度 ≤ char_limit。
+        策略（按序执行直到达标）：
+        1. 最长字符串值按比例缩短；
+        2. 最长字符串 key 值对删除（key 超长时）；
+        3. 容器尾部元素丢弃（list 尾段 / dict 尾段 key）；
+        4. 只剩单元素仍超限 → 值替换为 null；
+        5. 最终兜底 → 最小合法 JSON 字面量（"0"/"{}"/"[]"/"null"）。
+        """
+        if isinstance(parsed, str):
+            # 顶层字符串：先验证完整序列化，超限则截断后重新序列化
+            # （保持 JSON 合法）；极小 limit（1/2）退化最小字面量。
+            rendered = json.dumps(parsed, ensure_ascii=False)
+            if len(rendered) <= char_limit:
+                return rendered
+            budget = max(0, char_limit - 2)  # 引号开销
+            rendered = json.dumps(parsed[:budget], ensure_ascii=False)
+            if len(rendered) <= char_limit:
+                return rendered
+            return AgentV2._minimal_json(char_limit)
+        if isinstance(parsed, (int, float, bool)) or parsed is None:
+            rendered = json.dumps(parsed)
+            if len(rendered) <= char_limit:
+                return rendered
+            return AgentV2._minimal_json(char_limit)
+        for _ in range(500):
+            rendered = json.dumps(parsed, ensure_ascii=False)
+            if len(rendered) <= char_limit:
+                return rendered
+            longest = AgentV2._find_longest_string(parsed)
+            if longest is not None and len(longest[1]) > 4:
+                path, value = longest
+                keep = max(4, len(value) // 2)
+                AgentV2._set_at_path(parsed, path, value[:keep] + "...")
+                continue
+            if AgentV2._drop_long_keys(parsed):
+                continue
+            if AgentV2._trim_container(parsed):
+                continue
+            if AgentV2._minimize_values(parsed):
+                continue
+            return AgentV2._minimal_json(char_limit)
+        return AgentV2._minimal_json(char_limit)
+
+    @staticmethod
+    def _trim_container(parsed) -> bool:
+        """丢弃容器尾部一半元素（list 尾段 / dict 尾段 key）；返回是否发生了裁剪。"""
+        if isinstance(parsed, list) and len(parsed) > 1:
+            del parsed[len(parsed) // 2:]
+            return True
+        if isinstance(parsed, dict) and len(parsed) > 1:
+            keys = list(parsed)
+            for key in keys[len(keys) // 2:]:
+                del parsed[key]
+            return True
+        return False
+
+    @staticmethod
+    def _drop_long_keys(parsed) -> bool:
+        """删除超长 key（≥32 字符）的键值对；递归处理嵌套容器。
+
+        返回是否发生了删除。超长 key 无法按比例缩短（会破坏字典语义），
+        删除比退化标量更能保留结构（luna R4-2/R5-1）。
+        """
+        if isinstance(parsed, dict):
+            for key in list(parsed):
+                if len(key) >= 32:
+                    del parsed[key]
+                    return True
+                if AgentV2._drop_long_keys(parsed[key]):
+                    return True
+        elif isinstance(parsed, list):
+            for item in parsed:
+                if AgentV2._drop_long_keys(item):
+                    return True
+        return False
+
+    @staticmethod
+    def _minimize_values(parsed) -> bool:
+        """把容器里的所有值替换为 null；返回是否实际缩短了序列化长度。
+
+        值已全部为 null 时返回 False（无进展 → 调用方立即退化，
+        避免无意义循环，luna R4-1）。
+        """
+        if isinstance(parsed, dict):
+            if parsed and all(value is None for value in parsed.values()):
+                parsed.clear()
+                return True
+            changed = False
+            for key in parsed:
+                if parsed[key] is not None:
+                    parsed[key] = None
+                    changed = True
+            return changed
+        if isinstance(parsed, list):
+            if parsed and all(value is None for value in parsed):
+                parsed.clear()
+                return True
+            changed = False
+            for index in range(len(parsed)):
+                if parsed[index] is not None:
+                    parsed[index] = None
+                    changed = True
+            return changed
+        return False
+
+    @staticmethod
+    def _minimal_json(char_limit: int) -> str:
+        """返回满足长度上限的最短合法 JSON 字面量。"""
+        for literal in ("0", "{}", "[]", "null"):
+            if len(literal) <= char_limit:
+                return literal
+        return ""
+
+    @staticmethod
+    def _find_longest_string(parsed) -> tuple | None:
+        """返回 (路径, 值) —— JSON 树中最长的字符串值。"""
+
+        def walk(node, path: tuple) -> tuple | None:
+            if isinstance(node, dict):
+                best = None
+                for key, value in node.items():
+                    found = walk(value, path + (key,))
+                    if found is not None and (
+                        best is None or len(found[1]) > len(best[1])
+                    ):
+                        best = found
+                return best
+            if isinstance(node, list):
+                best = None
+                for index, value in enumerate(node):
+                    found = walk(value, path + (index,))
+                    if found is not None and (
+                        best is None or len(found[1]) > len(best[1])
+                    ):
+                        best = found
+                return best
+            if isinstance(node, str):
+                return (path, node)
+            return None
+
+        return walk(parsed, ())
+
+    @staticmethod
+    def _set_at_path(parsed, path: tuple, value: str) -> None:
+        """按 _find_longest_string 返回的路径原位替换字符串值。"""
+        node = parsed
+        for key in path[:-1]:
+            node = node[key]
+        node[path[-1]] = value
+
+    def _tool_output_fingerprint(self, content: str) -> str:
+        """B6: 工具输出的结构化指纹（用于重复检测）。
+
+        JSON → 解析后按 sort_keys 规范化再序列化（key 顺序不同但结构
+        相同 → 同一指纹）；非 JSON → 原文本。带时间戳等字节不同的内容
+        指纹必然不同，不会误伤去重（常见坑）。
+        """
+        try:
+            parsed = json.loads(content)
+        except (ValueError, TypeError):
+            return content
+        return json.dumps(parsed, sort_keys=True, ensure_ascii=False)
+
+    def _dedupe_tool_output(self, tool_name: str, content: str) -> str:
+        """B6: 同工具重复输出合并（落地前、截断前调用）。
+
+        **必须用原始工具输出（截断前）计算指纹**：若先用截断后的内容算
+        指纹，差异落在被截掉区域的两次输出会被误判为重复（luna R1-3）。
+
+        首次出现 → 记录指纹并原样返回；后续同指纹 → 返回占位符，
+        不重复进历史（aider add_rel_fname 语义）。不同指纹（含时间戳
+        差异）→ 每次原样保留。指纹集合按工具累计（A→B→A 中第二次 A
+        仍判定为重复，luna R5-2）。
+        """
+        seen = getattr(self, "_seen_tool_fingerprints", None)
+        if seen is None:
+            seen = self._seen_tool_fingerprints = {}
+        fingerprints = seen.setdefault(tool_name, set())
+        fingerprint = self._tool_output_fingerprint(content)
+        if fingerprint in fingerprints:
+            return (
+                f"[duplicate tool output omitted: {tool_name} 输出与上次相同，"
+                "为节省 token 已去重]"
+            )
+        fingerprints.add(fingerprint)
+        return content
+
+    def _error_feedback_message(self, tool_name: str, result_text: str) -> str:
+        """B7: 错误回喂引导语（smolagents 语义："换一种完全不同的方法"）。
+
+        只对失败结果（_tool_output_is_error）生成；成功结果原样返回。
+        调用方把它作为独立 ToolMessage **追加在断点之后**（不碰前缀）。
+        """
+        if not _tool_output_is_error(result_text):
+            return result_text
+        hint = _extract_error_hint(result_text)
+        return (
+            f"[error feedback] 工具 {tool_name} 执行失败"
+            f"（{hint or '未知错误'}）。请换一种完全不同的方法重试，"
+            "不要重复刚才的操作。"
+        )
+
+    def _stuck_feedback_message(self, reason: str | None) -> str:
+        """B7: 死循环干预引导语（追加在断点之后）。"""
+        detail = reason or "检测到重复动作"
+        return (
+            f"[stuck detection] {detail}。已中止当前循环，请停下来总结"
+            "已经做过的事，换一种完全不同的思路，或直接给出当前可交付的答案。"
+        )
+
+    def _prompt_cache_key_value(self) -> str:
+        """B2/B9: prompt_cache_key 派生。
+
+        - B2（OpenAI caps 路径，现状）：session_id 恒定（codex/kimi 式会话复用）；
+        - B9（契约路径，Kimi auto_and_key）：provider:model:session 前缀——
+          换模型/换 provider → key 变化 → 缓存全失效（规范 7）；
+          同 provider/model/session → 恒定（规范 5）。
+        """
+        caps = getattr(self, "_capabilities", None)
+        contract_prefixed = False
+        try:
+            from .catalog import get_contract
+
+            contract = get_contract(
+                str(getattr(caps, "provider", "") or ""),
+                str(self.model_config.get("model_name") or ""),
+            )
+            # 前缀只用于 auto_and_key 契约（Kimi 系）——换模型失效语义；
+            # OpenAI cache_key 契约保持 session_id（B2 已验收现状）。
+            contract_prefixed = bool(
+                contract is not None
+                and contract.get("cache_mode") == "auto_and_key"
+                and contract.get("prompt_cache_key_required")
+            )
+        except Exception:  # pragma: no cover
+            pass
+        if contract_prefixed:
+            pk_provider = str(getattr(caps, "provider", "") or "").strip().lower()
+            pk_model = str(self.model_config.get("model_name") or "").strip().lower()
+            return f"{pk_provider}:{pk_model}:{str(self._session_id or 'latest')}"
+        return str(self._session_id or "latest")
+
+    def _capture_git_snapshot(self) -> bool:
+        """B7: LLM 调用前捕获 Git 快照（opencode snapshot 语义）。
+
+        每轮 LLM 调用前调用；git 不可用/非仓库时容错（返回 False，
+        不阻断主流程）。快照存于 ``self._git_snapshot`` 供坏结局回滚。
+        """
+        from RxyCode.RxyCode1_1_0.core.snapshot import GitSnapshot
+
+        snapshot = getattr(self, "_git_snapshot", None)
+        if snapshot is None:
+            snapshot = self._git_snapshot = GitSnapshot(repo_path=".")
+        return snapshot.capture()
+
+    async def _synthesis_with_tools(
+        self,
+        messages,
+        tool_calls,
+        *,
+        mode: str | None,
+        tui,
+        fallback_answer: str,
+    ) -> str:
+        """B7: 合成轮检测到 DSML 工具调用时，追加执行并再给一次 synthesis。
+
+        max_rounds 耗尽后模型仍输出 DSML（想调工具）→ 执行这些调用，
+        把结果追加进 messages，再调一次无工具 synthesis 产最终答案。
+        最多一轮（防死循环）；失败/无答案时回退原文本。
+        """
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        ai_kwargs = {}
+        messages.append(AIMessage(
+            content="",
+            tool_calls=tool_calls,
+            additional_kwargs=ai_kwargs,
+        ))
+        for tc in tool_calls:
+            tool_name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+            tool_args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+            tool_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+            result = await self._execute_tool(
+                tool_name,
+                tool_args,
+                mode=mode,
+                call_id=tool_id or None,
+            )
+            messages.append(
+                ToolMessage(
+                    content=self._truncate_tool_text(
+                        self._dedupe_tool_output(tool_name, str(result))
+                    ),
+                    tool_call_id=tool_id or tool_name,
+                )
+            )
+            is_error = _tool_output_is_error(str(result))
+            if is_error:
+                # luna R9-1: synthesis 阶段的工具错误也记录（缓存防护）。
+                self._tool_error_occurred = True
+                messages.append(
+                    ToolMessage(
+                        content=self._error_feedback_message(tool_name, str(result)),
+                        tool_call_id=tool_id or tool_name,
+                    )
+                )
+        # 再给一次 synthesis（无工具）；LLM 调用前捕获 Git 快照（luna R1-3）。
+        self._capture_git_snapshot()
+        parts: list[str] = []
+        async for chunk in self._raw_stream(messages):
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta
+            token = getattr(delta, "content", "") or ""
+            if token:
+                parts.append(token)
+                if tui and hasattr(tui, "stream_token"):
+                    tui.stream_token(token)
+        out = "".join(parts)
+        return out or fallback_answer
 
     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
         """Phase 3 M4：请求层解析最终 max_tokens（含 context 钳制）。
@@ -1634,7 +2312,7 @@ class AgentV2:
         # ModelLimitError（预算耗尽）向上传播：调用方必须阻止 SDK 请求。
         return resolution.resolved_max_tokens
 
-    async def _raw_stream(self, messages, tools=None):
+    async def _raw_stream(self, messages, tools=None, *, max_tokens=None):
         """Stream from the raw OpenAI client, yielding native chunks.
 
         Unlike LangChain's astream, this preserves `reasoning_content` so the
@@ -1651,7 +2329,7 @@ class AgentV2:
         # bypassed _apply_cache_control, so streaming calls never got the
         # cache breakpoint, resulting in ~0% provider cache hit rate)
         if hasattr(self._llm, '_apply_cache_control'):
-            messages = self._llm._apply_cache_control(messages)
+            messages = self._llm._apply_cache_control(messages, tools=tools)
         input_tokens = sum(
             _estimate_tokens(getattr(message, "content", "") or "")
             for message in messages
@@ -1673,7 +2351,11 @@ class AgentV2:
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": self.model_config.get("temperature", 0.7),
-            "max_tokens": self._resolve_request_max_tokens(input_tokens),
+            "max_tokens": (
+                max_tokens
+                if max_tokens is not None
+                else self._resolve_request_max_tokens(input_tokens)
+            ),
         }
         # A21: per-model 延迟旋钮——委托 provider.llm_kwargs 决定 thinking/effort/
         # temperature（各 provider 覆写已实现传输适配：MiniMax adaptive、M2.x 移除、
@@ -1706,6 +2388,32 @@ class AgentV2:
                 payload["temperature"] = pkwargs["temperature"]
             else:
                 payload.pop("temperature", None)
+        # B2 (CB3): OpenAI 系按能力注入请求级 prompt_cache_key=session_id，
+        # 会话期恒定（跨 turn 前缀复用）；DeepSeek/Anthropic 不注入。
+        # B9 (luna R1-2): 注入与否由契约 requires_prompt_cache_key 裁决——
+        # Kimi 等 auto_and_key 厂商同样注入（不再硬编码 openai provider）。
+        # CB3 保持：向不要求 key 的 provider（DeepSeek/Anthropic）绝不注入。
+        contract_pk_key = False
+        try:
+            from .catalog import requires_prompt_cache_key
+
+            contract_pk_key = requires_prompt_cache_key(
+                str(getattr(caps, "provider", "") or ""),
+                str(self.model_config.get("model_name") or ""),
+            )
+        except Exception:  # pragma: no cover - 契约异常回退现状
+            pass
+        caps_pk_key = bool(
+            caps is not None
+            and getattr(caps, "provider", "") == "openai"
+            and getattr(caps, "prompt_cache_key_required", False)
+        )
+        if contract_pk_key or caps_pk_key:
+            # luna R2-2: key 派生含 provider:model（规范 7：换模型 = 缓存全失效）。
+            # session_id 会话期恒定（规范 5：Kimi 恢复/退出不得变更）。
+            payload.setdefault("extra_body", {})["prompt_cache_key"] = (
+                self._prompt_cache_key_value()
+            )
         if tools:
             caps = getattr(self, "_capabilities", None)
             if caps is not None and not caps.supports_function_calling:
@@ -1715,22 +2423,60 @@ class AgentV2:
                     "capabilities.supports_function_calling is False"
                 )
             payload["tools"] = [self._tool_to_openai(t) for t in tools]
+            # B3 (CB2/CB3): Anthropic 系 tools 断点——tools 定义上注入
+            # cache_control ephemeral（分配序 tools 优先；OpenAI/DeepSeek 不注入）。
+            # 双条件与 _apply_cache_control 一致（luna 审计）：实际 provider
+            # 与 caps 都必须声明 anthropic，防止 caps 错误配置绕过 CB3。
+            provider = getattr(self, "_provider", None)
+            actual_provider = str(getattr(provider, "name", "") or "")
+            caps_provider = str(getattr(caps, "provider", "") if caps is not None else "")
+            anthropic_family = (
+                actual_provider == "anthropic" or caps_provider == "anthropic"
+            )
+            if (
+                anthropic_family
+                and caps is not None
+                and "tools" in getattr(caps, "cache_breakpoints", ())
+            ):
+                for tool_def in payload["tools"]:
+                    if isinstance(tool_def, dict):
+                        tool_def["cache_control"] = {"type": "ephemeral"}
+
+        last_chunk = None
+        partial_output_tokens = 0
+        usage: tuple[int, int] | None = None
+        _ttft_start: float | None = None
+        _ttft_recorded = False
 
         async def _open_provider_stream():
+            # B8/luna R1-4/R2-1: TTFT 起点 = 请求实际发出前（不含 client 初始化/
+            # 缓存控制/消息转换）。局部计时 + 局部已记录标志，每请求独立，
+            # 不依赖全局 is None（避免多请求/并发污染）。
+            nonlocal _ttft_start
+            _ttft_start = time.monotonic()
             resp = client.create(**payload)
             # Some openai SDK versions declare create() as `async def`
             # (resolving to AsyncStream); others return the stream directly.
             return resp if hasattr(resp, "__aiter__") else await resp
 
-        last_chunk = None
-        partial_output_tokens = 0
-        usage: tuple[int, int] | None = None
         try:
             if _circuit_breaker.circuit_breaker_enabled():
                 agen = await _circuit_breaker.get_default_breaker().call(_open_provider_stream)
             else:
                 agen = await _open_provider_stream()
             async for chunk in agen:
+                # B8/luna R1-4/R2-1: 首个**含内容**的 chunk 到达即记录 TTFT
+                # （空 chunk/keepalive 不计数）；局部标志，每请求独立。
+                if _ttft_start is not None and not _ttft_recorded:
+                    choices = getattr(chunk, "choices", None) or []
+                    if choices:
+                        delta = getattr(choices[0], "delta", None)
+                        content = getattr(delta, "content", "") or ""
+                        if content:
+                            _ttft_recorded = True
+                            token_stats.record_ttft(
+                                (time.monotonic() - _ttft_start) * 1000
+                            )
                 last_chunk = chunk
                 choices = getattr(chunk, "choices", None) or []
                 if choices:
@@ -1788,6 +2534,11 @@ class AgentV2:
             self._tool_orchestrator,
             rag_enabled=bool(getattr(self._memory, "_rag_enabled", False)),
             subagents_enabled=_subagents_on,
+            run_official_agent_enabled=bool(
+                (getattr(self, "_cfg", {}) or {})
+                .get("execution", {})
+                .get("run_official_agent_enabled", False)
+            ),
         )
 
     @staticmethod
@@ -2087,10 +2838,111 @@ class AgentV2:
         return "\u65e0\u6cd5\u8bc6\u522b\u4e0b\u8f7d\u610f\u56fe"
 
     async def _ensure_session_loaded(self):
-        """Load previous session history into short-term memory (once)."""
+        """Load previous session history into short-term memory (once).
+
+        B5: append-only 恢复——完整历史逐条追加，前缀形态与保存时一致
+        （会话重启后续接命中，Cherry Studio 语义）。
+        """
         if not self._session_loaded:
-            self._memory.load_session()
+            self._memory.load_session(append_only=True)
             self._session_loaded = True
+
+    def _prewarm_state(self):
+        """B5: 惰性初始化预热状态（PrewarmState）。"""
+        if self._prewarm is None:
+            from .cache_policy import PrewarmState
+
+            self._prewarm = PrewarmState()
+        return self._prewarm
+
+    def _prewarm_signature(self) -> str:
+        """B5: 当前会话配置签名（模型/cwd/MCP；Cherry Studio 语义）。
+
+        luna 审计 R4：MCP 签名纳入完整配置（URL/参数等），不仅是 server 名。
+        """
+        from .cache_policy import build_prewarm_signature
+
+        model = str(self.model_config.get("model_name") or "")
+        cwd = str(getattr(self, "_workspace_root", "") or "")
+        mcp = ""
+        try:
+            mcp = json.dumps(
+                self._cfg.get("mcpServers") or {},
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        except Exception:  # pragma: no cover
+            mcp = ""
+        return build_prewarm_signature(model=model, cwd=cwd, mcp=mcp)
+
+    def _maybe_rebuild_prewarm(self) -> bool:
+        """B5: 需不需要预热/重建（审计：True = 应发预热请求）。
+
+        luna 审计 R7：未确认成功（warmed_at None）或签名不匹配 → 持续返回
+        True（可重试）；只有 _confirm_prewarm 成功后才不再需要。
+        """
+        state = self._prewarm_state()
+        sig = self._prewarm_signature()
+        if state.signature is None or state.warmed_at is None:
+            return True  # 从未预热/未确认成功 → 需要（可重试）
+        return state.signature != sig
+
+    def _confirm_prewarm(self) -> None:
+        """B5: 预热请求成功后确认（提交 warmed 状态与时间戳）。"""
+        state = self._prewarm_state()
+        state.warm(self._prewarm_signature())
+
+    def _session_prewarm_messages(self) -> list:
+        """B5: 构造预热请求消息（复用真实会话前缀，Cherry Studio 同签名语义）。
+
+        luna 审计 R8：预热必须包含 system prompt——否则预热的是另一种前缀。
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        system = ""
+        try:
+            from .prompts.registry import get_system_prompt
+
+            system = get_system_prompt(variant=getattr(self, "_prompt_variant", lambda: "default")())
+        except Exception:  # pragma: no cover
+            system = ""
+        msgs: list = []
+        if system:
+            msgs.append(SystemMessage(content=system))
+        msgs.append(HumanMessage(content="warm"))
+        return msgs
+
+    def _maybe_keep_alive(self, last_call_at: float) -> bool:
+        """B5: 保活调度判定（默认关闭；启用 + ≥5m + 预算未耗尽）。
+
+        触发时构造保活请求（max_tokens=1，luna 审计 R3：实际执行路径）——
+        返回 True 表示应发出保活请求；调用方经 `_raw_stream` 执行。
+        """
+        from .cache_policy import (
+            build_keep_alive_request,
+            keep_alive_should_fire,
+        )
+
+        state = self._keep_alive_state
+        calls_used = 0
+        if state is not None:
+            calls_used = state.get("calls_used", 0)
+        should_fire = keep_alive_should_fire(
+            last_call_at=last_call_at,
+            now=time.monotonic(),
+            cfg=getattr(self, "_cfg", {}),
+            calls_used=calls_used,
+        )
+        if should_fire:
+            if self._keep_alive_state is None:
+                self._keep_alive_state = {}
+            self._keep_alive_state["calls_used"] = calls_used + 1
+            # 构造保活请求（max_tokens=1 空输出，仅重写缓存）
+            self._keep_alive_state["request"] = build_keep_alive_request(
+                [{"role": "user", "content": "keep-alive"}]
+            )
+        return should_fire
 
     def _get_memory_context(self, query: str, *, include_long_term: bool = True) -> str:
         """Call query-aware memory while preserving legacy test/plugin adapters."""
@@ -2253,7 +3105,10 @@ class AgentV2:
                 "distinguish uncertainty, and cite only these exact source URLs:\n"
                 f"{source_list}"
             )
-            messages[0] = SystemMessage(content=f"{system}\n\n{research_contract}")
+            # B2 (CB1/CB7): research_contract 是每请求动态内容，绝不允许改写
+            # messages[0]（system 前缀）——否则缓存前缀每请求逐字节变化、命中归零。
+            # 作为独立 SystemMessage 追加到断点之后（system 保持头部不动）。
+            messages.append(SystemMessage(content=research_contract))
             messages.append(AIMessage(
                 content="",
                 tool_calls=[call for call, _url, _content in verified_fetches],
@@ -2261,7 +3116,9 @@ class AgentV2:
             for fetch_call, url, content in verified_fetches:
                 fetch_text = f"Successfully fetched source URL: {url}\n\n{content}"
                 messages.append(ToolMessage(
-                    content=self._truncate_tool_text(fetch_text),
+                    content=self._truncate_tool_text(
+                        self._dedupe_tool_output("webfetch", fetch_text)
+                    ),
                     tool_call_id=fetch_call["id"],
                 ))
 
@@ -2285,9 +3142,18 @@ class AgentV2:
                 1,
                 int(execution_cfg.get("max_tool_rounds", 10) or 10),
             )
+            # B7: 死循环检测（阈值可配，默认 3）。
+            from RxyCode.RxyCode1_1_0.core.stuck_detector import StuckDetector
+
+            try:
+                stuck_threshold = int(execution_cfg.get("stuck_threshold", 3) or 3)
+            except (TypeError, ValueError):
+                stuck_threshold = 3
+            self._stuck_detector = StuckDetector(threshold=max(2, stuck_threshold))
 
             for round_num in range(max_rounds):
                 round_received_real_usage = False
+                stuck_triggered = False
                 if tui and hasattr(tui, "write_progress"):
                     tui.write_progress(f"Thinking... (round {round_num + 1})")
 
@@ -2301,6 +3167,9 @@ class AgentV2:
                 answer_parts = []
                 _reasoning_buffer = []
                 tool_calls_acc: dict = {}
+
+                # B7: LLM 调用前捕获 Git 快照（坏结局可回滚到快照点）。
+                self._capture_git_snapshot()
 
                 async for chunk in self._raw_stream(messages, core_tools):
                     if not getattr(chunk, "choices", None):
@@ -2399,6 +3268,11 @@ class AgentV2:
                     )
 
                 if not tool_calls:
+                    # B7: deepseek FC=True 偶发输出 DSML 文本而非原生
+                    # tool_calls → 兜底解析，避免文本直接进答案。
+                    tool_calls = _parse_dsml_tool_calls(answer) or []
+
+                if not tool_calls:
                     # No tool calls - tokens already streamed in real-time, done
                     break
 
@@ -2417,17 +3291,28 @@ class AgentV2:
                     tool_calls=tool_calls,
                     additional_kwargs=ai_kwargs,
                 ))
-                for tc in tool_calls:
-                    tool_name = tc.get("name", "") if isinstance(tc, dict) else tc.name
-                    tool_args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
-                    tool_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
-
-                    result = await self._execute_tool(
-                        tool_name,
-                        tool_args,
-                        mode=mode,
-                        call_id=tool_id or None,
+                # B8: 只读工具并发执行（写串行），结果按原序；
+                # 失败时结果含 [error...]，后续 B7 逻辑照常处理。
+                try:
+                    executed = await self._execute_tools_parallel(
+                        tool_calls, mode=mode
                     )
+                except Exception as exc:  # pragma: no cover - 并行兜底
+                    _logger.warning("B8 parallel tool execution failed: %s", exc)
+                    executed = []
+                    for tc in tool_calls:
+                        name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+                        args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+                        cid = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                        executed.append({
+                            "name": name, "args": args, "id": cid,
+                            "result": f"[error: {exc}]",
+                        })
+                for item in executed:
+                    tool_name = item["name"]
+                    tool_args = item["args"]
+                    tool_id = item["id"]
+                    result = item["result"]
 
                     if (
                         research_policy.requires_web
@@ -2439,7 +3324,56 @@ class AgentV2:
                         if fetched_url and fetched_url not in research_sources:
                             research_sources.append(fetched_url)
 
-                    messages.append(ToolMessage(content=self._truncate_tool_text(str(result)), tool_call_id=tool_id or tool_name))
+                    messages.append(
+                        ToolMessage(
+                            content=self._truncate_tool_text(
+                                self._dedupe_tool_output(tool_name, str(result))
+                            ),
+                            tool_call_id=tool_id or tool_name,
+                        )
+                    )
+
+                    # B7: 错误回喂 + 死循环检测（错误消息追加在断点之后）。
+                    is_error = _tool_output_is_error(str(result))
+                    if is_error:
+                        # luna R8-2: 记录本轮发生工具错误（用于缓存防护）。
+                        self._tool_error_occurred = True
+                        messages.append(
+                            ToolMessage(
+                                content=self._error_feedback_message(
+                                    tool_name, str(result)
+                                ),
+                                tool_call_id=tool_id or tool_name,
+                            )
+                        )
+                    stuck = self._stuck_detector.record(
+                        tool_name,
+                        tool_args,
+                        failed=is_error,
+                    )
+                    if stuck:
+                        messages.append(
+                            ToolMessage(
+                                content=self._stuck_feedback_message(
+                                    self._stuck_detector.stuck_reason
+                                ),
+                                tool_call_id=tool_id or tool_name,
+                            )
+                        )
+                        _logger.warning(
+                            "B7 stuck detection tripped: %s",
+                            self._stuck_detector.stuck_reason,
+                        )
+                        # B7: 坏结局回滚到快照点（luna R5：快照的 restore 调用链）。
+                        snapshot = getattr(self, "_git_snapshot", None)
+                        if snapshot is not None and snapshot.captured:
+                            snapshot.restore()
+                        stuck_triggered = True
+                        break
+                if stuck_triggered:
+                    # luna R1-2: break 只跳内层 for tc；需真正终止外层工具轮，
+                    # 避免下一轮继续发起 LLM 调用。
+                    break
             else:
                 # Exceeded max rounds - give LLM one tool-free synthesis pass
                 if tui and hasattr(tui, "write_progress"):
@@ -2497,8 +3431,43 @@ class AgentV2:
                 if _synth_reasoning:
                     self._last_thinking = "".join(_synth_reasoning)
                     self._thinking_history.append(self._last_thinking)
+                # B7: 合成轮也可能输出 DSML（max_rounds 耗尽后模型仍想调工具）。
+                # 解析出工具调用 → 追加执行 + 再给一次 synthesis；最多一轮，
+                # 防死循环。解析失败 → 原样保留文本。
+                synth_tool_calls = _parse_dsml_tool_calls(answer) or []
+                if synth_tool_calls and answer:
+                    answer = await self._synthesis_with_tools(
+                        messages,
+                        synth_tool_calls,
+                        mode=mode,
+                        tui=tui,
+                        fallback_answer=answer,
+                    )
                 if not answer:
                     answer = "[max tool-call rounds reached]"
+
+            if stuck_triggered:
+                # luna R6-3: stuck 跳出后执行一次 tool-free synthesis 保证
+                # 最终答案，避免把最后一次工具调用/DSML 文本直接返回给用户。
+                if tui and hasattr(tui, "write_progress"):
+                    tui.write_progress("Synthesizing results (stuck recovery)...")
+                parts: list[str] = []
+                async for chunk in self._raw_stream(messages):
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    delta = chunk.choices[0].delta
+                    token = getattr(delta, "content", "") or ""
+                    if token:
+                        parts.append(token)
+                        if tui and hasattr(tui, "stream_token"):
+                            tui.stream_token(token)
+                synth_answer = "".join(parts)
+                # luna R7-3: recovery 为空时无条件 fallback，
+                # 不保留原 DSML/工具调用文本。
+                answer = (
+                    synth_answer.strip()
+                    or "[stuck detection] 已中止循环；请换一种完全不同的思路重试。"
+                )
 
             if research_policy.citations_required and research_sources:
                 supported_urls = set(research_sources)
@@ -2576,8 +3545,15 @@ class AgentV2:
                     )[:8]
                 )
                 self._subset_tool_names = cache
-            return [t for t in tools if getattr(t, "name", "") in cache]
-        return tools
+            # B2: subset 分支同样按名排序——输入列表乱序不得导致输出顺序抖动
+            # （工具 schema 顺序是前缀字节的一部分，静默失效源清单第 6 条）。
+            return sorted(
+                (t for t in tools if getattr(t, "name", "") in cache),
+                key=lambda t: getattr(t, "name", "") or "",
+            )
+        # B2: full 策略也按名称排序固定——工具 schema 顺序是前缀字节的一部分，
+        # 任何一轮的顺序抖动都会击穿缓存（静默失效源清单第 6 条）。
+        return sorted(tools, key=lambda t: getattr(t, "name", "") or "")
 
     async def _execute_tool(
         self,
@@ -2685,46 +3661,200 @@ class AgentV2:
     async def _maybe_compress_context(self, messages) -> None:
         """Keep the in-loop message list inside a soft token budget.
 
-        When the conversation grows past ~70% of the model context, the
-        oldest tool-result contents are middle-truncated (their ToolMessage
-        objects are preserved so the ``tool_call_id`` contract stays valid),
-        and the persistent session memory is compressed for the next turn.
-        This proactively triggers :class:`ContextCompressor` inside the tool
-        loop instead of waiting until the very end of the run.
+        B4: 压缩不再原位改写旧消息（G2 修复）——统一走 core/compaction.py
+        的唯一入口：断点前不可变、折叠断点后的 assistant/tool 中间段为
+        摘要消息（Objective/Work State/Next Move）追加到断点之后，保留
+        尾部轮次，绝不改写已发送消息（CB1/CB4）。
+
+        触发阈值读 ModelCapabilities.compaction_threshold（Phase A 已接线）；
+        输出预留（reserved 20k）计入可用空间（原则 4，P0-4）。
         """
-        budget = int(self._context_window() * 0.7)
+        caps = getattr(self, "_capabilities", None)
+        threshold = (
+            getattr(caps, "compaction_threshold", None)
+            if caps is not None
+            else None
+        )
+        context_window = self._context_window()
+        if not threshold:
+            threshold = int(context_window * 0.9)
+        budget = threshold
         total = self._estimate_tokens(messages)
-        if total <= budget:
+        # 输出预留：usable = context − reserved（原则 4，P0-4）。
+        from .compaction import DEFAULT_RESERVED_TOKENS
+
+        reserved = max(0, int(DEFAULT_RESERVED_TOKENS))
+        usable = budget - reserved
+        if total <= usable:
             return
 
-        # Trim oldest tool results first (most often long logs/stdout).
-        compressor = ContextCompressor()
-        for m in messages:
-            if total <= budget:
-                break
-            if type(m).__name__ == "ToolMessage":
-                content = getattr(m, "content", "") or ""
-                if _estimate_tokens(content, self._tokenizer_spec()) <= 200:
-                    continue
-                new_content = compressor._middle_truncate(content)
-                try:
-                    m.content = new_content  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-                total = self._estimate_tokens(messages)
+        # B4: 唯一压缩入口——compact_messages 构造摘要追加到断点之后，
+        # 不改写任何断点前消息；配对校验失败自动回退。
+        from .compaction import compact_messages
+
+        try:
+            compacted, telemetry = compact_messages(
+                messages,
+                tail_turns=2,
+                return_telemetry=True,
+            )
+        except Exception as exc:  # pragma: no cover - 压缩失败不阻断请求
+            _logger.warning("B4 compaction failed: %s", exc)
+            return
+        if telemetry.get("compacted"):
+            messages[:] = compacted
+            _logger.info(
+                "B4 compaction: tokens_before=%d tokens_after=%d tail_turns=%d",
+                telemetry["tokens_before"],
+                telemetry["tokens_after"],
+                telemetry["tail_turns"],
+            )
+            tui = get_tui()
+            if tui and hasattr(tui, "write_progress"):
+                tui.write_progress("Context compressed (prefix preserved)")
 
         # Persist a compressed session for the next turn once we are really full.
         auto_compact = bool(
             (getattr(self, "_cfg", {}) or {}).get("autoCompact", True)
         )
-        if auto_compact and total > budget * 1.1 and getattr(self, "_memory", None):
+        total_after = self._estimate_tokens(messages)
+        if auto_compact and total_after > usable and getattr(self, "_memory", None):
             try:
                 await self._memory.compress_if_needed(self._session_id)
-                tui = get_tui()
-                if tui and hasattr(tui, "write_progress"):
-                    tui.write_progress("Context compressed to save space")
             except Exception:
                 pass
+
+    def _tool_is_read_only(self, tool_name: str, tool_args) -> bool:
+        """B8: 工具是否只读（读/搜索类可并行；写/危险类串行）。
+
+        复用 classify_tool_risk（含 bash 动态危险升级、memory/task
+        operation 降级）；风险 < WRITE 即只读。
+        """
+        try:
+            from RxyCode.RxyCode1_1_0.core.safety.policy import (
+                RiskLevel,
+                classify_tool_risk,
+            )
+
+            return classify_tool_risk(tool_name, tool_args) < RiskLevel.WRITE
+        except Exception:
+            return False  # 分类失败保守串行
+
+    def _parallel_tool_config(self) -> tuple[bool, int]:
+        """B8: 读取 execution.parallel_enabled / max_parallel（默认关/3，CB8）。"""
+        exec_cfg = (getattr(self, "_cfg", {}) or {}).get("execution", {})
+        enabled = bool(exec_cfg.get("parallel_enabled", False))
+        try:
+            max_parallel = max(1, int(exec_cfg.get("max_parallel", 3) or 3))
+        except (TypeError, ValueError):
+            max_parallel = 3
+        return enabled, max_parallel
+
+    async def _execute_tools_parallel(self, tool_calls, *, mode: str | None = None) -> list[dict]:
+        """B8: 只读工具并发执行（写工具串行），结果按原序返回。
+
+        - 连续只读段用 asyncio.gather + Semaphore 并发（luna R1-3：
+          只对连续读段并行，写工具保持**原始相对位置**执行，
+          不改变读写交叉的观察顺序）；
+        - 写工具串行（并行写副作用需治理，调研报告 P1-9 风险提示）；
+        - 返回列表保持 tool_calls 原顺序（tool_pair_integrity 安全，
+          与 B2 排序纪律同源）；索引按**位置**而非 call_id（luna R1-2：
+          空/重复 call_id 不覆盖）。
+        """
+        enabled, max_parallel = self._parallel_tool_config()
+        n = len(tool_calls)
+        results: list[str | None] = [None] * n
+        semaphore = asyncio.Semaphore(max_parallel)
+
+        async def run_at(index: int) -> None:
+            tc = tool_calls[index]
+            name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+            args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+            call_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+            try:
+                async with semaphore:
+                    results[index] = await self._execute_tool(
+                        name, args, mode=mode, call_id=call_id or None
+                    )
+            except asyncio.CancelledError:
+                # luna R2-2: 取消必须放行，不能被吞成工具错误。
+                raise
+            except Exception as exc:
+                results[index] = f"[error: {exc}]"
+
+        async def run_parallel_segment(segment: list[int]) -> None:
+            await asyncio.gather(*(run_at(i) for i in segment))
+
+        if enabled:
+            # 按原序分组：连续只读段并行，写工具单独串行（保持相对顺序）。
+            i = 0
+            while i < n:
+                tc = tool_calls[i]
+                name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+                args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+                if self._tool_is_read_only(name, args):
+                    segment = [i]
+                    j = i + 1
+                    while j < n:
+                        tc2 = tool_calls[j]
+                        n2 = tc2.get("name", "") if isinstance(tc2, dict) else tc2.name
+                        a2 = tc2.get("args", {}) if isinstance(tc2, dict) else tc2.args
+                        if not self._tool_is_read_only(n2, a2):
+                            break
+                        segment.append(j)
+                        j += 1
+                    await run_parallel_segment(segment)
+                    i = j
+                else:
+                    await run_at(i)
+                    i += 1
+        else:
+            for i in range(n):
+                await run_at(i)
+
+        # 按原序组装（含名称/参数/id）。
+        ordered: list[dict] = []
+        for i, tc in enumerate(tool_calls):
+            name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+            args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+            call_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+            ordered.append({
+                "name": name,
+                "args": args,
+                "id": call_id,
+                "result": results[i] or "",
+            })
+        return ordered
+
+    def _fork_background_summary(self, messages) -> asyncio.Task:
+        """B8: 后台 fork 摘要压缩（goose 语义：不阻塞主循环）。
+
+        返回 asyncio.Task；调用方可选择 await（获取压缩结果）或忽略
+        （后台执行）。压缩只计算新列表，**不原位改写传入 messages**
+        （G2 防线：后台摘要不污染已发送消息）。
+
+        luna R1-1: ``compact_messages`` 是同步 CPU 工作，直接
+        ``asyncio.create_task`` 仍会阻塞事件循环——用 ``asyncio.to_thread``
+        移到线程执行，主循环真正不阻塞。
+        """
+        import copy
+
+        snapshot = copy.deepcopy(messages)
+
+        async def _run() -> list | None:
+            try:
+                from .compaction import compact_messages
+
+                compacted, telemetry = await asyncio.to_thread(
+                    compact_messages, snapshot, tail_turns=2, return_telemetry=True
+                )
+                if telemetry.get("compacted"):
+                    return compacted
+                return None
+            except Exception:
+                return None
+
+        return asyncio.create_task(_run())
 
     async def _run_plan_only(self, user_input: str) -> str:
         """Produce a plan with an explicit read-only tool allowlist."""
@@ -2924,9 +4054,15 @@ class AgentV2:
                 self._last_thinking = ''.join(_reasoning_buffer)
                 self._thinking_history.append(self._last_thinking)
 
-            precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
-            if not memory_ctx:
-                semantic_cache.put(user_input, answer, namespace=cache_namespace)
+            # B7 (共性 8): 失败结果不缓存——空答案 / [error ...] 错误串 /
+            # 本轮发生工具错误（luna R8-2）一律不写入应用缓存。
+            if _should_cache_answer(
+                answer,
+                tool_error_occurred=getattr(self, "_tool_error_occurred", False),
+            ):
+                precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
+                if not memory_ctx:
+                    semantic_cache.put(user_input, answer, namespace=cache_namespace)
             self._memory.add_interaction(user_input, answer)
             self._memory.save_session()
 
@@ -3113,9 +4249,59 @@ class AgentV2:
             raise ValueError(
                 f"Unsupported agent mode: {mode!r}. Valid modes: {valid_modes}"
             )
+        # B5: 请求入口校验预热签名——配置变化（模型/cwd/MCP）→ 重建 →
+        # 前缀重建（命中率下降可解释，B5 步骤 5）。重建动作写进度量。
+        try:
+            if self._maybe_rebuild_prewarm():
+                _logger.info(
+                    "B5 prewarm signature changed; cache prefix rebuilt "
+                    "(model/cwd/MCP change)"
+                )
+                token_stats.record_application_cache("precise", bypass=True)
+                # luna 审计 R5/R6/R8：真实重建——发一次最小预热请求写新前缀，
+                # **完整消费流且成功后**才确认 warmed（失败不标记，下次重试）。
+                if getattr(self, "_llm", None) is not None:
+                    from langchain_core.messages import HumanMessage
+
+                    # 复用当前会话消息（含 system/tools，Cherry Studio 同签名语义）
+                    prewarm_msgs = self._session_prewarm_messages()
+                    try:
+                        async for _chunk in self._raw_stream(
+                            prewarm_msgs,
+                            tools=self._get_core_tools() if hasattr(self, "_get_core_tools") else None,
+                            max_tokens=1,
+                        ):
+                            pass  # 完整消费流（不提前 break）
+                        self._confirm_prewarm()
+                    except Exception:
+                        _logger.warning("B5 prewarm request failed; will retry next run")
+                        # 不 confirm → 下次 run 重试
+        except Exception:  # pragma: no cover - 预热失败不阻断请求
+            pass
+        # B5: keep-alive 真实发送（luna 审计 R4）——启用时若距上次调用
+        # ≥5m 且预算未耗尽，经 _raw_stream 发 max_tokens=1 空请求保活前缀。
+        try:
+            last_call = getattr(self, "_keep_alive_last_call", None)
+            if last_call is not None and self._maybe_keep_alive(last_call_at=last_call):
+                req = (self._keep_alive_state or {}).get("request")
+                if req and getattr(self, "_llm", None) is not None:
+                    from langchain_core.messages import HumanMessage
+
+                    _logger.info("B5 keep-alive request sent (max_tokens=1)")
+                    async for _chunk in self._raw_stream(
+                        [HumanMessage(content="keep-alive")],
+                        tools=None,
+                        max_tokens=1,
+                    ):
+                        break  # 只消费首个 chunk，不阻塞
+            self._keep_alive_last_call = time.monotonic()
+        except Exception:  # pragma: no cover - 保活失败不阻断请求
+            pass
         # 顶层显式声明的任务副作用类型（"write"/"danger"/只读效果）。默认 "auto"
         # 走启发式；evals 只读任务可显式声明 effect="search" 避免被误判。
         self._task_effect = (effect or "auto").strip().lower()
+        # luna R9-2: 顶层请求入口重置工具错误状态（避免一次错误污染后续请求）。
+        self._tool_error_occurred = False
 
         # ``download_mcp`` writes config atomically.  Reading the fingerprint
         # here makes an add/remove effective on the next request without an
@@ -3125,9 +4311,118 @@ class AgentV2:
 
         bound_run_id = get_bound_run_id()
         if bound_run_id is not None:
-            return await self._run_observed(user_input, mode, bound_run_id)
-        with run_id_context() as run_id:
-            return await self._run_observed(user_input, mode, run_id)
+            result = await self._run_observed(user_input, mode, bound_run_id)
+        else:
+            with run_id_context() as run_id:
+                result = await self._run_observed(user_input, mode, run_id)
+        # B7: reviewer 重试（默认关闭，CB8）——开启且任务重要时独立打分，
+        # 不达标重跑，同分取 API 调用最少者（SWE-agent 语义）。
+        result = await self._maybe_reviewer_retry(user_input, result, mode)
+        return result
+
+    async def _maybe_reviewer_retry(self, user_input: str, answer: str, mode: str) -> str:
+        """B7: reviewer 重试（默认关闭；开启时有预算保护）。
+
+        流程：读配置 → 未开启直接返回 → 任务重要性评估 → 独立 reviewer
+        打分 → 不达标重跑（预算内）→ 同分取 API 调用最少者。
+        """
+        from RxyCode.RxyCode1_1_0.core.reviewer_retry import (
+            ReviewerBudget,
+            pick_best_attempt,
+        )
+
+        cfg = (getattr(self, "_cfg", {}) or {}).get("execution", {})
+        rr_cfg = cfg.get("reviewer_retry") or {}
+        if not rr_cfg.get("enabled"):
+            return answer
+        min_score_raw = rr_cfg.get("min_score")
+        min_score = float(min_score_raw) if min_score_raw is not None else 0.6
+        min_imp_raw = rr_cfg.get("min_importance_score")
+        min_importance = (
+            float(min_imp_raw) if min_imp_raw is not None else 0.7
+        )
+        if not self._task_important_enough(user_input, min_importance):
+            return answer
+        budget = ReviewerBudget(max_calls=int(rr_cfg.get("max_api_calls", 3) or 3))
+        attempts: list[dict] = []
+        current = answer
+        while budget.can_retry():
+            score = await self._review_answer(user_input, current)
+            budget.consume()
+            attempts.append({
+                "score": score,
+                "api_calls": budget.calls,
+                "answer": current,
+            })
+            if score >= min_score:
+                break
+            if not budget.can_retry():
+                break
+            current = await self._regenerate_answer(user_input, mode)
+            budget.consume()
+            if not current:
+                current = answer  # 重跑失败 → 回退原答案
+        best = pick_best_attempt(attempts)
+        # luna R8-1: 若最后一次产出是 regeneration 结果且未被复审，
+        # 它至少不比原答案差（重跑语义）——预算耗尽时返回它。
+        if not best or (
+            current != answer
+            and best.get("answer") == answer
+            and not budget.can_retry()
+        ):
+            return current or answer
+        return (best or {}).get("answer") or answer
+
+    def _task_important_enough(self, user_input: str, min_importance: float) -> bool:
+        """B7: 任务重要性启发式（0-1）。含构建/修复/重构等强动词 → 高分。
+
+        luna R8-3: 阈值放宽——命中任一强动词即视为重要（0.8），
+        避免单关键词任务被错误跳过；支持中英文同义表达。
+        """
+        strong = (
+            "build", "implement", "fix", "refactor", "create", "write",
+            "generate", "add", "update", "modify", "debug",
+            "构建", "实现", "修复", "重构", "创建", "编写",
+            "生成", "新增", "更新", "修改", "调试", "修", "改",
+        )
+        text = (user_input or "").lower()
+        hits = sum(1 for w in strong if w.lower() in text)
+        # 命中 1 个强动词 → 0.8（重要）；0 个 → 0.2（非重要）。
+        score = 0.8 if hits >= 1 else 0.2
+        return score >= min_importance
+
+    async def _review_answer(self, user_input: str, answer: str) -> float:
+        """B7: 独立 reviewer 打分（0-1）。失败时保守返回低分（触发重试）。"""
+        try:
+            from langchain_core.messages import HumanMessage
+
+            prompt = (
+                "你是独立评审。任务：\n"
+                f"{user_input[:2000]}\n\n"
+                "最终答案：\n"
+                f"{answer[:4000]}\n\n"
+                "请仅返回 0 到 1 之间的一个数字，表示答案是否完成任务。"
+            )
+            stream = self._raw_stream(
+                [HumanMessage(content=prompt)], tools=None, max_tokens=10
+            )
+            text = ""
+            async for chunk in stream:
+                if getattr(chunk, "choices", None):
+                    text += getattr(chunk.choices[0].delta, "content", "") or ""
+            import re as _re
+
+            match = _re.search(r"0?\.\d+|1(?:\.0)?", text)
+            return min(1.0, max(0.0, float(match.group(0)))) if match else 0.0
+        except Exception:
+            return 0.0
+
+    async def _regenerate_answer(self, user_input: str, mode: str) -> str:
+        """B7: 重跑一次请求（reviewer 不达标时）。失败返回原答案。"""
+        try:
+            return await self._run_impl(user_input, mode=mode)
+        except Exception:
+            return ""
 
     async def _run_observed(
         self,

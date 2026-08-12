@@ -1,0 +1,67 @@
+结论：**FAIL**
+
+前六轮阻断项本身已修复：
+
+- 仅摘要输入会过滤旧摘要，不再直接返回原始消息。
+- 新摘要使用正式 `LangChain SystemMessage`，并带有 `is_compaction_summary` 标记。
+
+但复审仍发现以下阻断项：
+
+1. **重复压缩会丢失既有摘要状态**
+
+`compact_messages()` 首次调用 `_fold_middle_section()` 时没有传入已有摘要：
+
+```python
+result = _fold_middle_section(list(messages), keep_tail=tail_turns)
+```
+
+而 `_fold_middle_section()` 会先删除所有旧摘要。于是：
+
+```text
+system + old_summary + recent_messages
+```
+
+在没有可折叠内容，或重新折叠时，可能变成：
+
+```text
+system + recent_messages
+```
+
+既有 Objective / Work State / Next Move 会永久丢失，违反摘要防返工要求及 CB1/CB4 的历史语义。应在首次折叠前提取已有摘要，并将其复用或合并。
+
+2. **非首位 system 的原序不保证**
+
+代码注释要求非首位 system：
+
+> 留在原序列位置（不重排）
+
+但最终始终返回：
+
+```python
+return head_system + [summary_msg] + tail_msgs
+```
+
+所有非首位 system 都被集中放到摘要之后，可能改变其相对位置。例如：
+
+```text
+system, mid_system, old_turn, recent_turn
+```
+
+可能变为：
+
+```text
+system, summary, mid_system, recent_turn
+```
+
+`mid_system` 已不再位于原位置。现有测试只验证存在性，没有验证顺序，无法覆盖该问题。
+
+### 判据核对
+
+- 判据 1：首位 system 前缀不变，基本满足。
+- 判据 2：摘要三段模板，满足。
+- 判据 3：尾部保留及 system 不裁剪，部分满足；非首位 system 顺序不满足。
+- 判据 4：遥测 `tokens_before/after`，满足。
+- 判据 5：assistant/tool 配对，当前实现基本满足并有回退保护。
+- 判据 6：集成唯一压缩入口及预算触发，代码已接入，但重复压缩状态丢失仍构成语义缺陷。
+
+因此，虽然提供的测试和回归证据通过，仍不能判定 B4 通过。需要修复上述两项，并补充“重复压缩保留摘要状态”和“非首位 system 顺序”测试。

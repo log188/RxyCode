@@ -1,0 +1,58 @@
+﻿
+C:\Windows\TEMP\opencode\b2_evals_full.log:3021:|-- GATEFINAL_SIGNOFF_2026-07-28.md (1.4KB)
+C:\Windows\TEMP\opencode\b2_evals_full.log:5469:Name          : GATEFINAL_SIGNOFF_2026-07-28.md
+C:\Windows\TEMP\opencode\b2_evals_full.log:5949:236:     """Deprecated compatibility shim: delegate to the provider lay
+er (A8).
+C:\Windows\TEMP\opencode\b2_evals_full.log:6030:317:     Cache-hit extraction is delegated to the provider layer
+C:\Windows\TEMP\opencode\b2_evals_full.log:9670:Name          : GATEFINAL_SIGNOFF_2026-07-28.md
+C:\Windows\TEMP\opencode\b2_evals_full.log:10412:gate-a11.err.log                    2026/8/7 0:26:57  
+C:\Windows\TEMP\opencode\b2_evals_full.log:10414:gate-a11.log                        2026/8/7 0:29:55  
+C:\Windows\TEMP\opencode\b2_evals_full.log:10416:gate-a19.err.log                    2026/8/8 0:04:47  
+C:\Windows\TEMP\opencode\b2_evals_full.log:10418:gate-a19.log                        2026/8/8 0:11:37  
+C:\Windows\TEMP\opencode\b2_evals_full.log:10420:gate-a19.pid                        2026/8/7 23:19:57 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10422:gate-a20.err.log                    2026/8/8 3:12:29  
+C:\Windows\TEMP\opencode\b2_evals_full.log:10424:gate-a20.log                        2026/8/8 3:16:19  
+C:\Windows\TEMP\opencode\b2_evals_full.log:10426:gate-a20.pid                        2026/8/8 2:17:24  
+C:\Windows\TEMP\opencode\b2_evals_full.log:10428:gate-a21.err.log                    2026/8/8 17:17:34 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10430:gate-a21.log                        2026/8/8 17:32:26 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10432:gate-a21.pid                        2026/8/8 16:39:20 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10434:gate-a22.err.log                    2026/8/8 19:34:50 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10436:gate-a22.log                        2026/8/8 19:36:49 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10438:gate-a22.pid                        2026/8/8 18:55:21 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10440:gate-a7.err.log                     2026/8/5 17:19:30 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10442:gate-a7.log                         2026/8/5 17:21:16 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10444:gate-a7.pid                         2026/8/5 16:50:30 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10446:gate-a8.err.log                     2026/8/5 19:30:28 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10448:gate-a8.log                         2026/8/5 19:32:44 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10450:gate-a9.err.log                     2026/8/5 22:34:52 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10452:gate-a9.log                         2026/8/5 22:36:39 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10454:gate-p6.err.log                     2026/8/5 17:23:34 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10456:gate-p6.log                         2026/8/5 17:24:34 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10458:gate-p6.pid                         2026/8/5 16:50:30 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10460:gate-p7.err.log                     2026/8/5 17:16:31 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10462:gate-p7.log                         2026/8/5 17:22:09 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10464:gate-p7.pid                         2026/8/5 16:50:30 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10466:gate-p8-thin-r2.err.log             2026/8/5 22:43:04 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10468:gate-p8-thin-r2.log                 2026/8/5 22:43:04 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10470:gate-p8-thin-r2.pid                 2026/8/5 22:32:11 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10472:gate-p8-thin-r3.err.log             2026/8/5 23:36:16 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10474:gate-p8-thin-r3.log                 2026/8/5 23:40:12 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10476:gate-p8-thin-r3.pid                 2026/8/5 23:00:55 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10478:gate-p8-thin.err.log                2026/8/5 22:30:26 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10480:gate-p8-thin.log                    2026/8/5 22:30:26 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10482:gate-p8-thin.pid                    2026/8/5 21:50:51 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10484:gate-p8.err.log                     2026/8/5 19:21:07 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10486:gate-p8.log                         2026/8/5 19:23:44 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10488:gate-p8.pid                         2026/8/5 18:39:50 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10490:gates-monitor.err.log               2026/8/5 16:50:27 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10492:gates-monitor.log                   2026/8/5 17:25:30 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10544:phase3-m8-gate.py                   2026/8/9 15:21:00 
+C:\Windows\TEMP\opencode\b2_evals_full.log:10608:smoke-gate-exitcode.log             2026/8/5 13:34:59 
+C:\Windows\TEMP\opencode\b2_evals_full.log:11493:|-- GATEFINAL_SIGNOFF_2026-07-28.md (1.4KB)
+C:\Windows\TEMP\opencode\b2_evals_full.log:13199:Name          : GATEFINAL_SIGNOFF_2026-07-28.md
+C:\Windows\TEMP\opencode\b2_evals_full.log:13948:|-- GATEFINAL_SIGNOFF_2026-07-28.md (1.4KB)
+C:\Windows\TEMP\opencode\b2_evals_full.log:15894:Name          : GATEFINAL_SIGNOFF_2026-07-28.md
+C:\Windows\TEMP\opencode\b2_evals_full.log:16286:Eval suite complete: 18/19 passed (94.7%)
+C:\Windows\TEMP\opencode\b2_evals_full.log:16325:GATE: PASS (pass rate 94.7% >= baseline 89.5%)
+
+

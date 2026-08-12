@@ -1,0 +1,86 @@
+## 审计结论：FAIL
+
+实测证据显示 pytest、ruff、全量回归及 evals 基线均通过，但 B9 仍存在功能性阻断项，不能按 6 条完成判据验收。
+
+### 完成判据逐条核对
+
+| 判据 | 结论 | 说明 |
+|---|---|---|
+| 1. 9 家契约齐全且过 schema | **部分通过** | 9 家 provider 均有记录，schema 可通过；但 `cache_contract` 本身不是 record 的 required 字段，schema 允许缺失或不完整契约。 |
+| 2. 契约读取唯一入口 | **部分通过** | `core/catalog.py` 提供统一入口，providers 中未发现 `cache_mode`。但现有测试未证明 B2/B3/B6 全部经该入口分派，也未扫描全 core 的散落逻辑。 |
+| 3. usage 归一化 | **通过** | 覆盖 DeepSeek、Kimi、Claude、OpenAI、Grok、MiMo，达到 ≥5 家。 |
+| 4. 9 条模型限制规范均有测试 | **不通过** | 测试大多只断言契约字段，未验证真实行为，例如 reasoning echo、模型切换实际失效、Claude 字节级前缀、Kimi key 恒定等。 |
+| 5. 未识别模型走现状路径 | **通过** | `get_contract → None`、usage → 0，调用方异常/未知模型回退旧逻辑，符合 CB8。 |
+| 6. evals 基线无回归 | **通过** | 已报告 Gate 94.7% ≥ 89.5%，且零回归。 |
+
+### 阻断项
+
+1. **Qwen 显式断点契约实际不会生效**
+
+   `_apply_cache_control` 在新增契约判断前已有：
+
+   ```python
+   if caps_provider != "anthropic":
+       return messages
+   ```
+
+   因此 Qwen 虽然配置为：
+
+   ```json
+   "cache_mode": "explicit_breakpoints"
+   ```
+
+   但会在契约读取前直接返回，无法应用显式断点。契约配置与运行时行为不一致。
+
+   **修复：** 将 provider 硬编码早退改为基于 `get_contract(...).cache_mode` 判断，仅对 `explicit_breakpoints` 分派断点逻辑；未知模型再回退原有 caps 行为。
+
+2. **Kimi 的 `prompt_cache_key_required` 没有实际注入**
+
+   `_raw_stream` 虽读取契约，但最终仍受以下条件限制：
+
+   ```python
+   getattr(caps, "provider", "") == "openai"
+   ```
+
+   Kimi 契约明确要求 `prompt_cache_key`，但 Kimi provider 不会满足该条件，因此不会注入。现有测试只检查配置值，没有检查请求 payload。
+
+   **修复：** 将是否注入 key 改为契约驱动；对 `requires_prompt_cache_key(...)` 为真的模型注入，并确保会话期恒定、模型切换时失效。
+
+3. **schema 约束不足**
+
+   `cache_contract` 未列入 record 的 required；契约中的关键字段如：
+
+   - `cache_hit_discount`
+   - `breakpoints_max`
+   - `breakpoint_lookback`
+   - `prompt_cache_key_required`
+   - `thinking_param`
+
+   均可缺失。当前 schema 不能保证“契约齐全”。
+
+   **修复：** 为 `cache_contract` 和其必需字段增加 required，并视需要增加 `additionalProperties: false` 及模式间约束。
+
+4. **限制性规范测试不是行为测试**
+
+   以下测试基本只验证 JSON 字段，不能证明运行时满足规范：
+
+   - reasoning/thinking echo
+   - 模型切换后缓存实际失效
+   - Claude 字节级前缀一致
+   - Kimi key 会话恒定
+   - Qwen 工具 schema 一致性
+
+   **修复：** 增加 payload、消息序列、模型切换及 usage 处理的行为测试。
+
+### CB1-CB8
+
+- **CB1 稳定前缀：** 当前 diff 未证明新增逻辑破坏，但缺少 B9 行为测试。
+- **CB2 断点预算：** 对 Anthropic 可用；Qwen 因早退逻辑不生效，存在失败。
+- **CB3 OpenAI cache_control：** 未见明显回归；但 key 分派仍硬编码 OpenAI。
+- **CB4 压缩不毁前缀：** 未由本轮测试覆盖。
+- **CB5 度量门：** 本 diff 未见回归证据。
+- **CB6 失败不缓存：** 本 diff 未见回归证据。
+- **CB7 动态内容不进前缀：** 本轮未覆盖。
+- **CB8 默认值不变：** **通过**，未知模型返回 `None/0` 并回退既有路径。
+
+修复上述阻断项并补充真实行为测试后，方可重新验收为 PASS。

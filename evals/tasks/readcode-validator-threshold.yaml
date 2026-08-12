@@ -1,5 +1,6 @@
 id: readcode-validator-threshold
 category: readcode
+effect: read
 prompt: |
   说明并解释：本仓库的 validation/validator.py 中，Validator 对执行结果按哪几个维度打分？
   每个维度的通过阈值是多少？ValidationResult 的 passed 字段是如何计算的？

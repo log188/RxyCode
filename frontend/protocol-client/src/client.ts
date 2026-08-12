@@ -43,6 +43,11 @@ export class ProtocolClient {
   onServerRequest?: ServerRequestHandler;
   onNotification?: NotificationHandler;
 
+  /** Read-only diagnostics; never exposes prompts, params, ids, or secrets. */
+  get pendingRequestCount(): number {
+    return this.pending.size;
+  }
+
   constructor(writeLine: (line: string) => void) {
     this.writeLine = writeLine;
   }

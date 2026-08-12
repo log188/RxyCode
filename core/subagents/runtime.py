@@ -21,6 +21,7 @@ Hard constraints:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -43,6 +44,7 @@ except ImportError:
     from ..session_runtime import bind_session, reset_session_binding
     from ..utils.streaming import token_stats
 from .sessions import ChildSession
+from .workspace import LeaseManager, WorkspaceValidator
 
 
 # ============================================================================
@@ -133,6 +135,8 @@ class ChildCancelledError(Exception):
 from .budget import (
     BudgetError,
     BudgetGuard,
+    TimeLimitExceeded,
+    terminate_for_budget_error,
 )
 
 # Backward-compatible alias: B5 exposed BudgetExceededError; budget.py's
@@ -250,6 +254,8 @@ class AgentRuntime:
 
     definition: AgentDefinition
     session: ChildSession
+    lease_manager: LeaseManager | None = field(default=None, repr=False)
+    workspace_root: Path | None = field(default=None, repr=False)
 
     # Isolated namespaces
     namespace: NamespaceIsolator = field(init=False)
@@ -350,7 +356,18 @@ class ChildRuntime:
         category = "edit" if name in {"write", "edit", "patch", "open_file"} else name
         decision = policy.evaluate(category, value)
         self.audit.permission_decision(name, decision.kind.value, decision.matched_rule)
-        return decision.kind == DecisionKind.ALLOW
+        if decision.kind != DecisionKind.ALLOW:
+            return False
+
+        validator = WorkspaceValidator(
+            self._runtime.session.policy.workspace,
+            root=self._runtime.workspace_root,
+        )
+        if category == "edit":
+            validator.check_edit(self.session_id, value, self._runtime.lease_manager)
+        elif name == "bash":
+            validator.check_bash(self.session_id, value)
+        return True
 
     # -- read-only accessors --------------------------------------------------
 
@@ -392,7 +409,10 @@ class ChildRuntime:
         """Run the child through a fresh AgentV2 under child policy/context."""
         self._runtime.cancel_token.throw_if_cancelled()
         started = __import__("time").monotonic()
-        token_start = (token_stats.input_tokens, token_stats.output_tokens)
+        usage_scope_token, scoped_usage = token_stats.begin_usage_scope()
+        input_tokens = 0
+        output_tokens = 0
+        cache_hit_tokens = 0
         try:
             self._runtime.budget.consume_step()
             self.audit.record("execute", prompt=task_prompt)
@@ -415,13 +435,44 @@ class ChildRuntime:
 
             binding = bind_session(self.session_id)
             try:
-                answer = await agent.run(task_prompt, mode="build")
+                wall_limit = self._runtime.budget.budget.max_wall_time_seconds
+                role_prompt = (self.definition.prompt or self.definition.description).strip()
+                execution_prompt = (
+                    "/fast\n"
+                    f"Child role and constraints:\n{role_prompt}\n\n"
+                    f"Task:\n{task_prompt}"
+                )
+                if wall_limit > 0:
+                    try:
+                        answer = await __import__("asyncio").wait_for(
+                            agent.run(
+                                execution_prompt,
+                                mode="build",
+                                effect="search" if self._runtime.is_read_only else "write",
+                            ),
+                            timeout=wall_limit,
+                        )
+                    except __import__("asyncio").TimeoutError as exc:
+                        raise TimeLimitExceeded(
+                            f"Wall-clock limit exceeded: {wall_limit}s/{wall_limit}s",
+                            code=TimeLimitExceeded.CODE,
+                        ) from exc
+                else:
+                    answer = await agent.run(
+                        execution_prompt,
+                        mode="build",
+                        effect="search" if self._runtime.is_read_only else "write",
+                    )
             finally:
                 reset_session_binding(binding)
 
             self._runtime.cancel_token.throw_if_cancelled()
-            input_tokens = max(0, token_stats.input_tokens - token_start[0])
-            output_tokens = max(0, token_stats.output_tokens - token_start[1])
+            input_tokens = max(0, scoped_usage["input_tokens"])
+            output_tokens = max(0, scoped_usage["output_tokens"])
+            cache_hit_tokens = max(0, scoped_usage["cache_hit_tokens"])
+            reported = bool(input_tokens or output_tokens or cache_hit_tokens)
+            self._runtime.budget.consume_tokens(input_tokens + output_tokens)
+            self._runtime.budget.check_wall_clock()
             wall_time_ms = int((__import__("time").monotonic() - started) * 1000)
             evidence = list(getattr(agent, "_last_evidence", []) or [])
             tool_calls = []
@@ -455,11 +506,32 @@ class ChildRuntime:
                 summary=str(answer),
                 usage=UsageRecord(
                     steps=self._runtime.budget.steps_used,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
+                    input_tokens=input_tokens if reported else None,
+                    output_tokens=output_tokens if reported else None,
+                    cache_hit_tokens=cache_hit_tokens if reported else None,
                     wall_time_ms=wall_time_ms,
+                    reporting_status="reported" if reported else "not_reported",
                 ),
                 telemetry=telemetry,
+            )
+        except BudgetError as exc:
+            status = ChildStatus(terminate_for_budget_error(exc))
+            self.audit.terminal(status.value, exc.code)
+            return TaskResult(
+                request_id="", child_session_id=self.session_id,
+                status=status, summary=str(exc),
+                error=ErrorRecord(code=exc.code, message=str(exc)),
+                usage=UsageRecord(
+                    steps=self._runtime.budget.steps_used,
+                    input_tokens=(max(0, scoped_usage["input_tokens"])
+                                  if any(scoped_usage.values()) else None),
+                    output_tokens=(max(0, scoped_usage["output_tokens"])
+                                   if any(scoped_usage.values()) else None),
+                    cache_hit_tokens=(max(0, scoped_usage["cache_hit_tokens"])
+                                      if any(scoped_usage.values()) else None),
+                    wall_time_ms=self._runtime.budget.elapsed_wall_ms,
+                    reporting_status="reported" if any(scoped_usage.values()) else "not_reported",
+                ),
             )
         except ChildCancelledError:
             self.audit.terminal("cancelled")
@@ -485,6 +557,7 @@ class ChildRuntime:
             )
         finally:
             self._active_agent = None
+            token_stats.end_usage_scope(usage_scope_token)
 
     def shutdown(self) -> None:
         """Cancel active child execution and release child-local state."""
@@ -503,18 +576,33 @@ class ChildRuntime:
 # Factory
 # ============================================================================
 
-def create_runtime(definition: AgentDefinition, session: ChildSession) -> AgentRuntime:
+def create_runtime(
+    definition: AgentDefinition,
+    session: ChildSession,
+    lease_manager: LeaseManager | None = None,
+    workspace_root: Path | None = None,
+) -> AgentRuntime:
     """Create an isolated AgentRuntime for a child session.
 
     This is the single factory function. Phase C must use this or the
     ChildRuntime facade — it must NOT construct AgentRuntime directly.
     """
-    return AgentRuntime(definition=definition, session=session)
+    return AgentRuntime(
+        definition=definition,
+        session=session,
+        lease_manager=lease_manager,
+        workspace_root=workspace_root,
+    )
 
 
-def create_child_runtime(definition: AgentDefinition, session: ChildSession) -> ChildRuntime:
+def create_child_runtime(
+    definition: AgentDefinition,
+    session: ChildSession,
+    lease_manager: LeaseManager | None = None,
+    workspace_root: Path | None = None,
+) -> ChildRuntime:
     """Create a ChildRuntime facade for a child session."""
-    runtime = create_runtime(definition, session)
+    runtime = create_runtime(definition, session, lease_manager, workspace_root)
     child = ChildRuntime(runtime)
     session._cancel_callback = child.cancel
     return child

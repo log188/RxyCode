@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -408,7 +408,12 @@ async def test_client_disconnect_cancels_agent_and_records_terminal_status(
 
         snapshot = run_monitor.snapshot()
         assert api_server._state["busy"] is False
-        assert not api_server._chat_lock.locked()
+        # C4: the global _chat_lock is gone; the equivalent guarantee is that the
+        # session slot is released (no global quota held, no active session).
+        slots = api_server._api_session_slots
+        assert slots is not None, 'slots must be initialized by the request'
+        assert not slots._global.locked()
+        assert not any(v > 0 for v in slots._active.values())
         assert broker._sink is original_sink
         assert get_tui() is previous_tui
         assert snapshot["status_counts"]["cancelled"] == 1
@@ -459,7 +464,12 @@ async def test_agent_exception_restores_stream_process_state(isolated_runtime):
         assert [event["type"] for event in events] == ["error", "done"]
         assert events[-1]["status"] == "failed"
         assert api_server._state["busy"] is False
-        assert not api_server._chat_lock.locked()
+        # C4: the global _chat_lock is gone; the equivalent guarantee is that the
+        # session slot is released (no global quota held, no active session).
+        slots = api_server._api_session_slots
+        assert slots is not None, 'slots must be initialized by the request'
+        assert not slots._global.locked()
+        assert not any(v > 0 for v in slots._active.values())
         assert broker._sink is original_sink
         assert get_tui() is previous_tui
     finally:

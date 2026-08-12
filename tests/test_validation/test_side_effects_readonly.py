@@ -29,6 +29,69 @@ def test_read_only_search_summarize_task_is_not_side_effecting():
     ) is False
 
 
+def test_explicit_read_only_tool_sequence_is_not_a_side_effect_request():
+    """Desktop may ask the model to execute inspection tools without writing."""
+    title = (
+        "Execute exactly these read-only tools: glob for appserver/runtime.py; "
+        "grep for install_tui_context_hook; then read lines 1-45. "
+        "Do not call bash, cd, ls, write, shell, web, or any other tool."
+    )
+    assert task_requires_side_effect_evidence(
+        title=title, result="", effect="auto"
+    ) is False
+
+
+def test_fast_directive_does_not_hide_an_anchored_read_only_review():
+    assert task_requires_side_effect_evidence(
+        title=(
+            "/fast Review this read-only module. Use glob, grep and read only; "
+            "do not call bash, write, shell or web. Return evidence and risks."
+        ),
+        result="",
+        effect="auto",
+    ) is False
+
+
+def test_negated_write_tool_constraint_does_not_make_a_skill_review_mutating():
+    assert task_requires_side_effect_evidence(
+        title=(
+            "/fast Use the installed skill tool with name=tdd, then read a test file. "
+            "Do not call bash, write, shell or web."
+        ),
+        result="",
+        effect="auto",
+    ) is False
+
+
+def test_skill_invocation_does_not_hide_a_following_write_request():
+    assert task_requires_side_effect_evidence(
+        title="Use the installed skill tool with name=tdd, then write a test file.",
+        result="",
+        effect="auto",
+    ) is True
+
+
+def test_read_only_tool_plan_does_not_hide_a_following_write_request():
+    assert task_requires_side_effect_evidence(
+        title="Execute exactly these read-only tools: glob then read a file. Then write a file report.md.",
+        result="",
+        effect="auto",
+    ) is True
+
+
+def test_read_only_tool_plan_with_release_response_contract_is_not_mutating():
+    assert task_requires_side_effect_evidence(
+        title=(
+            "Execute exactly these read-only tools, in this order: glob for appserver/runtime.py; "
+            "grep for install_tui_context_hook; then read lines 1-45. "
+            "Do not call bash, write, shell or web. Act as a release engineer and "
+            "return component, evidence, and delivery risk."
+        ),
+        result="",
+        effect="auto",
+    ) is False
+
+
 def test_declared_search_effect_is_exempt():
     """显式声明 effect=search（_NON_SIDE_EFFECT_EFFECTS）直接豁免。"""
     assert task_requires_side_effect_evidence(

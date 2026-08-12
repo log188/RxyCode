@@ -1,0 +1,27 @@
+## 复审结论：PASS
+
+### 判据 1–6
+
+| 判据 | 结论 | 依据 |
+|---|---|---|
+| 1. 前缀不变性 | PASS | 字节级前缀测试通过；system、历史消息、tools 保持稳定 |
+| 2. research_contract 不改写 messages[0] | PASS | 改为独立 `SystemMessage` 追加，原 system 保持不变 |
+| 3. prompt_cache_key provider 隔离 | PASS | OpenAI 注入 `session_id`；DeepSeek、Anthropic 不注入；错误 override 也被隔离 |
+| 4. 工具列表顺序稳定 | PASS | Registry、描述列表及 Agent full/subset 分支均按名称排序 |
+| 5. evals 基线无回归 | PASS | GATE PASS：94.7% ≥ 89.5%，18/19，零回归 |
+| 6. 命中率不低于 B1 | PASS | 91.44% ≥ 91.22% |
+
+### CB1–CB8
+
+- CB1：PASS，research 不再覆盖 system 前缀。
+- CB2：PASS，subset/full 工具输出均稳定排序。
+- CB3：PASS，缓存键仅限 `provider == "openai"` 且能力显式要求时注入。
+- CB4–CB6：PASS，相关测试、ruff、全套件均通过。
+- CB7：PASS，research contract 作为独立消息追加。
+- CB8：PASS，默认能力不注入缓存键；非 OpenAI override 亦不注入。
+
+### 前五轮阻断项
+
+R5 的 DeepSeek/Anthropic 测试已显式设置 provider，并完成真实 `_raw_stream` payload 捕获断言，确认阻断项已修复。
+
+**最终：PASS，无阻断项。**

@@ -17,9 +17,7 @@ class TestWriteFile:
         from RxyCode.RxyCode1_1_0.core.session_runtime import resolve_write_path
         return resolve_write_path(filePath)
 
-    def test_write_new_relative_file_uses_dated_output(self, tmp_path, monkeypatch):
-        from datetime import datetime
-
+    def test_write_new_relative_file_uses_current_workspace(self, tmp_path, monkeypatch):
         data_dir = tmp_path / "data"
         workspace = tmp_path / "workspace"
         workspace.mkdir()
@@ -28,10 +26,51 @@ class TestWriteFile:
 
         result = self._write("new.txt", "hello world")
 
-        generated = data_dir / "output" / datetime.now().strftime("%Y-%m-%d") / "new.txt"
+        generated = workspace / "new.txt"
         assert generated.read_text(encoding="utf-8") == "hello world"
-        assert not (workspace / "new.txt").exists()
+        assert not list((data_dir / "output").glob("**/new.txt"))
         assert str(generated) in result
+
+    def test_write_new_relative_file_uses_explicit_session_workspace(self, tmp_path, monkeypatch):
+        from RxyCode.RxyCode1_1_0.core.session_runtime import (
+            bind_session,
+            reset_session_binding,
+            set_working_directory,
+        )
+
+        data_dir = tmp_path / "data"
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("RXYCODE_DATA_DIR", str(data_dir))
+        token = bind_session("desktop-workspace-write")
+        try:
+            set_working_directory(workspace)
+            result = self._write("src/new.txt", "desktop workspace")
+            target = workspace / "src" / "new.txt"
+            assert target.read_text(encoding="utf-8") == "desktop workspace"
+            assert str(target) in result
+            assert not list((data_dir / "output").glob("**/new.txt"))
+        finally:
+            reset_session_binding(token)
+
+    def test_relative_write_does_not_reuse_a_same_named_historical_output(
+        self, tmp_path, monkeypatch
+    ):
+        from datetime import datetime
+
+        data_dir = tmp_path / "data"
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        historical = data_dir / "output" / "2020-01-01" / "cache.py"
+        historical.parent.mkdir(parents=True)
+        historical.write_text("old output", encoding="utf-8")
+        monkeypatch.setenv("RXYCODE_DATA_DIR", str(data_dir))
+        monkeypatch.chdir(workspace)
+
+        self._write("cache.py", "new workspace")
+
+        assert (workspace / "cache.py").read_text(encoding="utf-8") == "new workspace"
+        assert historical.read_text(encoding="utf-8") == "old output"
 
     def test_write_overwrite_existing(self, tmp_path):
         f = tmp_path / "existing.txt"

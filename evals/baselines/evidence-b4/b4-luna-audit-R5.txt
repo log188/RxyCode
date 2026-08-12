@@ -1,0 +1,37 @@
+结论：**FAIL**
+
+阻断项：
+
+1. **违反“system 永不裁剪”**
+   ```python
+   body = [
+       m for m in body
+       if not (
+           getattr(m, "type", None) == "system"
+           and "Objective" in (getattr(m, "content", "") or "")
+       )
+   ]
+   ```
+   任何非首位 `system` 消息只要正文包含 `"Objective"` 就会被删除，即使它是合法的系统指令，而非摘要。这违反判据 3、CB2/CB4，并可能破坏缓存前缀及系统约束。
+
+   应使用明确的摘要标记/metadata（例如 `additional_kwargs["is_compaction_summary"] = True`），不能通过正文子串识别。
+
+2. **“最多一个摘要”并非全路径成立**
+   当 `fold_msgs` 为空时直接：
+   ```python
+   return list(messages)
+   ```
+   此时已有多个摘要不会被去重。预算循环场景当前测试通过，但整体函数契约仍不保证单摘要不变量。
+
+复核结果：
+
+- 判据 1：基本通过，但受 system 删除风险影响
+- 判据 2：通过
+- 判据 3：**失败**
+- 判据 4：通过
+- 判据 5：通过
+- 判据 6：预算循环重复摘要测试通过，但存在上述边界缺陷
+- CB1、CB3、CB5-CB8：现有证据基本支持
+- CB2/CB4：因误删合法 system 消息，不能判定通过
+
+因此本轮不能 PASS。

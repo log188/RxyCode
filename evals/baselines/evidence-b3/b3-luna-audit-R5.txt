@@ -1,0 +1,84 @@
+# 复审结论：FAIL
+
+前四轮列出的 3 个阻断项对应测试已通过，但本轮仍发现新的阻断问题。
+
+## 判据核对
+
+| 判据 | 结论 |
+|---|---|
+| 1. 断点预算与分配序 | PASS |
+| 2. TTL 5m/1h 配置与注入 | PASS |
+| 3. Provider 分派及 CB3 | **FAIL** |
+| 4. 末条 user 断点 | PASS |
+| 5. tool pair 完整性 | **FAIL** |
+| 6. DeepSeek 自动前缀验证 | PASS |
+
+## 阻断项
+
+### 1. CB3 仍可被 `_raw_stream` 绕过
+
+`AgentV2._raw_stream` 中工具断点注入仅检查：
+
+```python
+caps.provider == "anthropic"
+```
+
+没有检查实际 provider：
+
+```python
+self._provider.name == "anthropic"
+```
+
+因此当实际 provider 是 OpenAI、但 capabilities 被错误配置为 Anthropic 时，仍会执行：
+
+```python
+tool_def["cache_control"] = {"type": "ephemeral"}
+```
+
+这绕过了 `_apply_cache_control` 已修复的 OpenAI hard block，违反 CB3。
+
+此外，工具断点逻辑没有复用统一的 `apply_breakpoint_budget`，存在第二套 provider 判断与断点注入路径，违反“唯一入口”约束。
+
+**建议修复：**
+
+- 工具断点注入必须复用统一缓存策略；
+- 至少同时强制校验实际 provider；
+- 增加真实 `_raw_stream` 场景的 OpenAI 错误 capabilities 回归测试。
+
+### 2. `tool_pair_integrity` 仍不验证未消费的 tool call
+
+当前函数在 assistant 声明 tool call、但没有对应 tool result 时仍返回 `True`：
+
+```text
+ai(tool_calls=[c1, c2])
+tool(c1)
+=> True
+```
+
+函数结束时没有检查：
+
+```python
+expecting_cids
+```
+
+是否为空。
+
+这意味着不完整的 assistant/tool 配对仍可进入后续请求，和函数文档中的“配对完整”语义不符，也使“严格完整性校验”不完整。
+
+**建议修复：**
+
+- 遍历结束后若 `expecting_cids` 非空，返回 `False`；
+- 增加“assistant 声明但 tool result 缺失”的测试。
+
+## CB1-CB8
+
+- CB1：**FAIL**，工具断点存在独立注入路径。
+- CB2：PASS
+- CB3：**FAIL**，`_raw_stream` 可绕过 OpenAI hard block。
+- CB4：PASS
+- CB5：PASS
+- CB6：PASS
+- CB7：PASS
+- CB8：部分满足，但缺少 provider/capabilities 时仍保留旧的无条件 system 注入路径，建议补充边界测试。
+
+现有 31 个缓存测试、ruff、evals 结果不能覆盖上述两个漏洞，故不能据此判定通过。

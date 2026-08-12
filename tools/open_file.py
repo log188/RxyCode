@@ -210,7 +210,15 @@ def open_file(filePath: str) -> str:
 
 
 async def open_file_async(filePath: str) -> str:
-    """Open a file without leaving a blocking opener process after cancel."""
+    """Open a file without leaving a blocking opener process after cancel.
+
+    Windows uses ``os.startfile`` — fire-and-forget ShellExecute that returns
+    immediately; there is no tracked subprocess to terminate, so the
+    process-class timeout contract does not apply there.  On POSIX the opener
+    (open/xdg-open) runs through the controlled shell executor so a hung
+    opener process tree is terminated on timeout (C2).  Note: a GUI app that
+    the opener detaches and hands the document to is out of scope — the
+    executor only guarantees the opener process tree itself is cleaned up."""
     path, error = _validate_previewable_file(filePath)
     if error is not None:
         return error

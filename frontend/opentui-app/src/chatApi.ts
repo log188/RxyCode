@@ -38,4 +38,16 @@ export async function invokeSubagent(agentId: string, prompt: string) {
   return getChatTransport().invokeSubagent(agentId, prompt);
 }
 
+export async function listChildSessions() {
+  return getChatTransport().listChildSessions();
+}
+
+export async function openChildSession(target: string) {
+  return getChatTransport().openChildSession(target);
+}
+
+export async function openParentSession() {
+  return getChatTransport().openParentSession();
+}
+
 export type { ApprovalInfo };

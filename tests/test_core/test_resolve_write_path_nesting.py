@@ -60,6 +60,6 @@ def test_resolve_write_path_bare_name(tmp_path, monkeypatch):
             lambda: dated,
         )
         resolved = resolve_write_path("parkour_game.html")
-        assert resolved == (dated / "parkour_game.html").resolve()
+        assert resolved == (workspace / "parkour_game.html").resolve()
     finally:
         reset_session_binding(token)

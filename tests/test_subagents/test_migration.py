@@ -31,7 +31,16 @@ class TestBuiltinAgents:
     def test_builtin_agents_load(self):
         reg = load_builtin_agents()
         ids = {a.id for a in reg.list_all()}
-        assert {"explore", "general", "reviewer", "scout"} <= ids
+        assert {"primary", "explore", "general", "reviewer", "scout"} <= ids
+
+    def test_primary_explicitly_allows_only_builtin_task_targets(self):
+        primary = load_builtin_agents().get("primary")
+        assert primary is not None
+        assert primary.mode == AgentMode.PRIMARY
+        assert primary.hidden is True
+        for agent_id in ("explore", "general", "reviewer", "scout"):
+            assert primary.task_permission.allows(agent_id) is True
+        assert primary.task_permission.allows("untrusted") is False
 
     def test_builtin_agents_are_builtin(self):
         reg = load_builtin_agents()
@@ -216,6 +225,25 @@ class TestRegistrationSwitching:
         # Both are "task" but only one is registered per mode (asserted in
         # the register_builtin_tools implementation via subagents_enabled).
         assert btr.register_builtin_tools is not None
+
+    def test_isolated_task_dispatch_is_read_but_legacy_task_stays_write(self):
+        from RxyCode.RxyCode1_1_0.core.builtin_tool_registration import register_builtin_tools
+        from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel, classify_tool_risk
+        from RxyCode.RxyCode1_1_0.tools.registry import ToolRegistry
+
+        class Orchestrator:
+            def register(self, _name, _tool):
+                pass
+
+        isolated = ToolRegistry()
+        register_builtin_tools(isolated, Orchestrator(), rag_enabled=False, subagents_enabled=True)
+        assert isolated.get_risk("task") == "read"
+        assert classify_tool_risk("task", {}) == RiskLevel.READ
+
+        legacy = ToolRegistry()
+        register_builtin_tools(legacy, Orchestrator(), rag_enabled=False, subagents_enabled=False)
+        assert legacy.get_risk("task") == "write"
+        assert classify_tool_risk("task", {}) == RiskLevel.WRITE
 
     def test_subagent_tool_thin_adapter(self):
         """subagent_task_tool must not create AgentV2 or splice history."""

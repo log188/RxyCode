@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "note": "模型能力目录（Phase 3）。数字来自 Phase A §7 调研/审计（core/providers/*.py 的 ModelCapabilities 值），带 source_url + as_of。未找到官方精确值时保留 null，由 unknown_fallback 处理。",
+  "note": "模型能力目录（Phase 3）。数字来自 Phase A §7 调研/审计（core/providers/*.py 的 ModelCapabilities 值），带 source_url + as_of。未找到官方精确值时保留 null，由 unknown_fallback 处理。 B9: 每条 record 追加 cache_contract（per-model 缓存契约：模式/折扣/TTL/断点/usage 路径/reasoning/thinking）。",
   "records": [
     {
       "provider_id": "deepseek",
@@ -9,7 +9,29 @@
       "model_max_output_tokens": null,
       "source": "phase-a:deepseek",
       "source_url": "https://api-docs.deepseek.com/guides/thinking_mode",
-      "as_of": "2026-08-02"
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.02,
+        "cache_ttl_hours": 24,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "mandatory_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: enabled}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
     },
     {
       "provider_id": "deepseek",
@@ -18,7 +40,29 @@
       "model_max_output_tokens": null,
       "source": "phase-a:deepseek",
       "source_url": "https://api-docs.deepseek.com/guides/thinking_mode",
-      "as_of": "2026-08-02"
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.008,
+        "cache_ttl_hours": 24,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "mandatory_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: enabled}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
     },
     {
       "provider_id": "openai",
@@ -27,10 +71,63 @@
       "model_max_output_tokens": 128000,
       "source": "phase-a:openai",
       "source_url": "https://platform.openai.com/docs/models",
-      "as_of": "2026-08-02"
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "cache_key",
+        "cache_hit_discount": 0.1,
+        "cache_ttl_hours": 24,
+        "min_cache_tokens": null,
+        "breakpoints_max": 4,
+        "breakpoint_lookback": 20,
+        "usage_fields": {
+          "cached": "cached_input_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "none",
+        "thinking_param": {
+          "type": "object",
+          "sample": "reasoning: {effort: medium}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": true
+      }
     },
     {
       "provider_id": "opencode-go",
+      "model_id": "gpt-5.6-luna",
+      "model_context_window": 1050000,
+      "model_max_output_tokens": 128000,
+      "source": "phase-a:openai",
+      "source_url": "https://platform.openai.com/docs/models",
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "cache_key",
+        "cache_hit_discount": 0.1,
+        "cache_ttl_hours": 24,
+        "min_cache_tokens": null,
+        "breakpoints_max": 4,
+        "breakpoint_lookback": 20,
+        "usage_fields": {
+          "cached": "cached_input_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "none",
+        "thinking_param": {
+          "type": "object",
+          "sample": "reasoning: {effort: medium}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": true
+      }
+    },
+    {
+      "provider_id": "zen",
       "model_id": "gpt-5.6-luna",
       "model_context_window": 1050000,
       "model_max_output_tokens": 128000,
@@ -45,7 +142,29 @@
       "model_max_output_tokens": 131072,
       "source": "phase-a:kimi",
       "source_url": "https://platform.kimi.com",
-      "as_of": "2026-08-02"
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "auto_and_key",
+        "cache_hit_discount": 0.1,
+        "cache_ttl_hours": 24,
+        "min_cache_tokens": 256,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "mandatory_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "reasoning_effort: {low|high|max}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": true
+      }
     },
     {
       "provider_id": "kimi",
@@ -54,7 +173,29 @@
       "model_max_output_tokens": null,
       "source": "phase-a:kimi",
       "source_url": "https://platform.kimi.com",
-      "as_of": "2026-08-02"
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "auto_and_key",
+        "cache_hit_discount": 0.2,
+        "cache_ttl_hours": 24,
+        "min_cache_tokens": 256,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "mandatory_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "reasoning_effort: {low|high|max}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": true
+      }
     },
     {
       "provider_id": "qwen",
@@ -63,7 +204,29 @@
       "model_max_output_tokens": 65536,
       "source": "phase-a:qwen",
       "source_url": "https://help.aliyun.com/zh/model-studio",
-      "as_of": "2026-08-02"
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "explicit_breakpoints",
+        "cache_hit_discount": 0.1,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": 1024,
+        "breakpoints_max": 4,
+        "breakpoint_lookback": 20,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "no_thinking",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: disabled}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
     },
     {
       "provider_id": "qwen",
@@ -72,7 +235,29 @@
       "model_max_output_tokens": null,
       "source": "phase-a:qwen-codex-metadata",
       "source_url": "https://help.aliyun.com/zh/model-studio/codex",
-      "as_of": "2026-08-02"
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "explicit_breakpoints",
+        "cache_hit_discount": 0.1,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": 1024,
+        "breakpoints_max": 4,
+        "breakpoint_lookback": 20,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "no_thinking",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: disabled}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
     },
     {
       "provider_id": "anthropic",
@@ -81,7 +266,29 @@
       "model_max_output_tokens": 128000,
       "source": "phase-a:anthropic",
       "source_url": "https://docs.anthropic.com/en/docs/about-claude/models",
-      "as_of": "2026-08-02"
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "explicit_breakpoints",
+        "cache_hit_discount": 0.1,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": 512,
+        "breakpoints_max": 4,
+        "breakpoint_lookback": 20,
+        "usage_fields": {
+          "cached": "cache_read_input_tokens",
+          "cache_read": null,
+          "cache_creation": "cache_creation_input_tokens",
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "thinking_blocks_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: enabled}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
     },
     {
       "provider_id": "anthropic",
@@ -90,7 +297,221 @@
       "model_max_output_tokens": 128000,
       "source": "phase-a:anthropic",
       "source_url": "https://docs.anthropic.com/en/docs/about-claude/models",
-      "as_of": "2026-08-02"
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "explicit_breakpoints",
+        "cache_hit_discount": 0.1,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": 1024,
+        "breakpoints_max": 4,
+        "breakpoint_lookback": 20,
+        "usage_fields": {
+          "cached": "cache_read_input_tokens",
+          "cache_read": null,
+          "cache_creation": "cache_creation_input_tokens",
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "thinking_blocks_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: enabled}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
+    },
+    {
+      "provider_id": "mimo",
+      "model_id": "mimo-v2.5-pro",
+      "model_context_window": 262144,
+      "model_max_output_tokens": null,
+      "source": "phase-a:mimo",
+      "source_url": "https://api.xiaomimimo.com",
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.008,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": "completion_tokens_details.reasoning_tokens"
+        },
+        "reasoning_contract": "mandatory_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: enabled|disabled}"
+        },
+        "temperature_override": {
+          "value": 1.0,
+          "top_p": 0.95
+        },
+        "prompt_cache_key_required": false
+      }
+    },
+    {
+      "provider_id": "mimo",
+      "model_id": "mimo-v2.5",
+      "model_context_window": 262144,
+      "model_max_output_tokens": null,
+      "source": "phase-a:mimo",
+      "source_url": "https://api.xiaomimimo.com",
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.02,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": "completion_tokens_details.reasoning_tokens"
+        },
+        "reasoning_contract": "mandatory_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: enabled|disabled}"
+        },
+        "temperature_override": {
+          "value": 1.0,
+          "top_p": 0.95
+        },
+        "prompt_cache_key_required": false
+      }
+    },
+    {
+      "provider_id": "minimax",
+      "model_id": "minimax-m3",
+      "model_context_window": 1048576,
+      "model_max_output_tokens": null,
+      "source": "phase-a:minimax",
+      "source_url": "https://api.minimax.io",
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.2,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": 512,
+        "breakpoints_max": 4,
+        "breakpoint_lookback": 20,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": "cache_read_input_tokens",
+          "cache_creation": "cache_creation_input_tokens",
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "thinking_blocks_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: enabled}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
+    },
+    {
+      "provider_id": "glm",
+      "model_id": "glm-5.2",
+      "model_context_window": 262144,
+      "model_max_output_tokens": null,
+      "source": "phase-a:glm",
+      "source_url": "https://open.bigmodel.cn",
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.5,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "mandatory_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: enabled|disabled}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
+    },
+    {
+      "provider_id": "grok",
+      "model_id": "grok-4.5",
+      "model_context_window": 262144,
+      "model_max_output_tokens": null,
+      "source": "phase-a:grok",
+      "source_url": "https://api.x.ai",
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.15,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "cached_prompt_text_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": "cost_in_usd_ticks",
+          "reasoning": "reasoning_tokens"
+        },
+        "reasoning_contract": "none",
+        "thinking_param": {
+          "type": "object",
+          "sample": "reasoning_effort: {LOW|MEDIUM|HIGH|NONE}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
+    },
+    {
+      "provider_id": "grok",
+      "model_id": "grok-build",
+      "model_context_window": 262144,
+      "model_max_output_tokens": null,
+      "source": "phase-a:grok",
+      "source_url": "https://api.x.ai",
+      "as_of": "2026-08-02",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.2,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "cached_prompt_text_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": "cost_in_usd_ticks",
+          "reasoning": "reasoning_tokens"
+        },
+        "reasoning_contract": "none",
+        "thinking_param": {
+          "type": "object",
+          "sample": "reasoning_effort: {LOW|MEDIUM|HIGH|NONE}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
     }
   ],
   "families": [
