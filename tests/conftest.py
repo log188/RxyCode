@@ -15,6 +15,42 @@ from pathlib import Path
 from string import Template
 from types import SimpleNamespace
 
+# ---------------------------------------------------------------------------
+# Checkout-local package binding (runs before ANY project import).
+#
+# The editable install maps ``RxyCode.RxyCode1_1_0`` to the main working tree
+# (``D:\\agent-demo\\RxyCode\\RxyCode1_1_0``), which can diverge from the
+# checkout under test (worktree/branch).  Bind the canonical package to THIS
+# checkout's root instead and drop the editable meta-path finder so every
+# nested import resolves here too.
+# ---------------------------------------------------------------------------
+if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
+    import types as _types
+
+    _checkout_root = Path(__file__).resolve().parent.parent
+    _editable_finder_types = ("_EditableFinder",)
+    sys.meta_path = [
+        finder
+        for finder in sys.meta_path
+        if type(finder).__name__ not in _editable_finder_types
+    ]
+    if "RxyCode" not in sys.modules:
+        _parent_mod = _types.ModuleType("RxyCode")
+        sys.modules["RxyCode"] = _parent_mod
+    _canonical = sys.modules.get("RxyCode.RxyCode1_1_0")
+    if _canonical is None:
+        _canonical = _types.ModuleType("RxyCode.RxyCode1_1_0")
+        sys.modules["RxyCode.RxyCode1_1_0"] = _canonical
+    setattr(sys.modules["RxyCode"], "RxyCode1_1_0", _canonical)
+    _canonical.__file__ = str(_checkout_root / "__init__.py")
+    _canonical.__path__ = [str(_checkout_root)]
+    _canonical.__package__ = "RxyCode.RxyCode1_1_0"
+    _canonical_init = _checkout_root / "__init__.py"
+    if _canonical_init.exists():
+        _canonical_source = _canonical_init.read_text(encoding="utf-8-sig")
+        exec(compile(_canonical_source, str(_canonical_init), "exec"), _canonical.__dict__)  # noqa: S102
+    os.environ["_RXYCODE_TEST_CHECKOUT"] = str(_checkout_root)
+
 import pytest
 from langchain_core.messages import AIMessage
 
