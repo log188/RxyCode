@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import uuid
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Any
 
@@ -81,6 +82,28 @@ _live_tool_dedup: ContextVar[dict[str, str] | None] = ContextVar(
     "live_tool_dedup",
     default=None,
 )
+_permission_mode_override: ContextVar[str | None] = ContextVar(
+    "request_permission_mode",
+    default=None,
+)
+
+
+@contextmanager
+def permission_mode_override(mode: str | None):
+    """Apply a safety mode to one request without mutating global config.
+
+    Desktop prompts can run concurrently.  A process-wide config mutation here
+    would let one window silently widen another window's permissions, so the
+    override is carried by the current async task instead.
+    """
+    normalized = str(mode or "").strip().lower() or None
+    if normalized not in {None, "confirm_all", "auto_edit", "full_auto"}:
+        raise ValueError(f"unsupported permission mode: {mode!r}")
+    token = _permission_mode_override.set(normalized)
+    try:
+        yield
+    finally:
+        _permission_mode_override.reset(token)
 
 
 def _canonical_tool_args(args: Any) -> str:
@@ -1056,7 +1079,9 @@ class ToolOrchestrator:
         if risk >= RiskLevel.WRITE:
             auto_levels = {str(x).lower() for x in (safety.get("auto_approve") or [])}
             permission_mode = str(
-                safety.get("permission_mode") or "confirm_all"
+                _permission_mode_override.get()
+                or safety.get("permission_mode")
+                or "confirm_all"
             ).strip().lower()
             # File-edit tools that auto_edit may skip; shell/system stay gated.
             _AUTO_EDIT_TOOLS = {

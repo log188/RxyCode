@@ -19,8 +19,13 @@ import {
   type WorkspaceSettings
 } from './lib/workspaceSettings.mts'
 import { usePlatform } from '../../platform/index.mts'
-
-type ThemePreference = 'system' | 'light' | 'dark'
+import {
+  loadDesktopPreferences,
+  saveDesktopPreferences,
+  type DesktopLanguage,
+  type PermissionMode,
+  type ThemePreference
+} from './lib/desktopPreferences.mts'
 
 const EMPTY_USAGE = {
   inputTokens: null,
@@ -31,11 +36,6 @@ const EMPTY_USAGE = {
   reportingStatus: 'not_reported' as const
 }
 
-function loadTheme(): ThemePreference {
-  const stored = window.localStorage.getItem('rxycode.desktop.theme')
-  return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system'
-}
-
 function App(): React.JSX.Element {
   const { platform, info, status } = usePlatform()
   const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettings>(() =>
@@ -44,7 +44,9 @@ function App(): React.JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [pickingWorkspace, setPickingWorkspace] = useState(false)
   const [rulesOpen, setRulesOpen] = useState(false)
-  const [theme, setTheme] = useState<ThemePreference>(loadTheme)
+  const [preferences, setPreferences] = useState(() => loadDesktopPreferences(window.localStorage))
+  const { theme, permissionMode, language } = preferences
+  const [pendingFullAuto, setPendingFullAuto] = useState(false)
   const [navOpen, setNavOpen] = useState(false)
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const [inspectorItem, setInspectorItem] = useState<TimelineItem | null>(null)
@@ -72,8 +74,24 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
-    window.localStorage.setItem('rxycode.desktop.theme', theme)
-  }, [theme])
+    saveDesktopPreferences(preferences, window.localStorage)
+  }, [preferences, theme])
+
+  const setTheme = (next: ThemePreference): void => {
+    setPreferences((current) => ({ ...current, theme: next }))
+  }
+
+  const setLanguage = (next: DesktopLanguage): void => {
+    setPreferences((current) => ({ ...current, language: next }))
+  }
+
+  const requestPermissionModeChange = (next: PermissionMode): void => {
+    if (next === 'full_auto' && permissionMode !== 'full_auto') {
+      setPendingFullAuto(true)
+      return
+    }
+    setPreferences((current) => ({ ...current, permissionMode: next }))
+  }
 
   const pickWorkspace = async (): Promise<void> => {
     setPickingWorkspace(true)
@@ -124,19 +142,6 @@ function App(): React.JSX.Element {
             <Activity aria-hidden="true" size={14} />
             {status}
           </span>
-          <div className="theme-picker" aria-label="Color theme">
-            {(['system', 'light', 'dark'] as ThemePreference[]).map((mode) => (
-              <button
-                type="button"
-                key={mode}
-                className={theme === mode ? 'active' : ''}
-                aria-pressed={theme === mode}
-                onClick={() => setTheme(mode)}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
           <button
             type="button"
             className="icon-button rules-button"
@@ -227,7 +232,7 @@ function App(): React.JSX.Element {
           <Composer
             disabled={status !== 'running' || activeSessionId === null}
             running={running}
-            onSend={(text) => void conversation.sendMessage(text)}
+            onSend={(text) => void conversation.sendMessage(text, permissionMode)}
             onStop={() => void conversation.interrupt()}
             models={models.snapshot?.models ?? []}
             selectedModelId={selectedTaskModel}
@@ -237,7 +242,8 @@ function App(): React.JSX.Element {
                 void conversation.setSessionModel(activeSessionId, modelId, selected?.provider_id ?? null)
               }
             }}
-            onOpenModelSettings={() => setSettingsOpen(true)}
+            permissionMode={permissionMode}
+            onRequestPermissionModeChange={requestPermissionModeChange}
           />
         </main>
 
@@ -310,7 +316,28 @@ function App(): React.JSX.Element {
             setSettingsOpen(false)
           }}
           models={models}
+          permissionMode={permissionMode}
+          onPermissionModeChange={requestPermissionModeChange}
+          theme={theme}
+          onThemeChange={setTheme}
+          language={language}
+          onLanguageChange={setLanguage}
         />
+      )}
+      {pendingFullAuto && (
+        <div className="confirm-overlay" role="presentation">
+          <div className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="full-auto-title">
+            <h2 id="full-auto-title">Enable Full access?</h2>
+            <p>This task may run write and command tools without asking each time. You can switch back from the composer.</p>
+            <div className="confirm-actions">
+              <button type="button" onClick={() => setPendingFullAuto(false)}>Cancel</button>
+              <button type="button" className="danger-action" onClick={() => {
+                setPreferences((current) => ({ ...current, permissionMode: 'full_auto' }))
+                setPendingFullAuto(false)
+              }}>Enable Full access</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

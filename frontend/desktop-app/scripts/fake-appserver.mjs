@@ -447,11 +447,11 @@ async function runApprovalPrompt(requestId, sessionId, text) {
     method: 'event/done',
     session_id: sessionId,
     run_id: runId,
-    status: 'succeeded'
+    status: approved ? 'succeeded' : 'failed'
   })
   respond(requestId, {
     run_id: runId,
-    status: 'succeeded',
+    status: approved ? 'succeeded' : 'failed',
     text: approved ? '写入完成。' : '操作已被拒绝。'
   })
 }

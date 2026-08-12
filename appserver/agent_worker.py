@@ -445,6 +445,7 @@ class AgentWorker:
                 prompt_kwargs = {
                     "mode": str(params.get("mode", "build")),
                     "run_id": run_id,
+                    "permission_mode": params.get("permission_mode"),
                 }
                 # Keep the worker compatible with lightweight Session doubles
                 # and older integrations while passing the request-local TUI
@@ -459,6 +460,12 @@ class AgentWorker:
                     accepts_tui = True
                 if accepts_tui:
                     prompt_kwargs["tui"] = tui
+                accepts_permission_mode = "permission_mode" in prompt_signature.parameters or any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in prompt_signature.parameters.values()
+                )
+                if not accepts_permission_mode:
+                    prompt_kwargs.pop("permission_mode", None)
                 result = await session.prompt(self._agent, text, **prompt_kwargs)
             except asyncio.CancelledError:
                 # Interrupt RPC cancelled this prompt task (C1): report the

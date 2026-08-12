@@ -124,6 +124,7 @@ class Session:
         mode: str,
         run_id: str,
         tui: Any | None = None,
+        permission_mode: str | None = None,
     ) -> PromptResult:
         """Run one user turn through AgentV2 and emit terminal protocol events."""
         previous_input = token_stats.input_tokens
@@ -132,7 +133,13 @@ class Session:
         cursor = thinking_cursor(agent)
 
         try:
-            answer = await agent.run(text, mode=mode)
+            if permission_mode is None:
+                answer = await agent.run(text, mode=mode)
+            else:
+                from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import permission_mode_override
+
+                with permission_mode_override(permission_mode):
+                    answer = await agent.run(text, mode=mode)
         except Exception as exc:
             detail = str(exc)
             if tui is not None and hasattr(tui, "exhaust_active_recovery"):

@@ -273,11 +273,26 @@ export class DesktopCdpHarness {
 
   async typePrompt(text: string): Promise<void> {
     await this.evaluate(`(() => {
-      const element = document.querySelector('.composer textarea');
+      const element = document.querySelector('[data-testid="composer-input"]');
       if (!(element instanceof HTMLTextAreaElement)) throw new Error('composer textarea missing');
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
       setter.call(element, ${JSON.stringify(text)});
       element.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`)
+  }
+
+  async pressKey(key: string, options: { shiftKey?: boolean } = {}): Promise<void> {
+    await this.evaluate(`(() => {
+      const element = document.querySelector('[data-testid="composer-input"]');
+      if (!(element instanceof HTMLTextAreaElement)) throw new Error('composer input missing');
+      element.focus();
+      element.dispatchEvent(new KeyboardEvent('keydown', {
+        key: ${JSON.stringify(key)},
+        code: ${JSON.stringify(key)},
+        bubbles: true,
+        cancelable: true,
+        shiftKey: ${Boolean(options.shiftKey)}
+      }));
     })()`)
   }
 
