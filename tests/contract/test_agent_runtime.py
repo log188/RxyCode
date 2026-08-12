@@ -9,7 +9,7 @@ Coverage per PHASE-E §5 E3 + §8.1 matrix:
 - cache_namespace: validated, enters the application cache key, None keeps
   the single-agent key byte-identical, different namespaces never cross
 - model lifecycle: opaque passthrough, never read/compared/injected,
-  absent from AgentEvent, resolved_model read-only
+  absent from BusEvent, resolved_model read-only
 - golden serialization: old/new AgentConfig byte-identical with
   exclude_none=True (field-level filtering for new fields only)
 """
@@ -30,7 +30,7 @@ from appserver.agent_runtime import (
     validate_cache_namespace,
 )
 from appserver.agent_task import LifecycleState
-from appserver.eventbus import AgentEvent, AppendOnlyLog, EventBus
+from appserver.eventbus import BusEvent, AppendOnlyLog, EventBus
 
 
 def _bus() -> EventBus:
@@ -48,10 +48,10 @@ def _ok_run(cfg):
 
 async def _drain_events(
     bus: EventBus, count: int, timeout: float = 2.0, sub=None
-) -> list[AgentEvent]:
+) -> list[BusEvent]:
     if sub is None:
         sub = await bus.subscribe("test", "event/*")
-    got: list[AgentEvent] = []
+    got: list[BusEvent] = []
     for _ in range(count):
         try:
             got.append(await asyncio.wait_for(sub.queue.get(), timeout=timeout))
@@ -212,7 +212,7 @@ async def test_two_agents_run_in_parallel_without_blocking():
             concurrent["n"] -= 1
         return "ok"
 
-    rt = AgentRuntime(bus, run_factory=lambda cfg: slow_run)
+    rt = AgentRuntime(bus, run_factory=lambda cfg: slow_run, parallel_limit=2)
     await rt.spawn(AgentConfig(agent_id="A", tools=()))
     await rt.spawn(AgentConfig(agent_id="B", tools=()))
 
@@ -275,7 +275,7 @@ async def test_per_agent_quota_limits_concurrent_tool_slots():
 
 @pytest.mark.asyncio
 async def test_global_tool_slots_cap_concurrency():
-    rt = AgentRuntime(_bus(), total_tool_slots=2, run_factory=_ok_run)
+    rt = AgentRuntime(_bus(), total_tool_slots=2, run_factory=_ok_run, parallel_limit=2)
     await rt.spawn(AgentConfig(agent_id="A", tools=(), quota=4))
     await rt.spawn(AgentConfig(agent_id="B", tools=(), quota=4))
 
