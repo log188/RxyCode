@@ -159,6 +159,9 @@ function App(): React.JSX.Element {
   }, [navOpen])
 
   const handleCreate = async (): Promise<void> => {
+    // Navigation is independent from the session/new RPC. Close the drawer
+    // immediately so a slow server warm cannot make the click look stuck.
+    setNavOpen(false)
     showToast('正在创建任务…')
     const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
     const created = await conversation.createSession({

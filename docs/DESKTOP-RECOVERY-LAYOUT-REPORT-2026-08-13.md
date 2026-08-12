@@ -48,7 +48,7 @@
 
 默认单栏居中、导航抽屉、按需 inspector 和语义化深色 token 已由此前 Desktop UI 改造保留，并在本轮 Electron 截图中复核。
 
-## 3. 验收证据
+## 3. 初始修复轮验收证据（历史中间轮次）
 
 | 检查 | 结果 |
 |---|---|
@@ -87,7 +87,7 @@
 - 本轮未修改用户已有的 `Composer.tsx`、模型目录、Provider 文档和 Provider 测试改动。
 - 本轮只处理当前 Phase 4 Desktop 的布局和恢复链，不引入 Phase G 的完整 diff/review 工作区。
 
-## 6. 本轮增量复核（2026-08-13）
+## 6. 增量复核（历史中间轮次，2026-08-13）
 
 针对首轮启动慢、导航抽屉和任务操作反馈，本轮又完成了以下闭环：
 
@@ -118,3 +118,46 @@
 | `git diff --check` | passed |
 
 appserver 的 86 passed、1 skipped 结论保持不变；跳过项仍是需要显式设置 `RXYCODE_APPSERVER_LIVE=1` 的真实 AgentV2 bootstrap，不在本轮 fake GUI 测试中冒充真实模型结果。
+
+## 7. 最终复核（2026-08-13 02:04）
+
+本轮最终实现以当前 `master` 工作树为准，前文的旧统计由本节覆盖。
+
+### 7.1 布局与启动反馈
+
+- 默认任务页不再预留永久左侧任务栏，也不默认创建 Inspector 列；任务时间线和 Composer 使用同一条约 760px 的 Codex 风格中轴。
+- 空任务不再使用虚线大框；创建任务后，`session/new` 先完成持久化响应，再显示 `Preparing Agent worker…`，后台热身不阻塞任务页交互。
+- 首轮 prompt 在 Agent worker 启动期间显示明确的启动阶段，而不是让用户看到静止空白区域。
+- Inspector 只在点击工具活动、子代理或其他可检查对象后打开；打开后主区才压缩并形成右侧检查器。
+- 深色主题使用更深的画布和较柔和的 raised surface；浅色主题通过语义 token 检查，未泄漏旧的深色面板。
+
+### 7.2 恢复、任务操作与清理
+
+- appserver 的 watchdog、worker heartbeat 和 GUI reconnect 回归继续通过；同一会话 stall 后可继续提交，切换到新任务后也不会继承 degraded/busy 状态。
+- 当前打开任务删除会立即给出保护提示；非当前任务删除从活动列表即时消失，恢复后即时重新出现，且不会删除 workspace 文件。
+- GUI 测试结束时 WebSocket、Electron、appserver、调试端口、临时 profile/worktree、lease 和 pending RPC 均清理。
+
+### 7.3 最终验收统计
+
+| 检查 | 结果 |
+|---|---|
+| Desktop Node tests | 190 passed |
+| Desktop typecheck/build | passed |
+| appserver tests | 89 passed, 1 skipped |
+| Electron GUI UX | 16/16 passed |
+| 新任务启动反馈断言 | passed |
+| 同会话 stall 后下一轮 prompt | passed |
+| stall 后切换新任务并继续对话 | passed |
+| 默认布局几何居中 | passed |
+| Inspector 默认隐藏、按需展开 | passed |
+| `git diff --check` | passed |
+
+最终 Electron 工件：
+
+`frontend/desktop-app/frontend/desktop-app/artifacts/gui-final-20260813-020409/`
+
+其中包含 `layout-empty.png`、`layout-default.png`、`layout-inspector-open.png`、`ux-final.png` 和 `cleanup-proof.json`。最终 cleanup proof 为 `passed: true`，并确认 `websocket_closed`、`electron_process_gone`、`appserver_process_gone`、`debug_port_closed`、`temp_root_removed`、`lease_count` 和 `pending_rpc_count` 均达到预期状态。
+
+### 7.4 真实模型限制
+
+本轮 GUI 使用确定性 fake appserver 验证真实 Electron、DOM、事件顺序和清理，不把 stub 的结果冒充 Provider 结果。`RXYCODE_APPSERVER_LIVE=1` 的真实 AgentV2 bootstrap 仍未执行，因此本报告不填写虚假的 input/output/cache-hit token；GUI 对未上报 usage 显示 `not reported`，不会转成 0。若要验证真实 Provider 的首 token 延迟和 token 统计，需要在具备有效凭据的环境中单独执行 live 测试。

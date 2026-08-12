@@ -3034,3 +3034,71 @@ details[open] .activity-chevron {
     padding-inline: 16px;
   }
 }
+
+/* --- Codex-style centered command surface ---
+ * Navigation and inspection are affordances, not permanent layout columns.
+ * Keep the empty task and the active timeline on the same narrow visual axis
+ * as the Composer; only an opened Inspector changes the grid. */
+:root,
+:root[data-theme='dark'] {
+  --cc-canvas: #0d0f11;
+  --cc-surface: #151719;
+  --cc-surface-raised: #222427;
+  --cc-surface-hover: #2a2c30;
+  --cc-border: #282b30;
+  --cc-border-strong: #3b3f46;
+  --cc-shadow: rgba(0, 0, 0, 0.62);
+  --cc-content-width: 760px;
+}
+
+.task-header {
+  padding-inline: max(20px, calc((100% - 1060px) / 2));
+}
+
+.chat-area {
+  padding-inline: max(16px, calc((100% - var(--cc-content-width)) / 2));
+}
+
+.timeline {
+  width: min(var(--cc-content-width), 100%);
+}
+
+.chat-empty {
+  display: grid;
+  width: min(var(--cc-content-width), 100%);
+  min-height: 260px;
+  margin: 24px auto 0;
+  padding: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--cc-dim);
+  text-align: center;
+}
+
+.task-startup-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  color: var(--cc-muted);
+  font-size: 12px;
+}
+
+.composer {
+  padding-inline: max(16px, calc((100% - var(--cc-content-width)) / 2));
+  background: var(--cc-canvas);
+}
+
+.composer-surface {
+  background: var(--cc-surface-raised);
+  box-shadow: 0 16px 42px var(--cc-shadow);
+}
+
+@media (max-width: 700px) {
+  .chat-area,
+  .composer {
+    padding-inline: 12px;
+  }
+}

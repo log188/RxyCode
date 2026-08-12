@@ -128,7 +128,15 @@ function ChatArea({ timeline, running, error, progress, onOpenInspector }: ChatA
       }}
     >
       {timeline.length === 0 ? (
-        <div className="chat-empty"><p>新建任务后，在下方输入你的需求。</p></div>
+        <div className="chat-empty">
+          <p>新建任务后，在下方输入你的需求。</p>
+          {progress !== null && progress !== undefined && (
+            <div className="task-startup-status" data-testid="task-startup-status">
+              <CircleDashed className="activity-spinner" aria-hidden="true" size={14} />
+              {progress}
+            </div>
+          )}
+        </div>
       ) : (
         <div className="timeline" data-testid="task-timeline">
           {timeline.map((item) => <TimelineEntry key={item.id} item={item} onOpenInspector={onOpenInspector} />)}

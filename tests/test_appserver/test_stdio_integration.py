@@ -401,6 +401,99 @@ def test_appserver_bootstrap_timeout():
             except Exception:
                 pass
             proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_appserver_emits_bootstrap_progress_before_first_result():
+    """The first cold turn must explain bootstrap instead of appearing frozen."""
+    env = _appserver_env()
+    env["RXYCODE_APPSERVER_BOOTSTRAP_DELAY"] = "0.2"
+    proc = _appserver_proc_with_env(env)
+    try:
+        client = AppserverClient(proc)
+        client.request(
+            "initialize",
+            {
+                "client_name": "pytest",
+                "client_version": "0.0.0",
+                "protocol_version": "1.0.0",
+            },
+        )
+        session = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+        prompt_id = client.send(
+            "session/prompt",
+            {"session_id": session["session_id"], "text": "cold start"},
+        )
+        progress: list[str] = []
+        result: dict | None = None
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            message = client.readline(timeout=0.5)
+            if message is None:
+                continue
+            if message.get("method") == "event/progress":
+                params = message.get("params") or {}
+                progress.append(str(params.get("text", "")))
+            if message.get("id") == prompt_id and "result" in message:
+                result = message["result"]
+                break
+        assert result is not None
+        assert result["status"] == "succeeded"
+        assert any("Agent" in text or "bootstrap" in text.lower() for text in progress)
+    finally:
+        if proc.poll() is None:
+            try:
+                if proc.stdin:
+                    proc.stdin.write(
+                        json.dumps({"jsonrpc": "2.0", "id": 99, "method": "shutdown"})
+                        + "\n"
+                    )
+                    proc.stdin.flush()
+            except Exception:
+                pass
+            proc.terminate()
+            proc.wait(timeout=10)
+
+
+def test_appserver_session_new_announces_background_warm():
+    """Creating a task must expose the background warm instead of looking idle."""
+    client = AppserverClient(_appserver_proc_with_env(_appserver_env()))
+    proc = client.proc
+    try:
+        client.request(
+            "initialize",
+            {
+                "client_name": "pytest",
+                "client_version": "0.0.0",
+                "protocol_version": "1.0.0",
+            },
+        )
+        session = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+        progress: list[str] = []
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            message = client.readline(timeout=0.2)
+            if message is None:
+                continue
+            if message.get("method") != "event/progress":
+                continue
+            params = message.get("params") or {}
+            if params.get("session_id") == session["session_id"]:
+                progress.append(str(params.get("text", "")))
+                break
+        assert any("warm" in text.lower() or "agent" in text.lower() for text in progress)
+    finally:
+        if proc.poll() is None:
+            try:
+                if proc.stdin:
+                    proc.stdin.write(
+                        json.dumps({"jsonrpc": "2.0", "id": 99, "method": "shutdown"})
+                        + "\n"
+                    )
+                    proc.stdin.flush()
+            except Exception:
+                pass
+            proc.terminate()
             proc.wait(timeout=10)
 
 
@@ -638,6 +731,58 @@ def test_appserver_stalled_session_does_not_block_another_session():
                 pass
             proc.terminate()
             proc.wait(timeout=10)
+
+def test_appserver_stalled_session_allows_existing_idle_session():
+    """A failed first session must not poison an already-created idle task."""
+    env = _appserver_env()
+    env["RXYCODE_APPSERVER_STALL_SECONDS"] = "2"
+    env["RXYCODE_APPSERVER_HEARTBEAT_SECONDS"] = "1"
+    env["RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS"] = "0"
+    proc = _appserver_proc_with_env(env)
+    try:
+        client = AppserverClient(proc)
+        client.request(
+            "initialize",
+            {
+                "client_name": "pytest",
+                "client_version": "0.0.0",
+                "protocol_version": "1.0.0",
+            },
+        )
+        first = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+        idle = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+        first_prompt = client.send(
+            "session/prompt",
+            {"session_id": first["session_id"], "text": "hang:forever"},
+        )
+        first_failed = False
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            message = client.readline(timeout=0.5)
+            if message is not None and message.get("id") == first_prompt and "error" in message:
+                first_failed = True
+                break
+        assert first_failed
+        recovered = client.request(
+            "session/prompt",
+            {"session_id": idle["session_id"], "text": "hello from idle sibling"},
+            timeout=10.0,
+        )
+        assert recovered["status"] == "succeeded"
+    finally:
+        if proc.poll() is None:
+            try:
+                if proc.stdin:
+                    proc.stdin.write(
+                        json.dumps({"jsonrpc": "2.0", "id": 99, "method": "shutdown"})
+                        + "\n"
+                    )
+                    proc.stdin.flush()
+            except Exception:
+                pass
+            proc.terminate()
+            proc.wait(timeout=10)
+
 
 def test_appserver_failed_job_event(appserver_proc):
     client = AppserverClient(appserver_proc)

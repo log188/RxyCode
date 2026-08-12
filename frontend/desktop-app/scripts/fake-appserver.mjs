@@ -678,6 +678,7 @@ rl.on('line', (line) => {
       provider_id: String(params.provider_id ?? requestedModel.split('/')[0] ?? '')
     })
     respond(id, { session_id: sessionId, workspace_root: task.workspace_root, model_id: task.model_id, provider_id: task.provider_id })
+    notify('event/progress', { session_id: sessionId, text: 'Preparing Agent worker…' })
     return
   }
   if (method === 'sessions/list') {

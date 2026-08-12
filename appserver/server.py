@@ -32,11 +32,11 @@ from .watchdog import ActiveJob, WatchdogState, heartbeat_interval_seconds, stal
 
 try:
     from ..core.safety.approval import set_approval_broker
-    from ..protocol.notifications import JobStatusUpdate, ServerHeartbeat
+    from ..protocol.notifications import JobStatusUpdate, ProgressUpdate, ServerHeartbeat
     from ..protocol.version import PROTOCOL_VERSION
 except ImportError:
     from core.safety.approval import set_approval_broker
-    from protocol.notifications import JobStatusUpdate, ServerHeartbeat
+    from protocol.notifications import JobStatusUpdate, ProgressUpdate, ServerHeartbeat
     from protocol.version import PROTOCOL_VERSION
 
 _logger = logging.getLogger(__name__)
@@ -449,6 +449,15 @@ class AppServer:
                 "provider_id": record.provider_id,
             },
         )
+        # The task response is already durable and immediate. Give the
+        # renderer an explicit lifecycle signal before the background worker
+        # warm starts, so a new task never looks like an unresponsive click.
+        await self._emit_model(
+            ProgressUpdate(
+                session_id=record.session_id,
+                text="Preparing Agent worker…",
+            )
+        )
         # Warm the first worker after the durable session response. The UI can
         # render the new task immediately while bootstrap happens in the
         # background, removing the cold-start cost from the first prompt.
@@ -508,6 +517,12 @@ class AppServer:
                 await self._emit_job_state(session_id, job_id, "running")
 
                 run_id = uuid.uuid4().hex
+                await self._emit_model(
+                    ProgressUpdate(
+                        session_id=session_id,
+                        text="Starting Agent worker…",
+                    )
+                )
 
                 def emit_message(message: dict[str, Any]) -> None:
                     self._watchdog.touch_job(job_id)

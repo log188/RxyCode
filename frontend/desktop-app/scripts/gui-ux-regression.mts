@@ -35,13 +35,31 @@ async function main(): Promise<void> {
     await harness.evaluate(`document.querySelector('.nav-toggle:not(:disabled)')?.click()`)
     await harness.waitForSelector('.nav-sheet.open .new-session:not(:disabled)', 5_000)
     await harness.evaluate(`document.querySelector('.nav-sheet.open .new-session:not(:disabled)')?.click()`)
+    await harness.waitForSelector('.nav-sheet:not(.open)', 2_000)
     await harness.waitForSelector('[data-testid="composer-input"]:not(:disabled)', 20_000)
-    await harness.evaluate(`document.querySelector('.nav-sheet.open .sheet-close')?.click()`)
 
     await check('UX-01 composer structure', async () => {
       if (!(await harness.has('[data-testid="composer-surface"]'))) throw new Error('Codex-like composer surface missing')
       if (!(await harness.has('[data-testid="composer-send"]'))) throw new Error('send arrow missing')
       if (!(await harness.has('[data-testid="composer-permission-mode"]'))) throw new Error('task permission switch missing')
+      const emptyLayout = await harness.evaluate<{ borderStyle: string; center: number; viewportCenter: number }>(`(() => {
+        const empty = document.querySelector('.chat-empty')
+        if (!(empty instanceof HTMLElement)) throw new Error('empty task surface missing')
+        const rect = empty.getBoundingClientRect()
+        return {
+          borderStyle: getComputedStyle(empty).borderStyle,
+          center: (rect.left + rect.right) / 2,
+          viewportCenter: window.innerWidth / 2
+        }
+      })()`)
+      if (emptyLayout.borderStyle === 'dashed') throw new Error('empty task still uses a boxed placeholder')
+      if (Math.abs(emptyLayout.center - emptyLayout.viewportCenter) > 48) throw new Error(`empty task is not centered: ${JSON.stringify(emptyLayout)}`)
+      await harness.waitForSelector('[data-testid="task-startup-status"]', 2_000)
+      const startupStatus = await harness.evaluate<string>(`document.querySelector('[data-testid="task-startup-status"]')?.textContent ?? ''`)
+      if (!startupStatus.includes('Preparing') && !startupStatus.includes('worker')) {
+        throw new Error(`new task startup feedback missing: ${startupStatus}`)
+      }
+      await harness.screenshot('layout-empty.png')
     })
     await check('UX-01b first turn exposes startup progress', async () => {
       await harness.typePrompt('startup demo')
@@ -74,6 +92,21 @@ async function main(): Promise<void> {
       await harness.typePrompt('after timeout reconnect')
       await harness.pressKey('Enter')
       await waitFor(async () => (await harness.evaluate<number>(`document.querySelectorAll('[data-testid="final-answer"]').length`)) > finalCountBeforeRetry ? true : null, 10_000, 'post-reconnect final answer')
+    })
+    await check('UX-02c recovery survives switching to another task', async () => {
+      await harness.evaluate(`document.querySelector('.nav-toggle')?.click()`)
+      await harness.waitForSelector('.nav-sheet.open .new-session:not(:disabled)', 2_000)
+      const previousId = await harness.evaluate<string>(`document.querySelector('.nav-sheet .session-item.active .session-id')?.textContent ?? ''`)
+      await harness.evaluate(`document.querySelector('.nav-sheet .new-session:not(:disabled)')?.click()`)
+      await waitFor(async () => {
+        const nextId = await harness.evaluate<string>(`document.querySelector('.nav-sheet .session-item.active .session-id')?.textContent ?? ''`)
+        return nextId !== '' && nextId !== previousId ? true : null
+      }, 3_000, 'task after recovered timeout')
+      await harness.evaluate(`document.querySelector('.nav-sheet .sheet-close')?.click()`)
+      await harness.typePrompt('new task after recovered timeout')
+      await harness.pressKey('Enter')
+      await waitFor(async () => (await harness.has('[data-testid="final-answer"]')) ? true : null, 10_000, 'new task final answer after recovery')
+      if (await harness.has('.timeline-error')) throw new Error('new task inherited the previous degraded error')
     })
     await check('UX-03 approval closes after decision', async () => {
       await harness.typePrompt('approval demo')
@@ -159,6 +192,8 @@ async function main(): Promise<void> {
       if (layout.columns.trim().split(/\\s+/).length > 1) throw new Error(`default layout reserves extra columns: ${layout.columns}`)
       if (Math.abs(layout.timelineCenter - layout.viewportCenter) > 48) throw new Error(`timeline is not centered: ${JSON.stringify(layout)}`)
       if (Math.abs(layout.composerCenter - layout.viewportCenter) > 48) throw new Error(`composer is not centered: ${JSON.stringify(layout)}`)
+      const composerWidth = await harness.evaluate<number>(`document.querySelector('[data-testid="composer-surface"]')?.getBoundingClientRect().width ?? 0`)
+      if (composerWidth > 800) throw new Error(`composer is wider than the Codex-style command surface: ${composerWidth}`)
       await harness.screenshot('layout-default.png')
     })
     await check('UX-09 timeline keeps tool results before Final Answer', async () => {
