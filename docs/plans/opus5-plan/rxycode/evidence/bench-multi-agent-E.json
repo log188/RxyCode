@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "env": {
+    "python": "3.13.9",
+    "platform": "Windows-11-10.0.22621-SP0",
+    "phasee": "E7",
+    "parallel": "1"
+  },
+  "duration_s": null,
+  "metrics": {
+    "throughput_serial_s": 0.050867299985839054,
+    "throughput_n1_s": 0.050483500002883375,
+    "throughput_n2_s": 0.05108140001539141,
+    "throughput_n4_s": 0.0505020999989938,
+    "speedup_n2": 1.9765903044032513,
+    "speedup_n4": 3.998526794243345,
+    "event_drop_rate": 0.5,
+    "publisher_blocked": false,
+    "interrupt_fanout_ms": 0.09049999061971903,
+    "deadlock_pressure_rounds": 9,
+    "deadlock_hang": false,
+    "budget_breaker_ms": 0.32270001247525215,
+    "rb1_real_parallelism": true,
+    "rb2_independent_state": true,
+    "rb3_bus_replay_ok": true,
+    "rb4_explicit_delegation": true,
+    "rb5_cancel_reachable": true,
+    "passthrough_ok": true,
+    "rb_demonstrations": [
+      {
+        "rb": "RB1",
+        "demo": "speedup_n2 >= 1.5",
+        "value": 1.9765903044032513,
+        "pass": true
+      },
+      {
+        "rb": "RB2",
+        "demo": "per-agent AgentContext slices are distinct; contract test test_messages_isolated_between_agents",
+        "value": "isolated",
+        "pass": true
+      },
+      {
+        "rb": "RB3",
+        "demo": "bus replay by seq matches live order after concurrent publish (bench_event_bus)",
+        "value": true,
+        "pass": true
+      },
+      {
+        "rb": "RB4",
+        "demo": "data plane stays explicit: runtime never embeds payload blobs in bus events (EB8), delegation via checkpoint refs; contract test_route_dead_letter_does_not_block_publisher",
+        "value": "explicit",
+        "pass": true
+      },
+      {
+        "rb": "RB5",
+        "demo": "interrupt fan-out latency < 2s with real task cancel",
+        "value_ms": 0.09049999061971903,
+        "pass": true
+      }
+    ]
+  }
+}
