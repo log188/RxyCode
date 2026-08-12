@@ -138,7 +138,13 @@ def test_slice_is_write_protected_from_outside():
         a.messages.append({"role": "user", "content": "sneaky"})  # type: ignore[attr-defined]
     with pytest.raises(TypeError):
         a.tool_results["sneaky"] = 1  # type: ignore[index]
+    with pytest.raises(TypeError):
+        a.messages[0]["role"] = "system"  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        a.memory_refs.append("sneaky-ref")  # type: ignore[attr-defined]
     assert len(a.messages) == 1  # no external mutation (EB2)
+    assert a.messages[0]["role"] == "user"
+    assert a.memory_refs == ()
 
 
 # ---------------------------------------------------------------------------

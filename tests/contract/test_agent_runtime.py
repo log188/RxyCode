@@ -172,6 +172,29 @@ def test_resolved_model_is_read_only_metadata():
 
 
 @pytest.mark.asyncio
+async def test_lifecycle_events_carry_token_snapshot_from_spawn():
+    bus = _bus()
+    sub = await bus.subscribe("test", "event/*")
+    rt = AgentRuntime(bus, run_factory=_ok_run, parallel_limit=2)
+
+    async def spendy_run(task, checkpoint=None):
+        rt.record_token_usage("S", 40)
+        return "ok"
+
+    rt2 = AgentRuntime(bus, run_factory=lambda cfg: spendy_run, parallel_limit=2)
+    await rt2.spawn(AgentConfig(agent_id="S", tools=()))
+    await rt2.agents["S"].wait_state(LifecycleState.DONE)
+
+    evs = await _drain_events(bus, 2, sub=sub)
+    started = next(e for e in evs if e.method == "event/agent_started")
+    done = next(e for e in evs if e.method == "event/agent_done")
+    # spawn-era snapshot is 0 and the value is monotonic (PHASE-E §4.1)
+    assert started.payload.get("tokens_used") == 0
+    assert started.payload.get("budget_used") == 0
+    assert done.payload.get("tokens_used") >= started.payload.get("tokens_used", 0)
+
+
+@pytest.mark.asyncio
 async def test_model_never_lands_in_agent_events():
     bus = _bus()
     sub = await bus.subscribe("test", "event/*")

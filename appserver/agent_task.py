@@ -96,6 +96,18 @@ class AgentTask:
     # lifecycle entry points
     # ------------------------------------------------------------------
 
+    def _event_payload(self) -> dict[str, Any]:
+        """Runtime event payload: the cumulative token/budget snapshot
+        (PHASE-E §4.1: the E3 runtime writes 0 at spawn and the value is
+        monotonic — snapshots travel with every lifecycle event)."""
+        snapshot = getattr(self._runtime, "token_snapshot", None)
+        if snapshot is None:
+            return {}
+        try:
+            return dict(snapshot(self.agent_id))
+        except Exception:  # noqa: BLE001 - snapshot failures never break events
+            return {}
+
     async def spawn(self, task: str) -> None:
         """IDLE -> BOOTSTRAP -> RUNNING; starts the main task."""
         await self._set_state(LifecycleState.BOOTSTRAP)
@@ -104,7 +116,7 @@ class AgentTask:
                 method="event/agent_started",
                 session_id="",
                 agent_id=self.agent_id,
-                payload={},
+                payload=self._event_payload(),
             )
         )
         try:
@@ -139,7 +151,7 @@ class AgentTask:
                 method="event/agent_paused",
                 session_id="",
                 agent_id=self.agent_id,
-                payload={},
+                payload=self._event_payload(),
             )
         )
 
@@ -173,7 +185,7 @@ class AgentTask:
                 method="event/agent_cancelled",
                 session_id="",
                 agent_id=self.agent_id,
-                payload={},
+                payload=self._event_payload(),
             )
         )
         if cascade_tools:
@@ -252,7 +264,7 @@ class AgentTask:
                     method="event/agent_done",
                     session_id="",
                     agent_id=self.agent_id,
-                    payload={},
+                    payload=self._event_payload(),
                 )
             )
             return result
@@ -280,7 +292,7 @@ class AgentTask:
                     method="event/agent_done",
                     session_id="",
                     agent_id=self.agent_id,
-                    payload={},
+                    payload=self._event_payload(),
                 )
             )
             return result

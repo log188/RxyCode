@@ -145,20 +145,26 @@ class AgentContext:
         self.tail_limit = tail_limit
         self._messages: list[dict[str, Any]] = []
         self._tool_results: dict[str, Any] = {}
-        self.memory_refs: list[str] = []
+        self._memory_refs: list[str] = []
         self.shared_segment = shared_segment
         self.memory_index = memory_index
         self.session_cache = session_cache
 
     @property
-    def messages(self) -> tuple[dict[str, Any], ...]:
-        """Read-only view of this agent's message slice."""
-        return tuple(self._messages)
+    def messages(self) -> tuple[MappingProxyType[str, Any], ...]:
+        """Deep read-only view of this agent's message slice: neither the
+        list nor any message dict can be mutated from outside (EB2)."""
+        return tuple(MappingProxyType(dict(m)) for m in self._messages)
 
     @property
     def tool_results(self) -> MappingProxyType[str, Any]:
         """Read-only view of this agent's tool result domain."""
         return MappingProxyType(self._tool_results)
+
+    @property
+    def memory_refs(self) -> tuple[str, ...]:
+        """Read-only view of the agent's memory references."""
+        return tuple(self._memory_refs)
 
     def add_message(self, message: dict[str, Any]) -> None:
         """Append to this agent's slice, applying tail retention."""

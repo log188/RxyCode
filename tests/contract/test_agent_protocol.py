@@ -326,6 +326,65 @@ def test_routing_reason_256_chars_accepted():
     assert len(evt.routing_reason) == 256
 
 
+def test_stdio_channel_round_trip_via_real_jsonrpc_codec(monkeypatch):
+    """E4 stdio channel: the agent event goes through the real appserver
+    JSON-RPC wire codec (write_message_sync -> parse_line) and comes back
+    with identical fields."""
+    import io
+
+    from appserver.jsonrpc import parse_line, write_message_sync
+
+    evt = _evt(
+        "event/agent_progress",
+        experiment_tag="E1",
+        tokens_used=12,
+        budget_used=9,
+        cache_miss_warning=True,
+    )
+    fields = evt.model_dump(exclude_none=True)
+    notification = {
+        "jsonrpc": "2.0",
+        "method": fields.pop("method"),
+        "params": fields,
+    }
+    stream = io.StringIO()
+    monkeypatch.setattr("sys.stdout", stream)
+    write_message_sync(notification)  # real worker write path
+    out = stream.getvalue().strip()
+    parsed = parse_line(out)  # real worker read path
+    assert parsed["method"] == "event/agent_progress"
+    back = AgentEvent(method=parsed["method"], **parsed["params"])
+    assert back.experiment_tag == "E1"
+    assert back.tokens_used == 12
+    assert back.budget_used == 9
+    assert back.cache_miss_warning is True
+
+
+def test_sse_channel_agent_event_line_format():
+    """E4 SSE channel: the agent event rides the SSE line format
+    (``data: <json>``) with ``type: agent_*`` and identical fields."""
+    evt = _evt(
+        "event/agent_started",
+        tokens_used=0,
+        budget_used=0,
+    )
+    fields = evt.model_dump(exclude_none=True)
+    method = fields.pop("method")
+    sse_event = {"type": method.removeprefix("event/"), **fields}
+    sse_line = "data: " + json.dumps(sse_event, ensure_ascii=False) + "\n\n"
+
+    assert sse_line.startswith("data: ")
+    payload = json.loads(sse_line.removeprefix("data: ").strip())
+    assert payload["type"] == "agent_started"
+    back = AgentEvent(
+        method="event/" + payload.pop("type"),
+        **{k: v for k, v in payload.items() if k in AgentEvent.model_fields},
+    )
+    assert back.agent_id == "A"
+    assert back.tokens_used == 0
+    assert back.budget_used == 0
+
+
 def test_round_trip_preserves_payload_json_types():
     payload: JsonObject = {"reasoning": ["a", 1, {"k": None}]}
     evt = _evt("event/agent_done", payload=payload)
