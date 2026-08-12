@@ -357,7 +357,21 @@ async def main() -> int:
         await _run_all(bus, metrics, args.tag, duration_s=2.0)
 
     contract_evidence = _run_contract_evidence()
-    rb_records = _rb_demo_records(metrics, contract_evidence)
+    if args.stress:
+        # stress mode exercises only the deadlock benchmark; the RB
+        # demonstrations belong to the full benchmark run, so they are
+        # explicitly marked n/a instead of carrying misleading defaults.
+        rb_records = [
+            {
+                "rb": f"RB{n}",
+                "demo": "n/a in --stress mode (see full benchmark run)",
+                "value": None,
+                "pass": None,
+            }
+            for n in range(1, 6)
+        ]
+    else:
+        rb_records = _rb_demo_records(metrics, contract_evidence)
     payload = {
         "schema_version": 1,
         "env": _env(),
@@ -369,6 +383,8 @@ async def main() -> int:
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, ensure_ascii=False)
     print(json.dumps(payload, indent=2, ensure_ascii=False))
+    if args.stress:
+        return 0 if not metrics.deadlock_hang else 1
     return 0 if metrics.rb1_real_parallelism and metrics.rb5_cancel_reachable else 1
 
 

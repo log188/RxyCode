@@ -11,6 +11,7 @@ counters (reasonix-style) live here.  See PHASE-E §4.4 / §5 E6.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal
 
 
@@ -119,37 +120,56 @@ class ReadonlyMemoryIndex:
         return list(result)
 
 
-@dataclass
 class AgentContext:
-    """One agent's context slice (PHASE-E §4.4).
+    """One agent's context slice (PHASE-E §4.4, EB2).
 
-    - ``messages`` / ``tool_results`` are the agent's own slice (EB2)
-    - ``tail_limit`` applies Pi-style tail retention to the slice
-    - ``session_cache_hits/misses`` are session-level counters that never
-      reset when the active agent switches (reasonix-style)
-    - shared read-only references are explicit (segment + memory index)
+    The slice is write-protected from the outside: ``messages`` and
+    ``tool_results`` are exposed through read-only views (tuples /
+    MappingProxyType), and the only mutation paths are the explicit
+    ``add_message`` / ``record_tool_result`` methods.  There is no way for
+    another agent (or any caller) to reach into this slice and mutate it,
+    which is the EB2 isolation contract the contract tests assert.
     """
 
-    agent_id: str
-    scope: Literal["session", "own"] = "own"
-    tail_limit: int = 12
-    messages: list[dict[str, Any]] = field(default_factory=list)
-    tool_results: dict[str, Any] = field(default_factory=dict)
-    memory_refs: list[str] = field(default_factory=list)
-    shared_segment: SharedReadonlySegment | None = None
-    memory_index: ReadonlyMemoryIndex | None = None
-    session_cache: SessionCacheCounter | None = None
+    def __init__(
+        self,
+        agent_id: str,
+        scope: Literal["session", "own"] = "own",
+        tail_limit: int = 12,
+        shared_segment: SharedReadonlySegment | None = None,
+        memory_index: ReadonlyMemoryIndex | None = None,
+        session_cache: SessionCacheCounter | None = None,
+    ) -> None:
+        self.agent_id = agent_id
+        self.scope = scope
+        self.tail_limit = tail_limit
+        self._messages: list[dict[str, Any]] = []
+        self._tool_results: dict[str, Any] = {}
+        self.memory_refs: list[str] = []
+        self.shared_segment = shared_segment
+        self.memory_index = memory_index
+        self.session_cache = session_cache
+
+    @property
+    def messages(self) -> tuple[dict[str, Any], ...]:
+        """Read-only view of this agent's message slice."""
+        return tuple(self._messages)
+
+    @property
+    def tool_results(self) -> MappingProxyType[str, Any]:
+        """Read-only view of this agent's tool result domain."""
+        return MappingProxyType(self._tool_results)
 
     def add_message(self, message: dict[str, Any]) -> None:
         """Append to this agent's slice, applying tail retention."""
-        self.messages.append(message)
-        overflow = len(self.messages) - self.tail_limit
+        self._messages.append(message)
+        overflow = len(self._messages) - self.tail_limit
         if overflow > 0:
-            del self.messages[:overflow]
+            del self._messages[:overflow]
 
     def record_tool_result(self, tool: str, result: Any) -> None:
         """Record a tool result in this agent's own result domain."""
-        self.tool_results[tool] = result
+        self._tool_results[tool] = result
 
     def record_cache(self, hit: bool) -> None:
         """Session-level cache accounting via the shared counter.

@@ -238,14 +238,34 @@ class EventBus:
         async with self._publish_lock:
             event.seq = next(self._seq)
             await self._log.append(event)
-            matched_any = self._deliver(event)
-            if event.send_to is not None and event.send_to != "*" and not matched_any:
+            self._deliver(event)
+            if (
+                event.send_to is not None
+                and event.send_to != "*"
+                and not self._has_target_subscriber(event.send_to)
+            ):
                 _logger.warning(
-                    "eventbus dead-letter: %s -> %s has no subscriber (seq=%d)",
+                    "eventbus dead-letter: %s -> %s has no target subscriber (seq=%d)",
                     event.method,
                     event.send_to,
                     event.seq,
                 )
+
+    def _has_target_subscriber(self, target_id: str) -> bool:
+        """Whether any subscription targets *target_id* (agent/<id>/*).
+
+        A routed event with no target subscriber is dead-lettered even when
+        a monitor holds an ``event/*`` subscription: the monitor is not a
+        receiver, it only observes (PHASE-E §5 E1 routing metadata).
+        """
+        return any(
+            sub.pattern == f"agent/{target_id}/*"
+            or (
+                sub.pattern.startswith(f"agent/{target_id}/")
+                and len(sub.pattern.split("/")) == 3
+            )
+            for sub in self._subs
+        )
 
     def _deliver(self, event: BusEvent) -> bool:
         """Fan out to matching subscriptions; returns whether anyone matched.

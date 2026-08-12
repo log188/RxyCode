@@ -26,6 +26,7 @@ from appserver.agent_runtime import (
     AgentConfig,
     AgentRuntime,
     BudgetExceededError,
+    LLMBindingError,
     build_cache_key,
     validate_cache_namespace,
 )
@@ -358,6 +359,91 @@ async def test_mechanical_agent_makes_zero_llm_calls():
     assert calls["n"] == 0
     evs = await _drain_events(bus, 1, sub=sub)
     assert evs and evs[0].method == "event/agent_started"
+
+
+@pytest.mark.asyncio
+async def test_call_llm_refused_for_mechanical_agent():
+    rt = AgentRuntime(_bus(), run_factory=_ok_run, parallel_limit=2)
+    await rt.spawn(AgentConfig(agent_id="M", tools=(), mechanical=True))
+    with pytest.raises(LLMBindingError):
+        rt.call_llm("M")
+
+
+@pytest.mark.asyncio
+async def test_call_llm_allowed_for_regular_agent():
+    rt = AgentRuntime(_bus(), run_factory=_ok_run, parallel_limit=2)
+    await rt.spawn(AgentConfig(agent_id="N", tools=(), model="model-x"))
+    result = await rt.call_llm("N")
+    assert result["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_budget_breaker_completes_full_stop_fanout():
+    bus = _bus()
+    sub = await bus.subscribe("test", "event/*")
+
+    async def spendy_run(task, checkpoint=None):
+        rt2.record_token_usage("A", 60)
+        await rt2.check_budget("A", est=60)  # 60+60 > 100 -> breaker
+        return "ok"
+
+    rt2 = AgentRuntime(bus, run_factory=lambda cfg: spendy_run, parallel_limit=2)
+    task = await rt2.spawn(AgentConfig(agent_id="A", tools=(), budget_tokens=100))
+
+    await task.wait_state(LifecycleState.CANCELLED, timeout=2.0)
+    assert rt2._cancel_process_trees_calls >= 1  # tool tree cascade via stop()
+    assert "A" not in rt2.agents  # registry entry dropped by stop()
+    evs = await _drain_events(bus, 3, sub=sub)
+    methods = [e.method for e in evs]
+    assert "event/agent_budget_exceeded" in methods
+    assert "event/agent_cancelled" in methods
+
+
+def test_token_snapshot_starts_at_zero_and_is_monotonic():
+    rt = AgentRuntime(_bus(), run_factory=_ok_run, parallel_limit=2)
+    snap0 = rt.token_snapshot("X")
+    assert snap0 == {"tokens_used": 0, "budget_used": 0}  # spawn-era value
+    rt.record_token_usage("X", 10)
+    snap1 = rt.token_snapshot("X")
+    assert snap1["tokens_used"] == 10
+    assert snap1["tokens_used"] >= snap0["tokens_used"]  # monotonic
+
+
+def test_usage_dedup_by_run_task_attempt():
+    rt = AgentRuntime(_bus(), run_factory=_ok_run, parallel_limit=2)
+    rt.record_token_usage("A", 60, run_id="r1", task_id="t1", attempt=0)
+    rt.record_token_usage("A", 60, run_id="r1", task_id="t1", attempt=0)  # dup
+    assert rt.token_usage("A") == 60  # dedup: counted once
+    rt.record_token_usage("A", 30, run_id="r1", task_id="t2", attempt=0)  # legal
+    assert rt.token_usage("A") == 90  # distinct calls keep accumulating
+
+
+@pytest.mark.asyncio
+async def test_shared_pool_accumulates_across_agents():
+    rt = AgentRuntime(_bus(), run_factory=_ok_run, parallel_limit=3, budget_total=100)
+    await rt.spawn(AgentConfig(agent_id="A", tools=(), budget_tokens=0))
+    await rt.spawn(AgentConfig(agent_id="B", tools=(), budget_tokens=0))
+    rt.record_token_usage("A", 60)  # zero-budget -> shared pool
+    rt.record_token_usage("B", 40)
+    assert rt.token_usage("A") == 100
+    assert rt.token_usage("B") == 100  # pool-wide view
+
+
+@pytest.mark.asyncio
+async def test_shared_pool_breaker_fires_on_pool_total():
+    bus = _bus()
+    rt2 = AgentRuntime(bus, run_factory=None, parallel_limit=3, budget_total=100)
+    await rt2.spawn(AgentConfig(agent_id="S1", tools=(), budget_tokens=0))
+
+    async def pool_run(task, checkpoint=None):
+        rt2.record_token_usage("S1", 60)  # pool now 60
+        await rt2.check_budget("A", est=50)  # 60+50 > 100 -> breaker
+        return "ok"
+
+    rt2._run_factory = lambda cfg: pool_run  # type: ignore[attr-defined]
+    task = await rt2.spawn(AgentConfig(agent_id="A", tools=(), budget_tokens=0))
+    await task.wait_state(LifecycleState.CANCELLED, timeout=2.0)
+    assert isinstance(task._last_error, BudgetExceededError)
 
 
 @pytest.mark.asyncio

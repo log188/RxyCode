@@ -288,6 +288,29 @@ async def test_seq_never_rewinds_across_rollover():
 
 
 @pytest.mark.asyncio
+async def test_routed_with_no_target_subscriber_dead_letters_even_with_monitor(caplog):
+    bus = _bus()
+    monitor = await bus.subscribe("monitor", "event/*")
+    await bus.publish(_event("event/agent_done", "GHOST", send_to="GHOST"))
+
+    assert any(
+        "dead-letter" in r.message for r in caplog.records
+    ), "expected a dead-letter warning for the unroutable event"
+    got = await _drain(monitor)
+    assert len(got) == 1  # monitor still observes (RB3)
+
+
+@pytest.mark.asyncio
+async def test_routed_with_target_subscriber_not_dead_lettered(caplog):
+    bus = _bus()
+    target = await bus.subscribe("agent-b", "agent/B/*")
+    await bus.publish(_event("event/agent_done", "A", send_to="B"))
+
+    assert not any("dead-letter" in r.message for r in caplog.records)
+    assert len(await _drain(target)) == 1
+
+
+@pytest.mark.asyncio
 async def test_oversized_payload_rejected_eb8():
     bus = _bus()
     with pytest.raises(ValueError, match="EB8"):

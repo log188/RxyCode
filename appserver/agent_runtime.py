@@ -33,6 +33,15 @@ class BudgetExceededError(asyncio.CancelledError):
     """
 
 
+class LLMBindingError(RuntimeError):
+    """Raised when a mechanical agent (F4, no LLM slot) attempts an LLM call.
+
+    The runtime is the single LLM call point: mechanical agents are refused
+    here, so "zero LLM calls" is enforced by the runtime, not by the run
+    target's goodwill.
+    """
+
+
 class ParallelLimitError(RuntimeError):
     """Raised when a spawn would exceed ``RXYCODE_AGENT_PARALLEL``.
 
@@ -175,12 +184,15 @@ class AgentRuntime:
         self.configs: dict[str, AgentConfig] = {}
         self.quotas: dict[str, asyncio.Semaphore] = {}
         self._token_usage: dict[str, int] = {}
+        self._shared_usage: int = 0
+        self._usage_seen: set[str] = set()
         self._checkpoints: dict[str, object] = {}
         self._resolved_models: dict[str, str] = {}
         self._cancel_process_trees_calls = 0
         self.contexts: dict[str, AgentContext] = {}
         self._provider_bindings: dict[str, str | None] = {}
         self._session_cache = SessionCacheCounter()
+        self._guards: list[asyncio.Task[Any]] = []
 
     # -- lifecycle --------------------------------------------------------
 
@@ -235,6 +247,9 @@ class AgentRuntime:
             self._provider_bindings[config.agent_id] = config.model
         task._run_target = self._make_guarded(config, raw_target)
         await task.spawn("")
+        self._guards.append(
+            asyncio.create_task(self._budget_guard(config.agent_id, task))
+        )
         return task
 
     async def stop(self, agent_id: str, reason: str) -> None:
@@ -280,15 +295,66 @@ class AgentRuntime:
             self._sem_global.release()
             sem_agent.release()
 
+    def call_llm(self, agent_id: str, messages: list[Any] | None = None) -> Awaitable[Any]:
+        """Single LLM call point (E3): mechanical agents are refused.
+
+        Non-mechanical agents return an opaque coroutine (provider binding
+        lives at the F layer); the guard itself is what E3 enforces.
+        """
+        if self.is_mechanical(agent_id):
+            raise LLMBindingError(
+                f"agent {agent_id} is mechanical (F4): no provider binding, "
+                "LLM calls are refused"
+            )
+        return self._llm_stub(agent_id, messages or [])
+
+    async def _llm_stub(self, agent_id: str, messages: list[Any]) -> Any:
+        await asyncio.sleep(0)
+        return {"role": "assistant", "content": f"stub:{agent_id}"}
+
     # -- budgets ----------------------------------------------------------
 
-    def record_token_usage(self, agent_id: str, tokens: int) -> None:
-        """Session-level cumulative usage (reasonix-style, never reset on
-        agent switch)."""
-        self._token_usage[agent_id] = self._token_usage.get(agent_id, 0) + int(tokens)
+    def record_token_usage(
+        self,
+        agent_id: str,
+        tokens: int,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        attempt: int | None = None,
+    ) -> None:
+        """Cumulative token accounting with (run_id, task_id, attempt)
+        dedup (PHASE-E §4.1): the same call is never counted twice, while
+        distinct legal calls of one run keep accumulating.
+
+        Agents with ``budget_tokens=0`` contribute to the shared pool
+        counter instead of their own ledger (EB4 shared budget).
+        """
+        if run_id is not None and task_id is not None and attempt is not None:
+            key = f"{run_id}:{task_id}:{attempt}"
+            if key in self._usage_seen:
+                return  # dedup: same call must not double-count
+            self._usage_seen.add(key)
+        config = self.configs.get(agent_id)
+        shared = bool(config and config.budget_tokens == 0)
+        if shared:
+            self._shared_usage += int(tokens)
+        else:
+            self._token_usage[agent_id] = self._token_usage.get(agent_id, 0) + int(tokens)
 
     def token_usage(self, agent_id: str) -> int:
+        """Cumulative usage for one agent (shared-pool agents report the
+        pool total: the pool is the session budget)."""
+        config = self.configs.get(agent_id)
+        if config is not None and config.budget_tokens == 0:
+            return self._shared_usage
         return self._token_usage.get(agent_id, 0)
+
+    def token_snapshot(self, agent_id: str) -> dict[str, int]:
+        """Cumulative snapshot for event fields (F13): tokens_used and
+        budget_used are the same cumulative value at this moment."""
+        used = self.token_usage(agent_id)
+        return {"tokens_used": used, "budget_used": used}
 
     async def check_budget(self, agent_id: str, est: int = 1) -> None:
         """Circuit breaker check before an LLM/tool call (E3 §4.3).
@@ -303,6 +369,10 @@ class AgentRuntime:
         if budget is None:
             return
         used = self.token_usage(agent_id)
+        if cfg.budget_tokens == 0:
+            # shared pool: compare against the pool-wide cumulative usage
+            # (all zero-budget agents draw from the same counter)
+            used = self._shared_usage
         if used + est <= budget:
             return
         await self._bus.publish(
@@ -364,25 +434,25 @@ class AgentRuntime:
 
     def _make_guarded(self, config: AgentConfig, target: RunTarget) -> RunTarget:
         async def guarded(task_str: str, checkpoint: object | None = None) -> Any:
-            task = self.agents.get(config.agent_id)
             try:
                 try:
                     return await target(task_str, checkpoint=checkpoint)
                 except TypeError:
                     return await target(task_str)
             except BudgetExceededError:
-                # breaker path: the CANCELLED transition happens here (the
-                # external stop() is the other, fully equivalent, route)
-                if task is not None:
-                    await task._set_state(LifecycleState.CANCELLED)
-                    await self._bus.publish(
-                        BusEvent(
-                            method="event/agent_cancelled",
-                            session_id="",
-                            agent_id=config.agent_id,
-                            payload={},
-                        )
-                    )
+                # breaker path: raise only — the state transition, task
+                # cancel and tool-process-tree fan-out are performed by
+                # stop() from the budget guard (PHASE-E §4.3: the CANCELLED
+                # transition is done by stop(), never by the breaker itself)
                 raise
 
         return guarded
+
+    async def _budget_guard(self, agent_id: str, task: AgentTask) -> None:
+        """Watch for a BudgetExceededError terminal and complete the unified
+        stop() fan-out (state -> CANCELLED, real cancel, tool tree, event)."""
+        main = task._main_task
+        if main is not None:
+            await asyncio.gather(main, return_exceptions=True)
+        if isinstance(getattr(task, "_last_error", None), BudgetExceededError):
+            await self.stop(agent_id, reason="budget")

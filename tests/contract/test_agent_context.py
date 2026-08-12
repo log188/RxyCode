@@ -109,8 +109,8 @@ def test_messages_isolated_between_agents():
     b = AgentContext(agent_id="B")
     a.add_message({"role": "user", "content": "secret-of-A"})
 
-    assert b.messages == []  # B cannot see A's slice
-    assert a.messages is not b.messages  # distinct mutable state
+    assert b.messages == ()  # B cannot see A's slice
+    assert a.messages is not b.messages  # distinct state
     b.add_message({"role": "user", "content": "secret-of-B"})
     assert len(a.messages) == 1
     assert a.messages[0]["content"] == "secret-of-A"
@@ -129,6 +129,16 @@ def test_tool_results_scoped_to_owning_agent():
     a.record_tool_result("read", {"path": "/x"})
     assert "read" in a.tool_results
     assert b.tool_results == {}
+
+
+def test_slice_is_write_protected_from_outside():
+    a = AgentContext(agent_id="A")
+    a.add_message({"role": "user", "content": "m1"})
+    with pytest.raises(AttributeError):
+        a.messages.append({"role": "user", "content": "sneaky"})  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        a.tool_results["sneaky"] = 1  # type: ignore[index]
+    assert len(a.messages) == 1  # no external mutation (EB2)
 
 
 # ---------------------------------------------------------------------------

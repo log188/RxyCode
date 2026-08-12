@@ -132,7 +132,7 @@ def _check_text_field(name: str, value: str, max_len: int) -> None:
         raise ValueError(f"{name} must be a non-empty string")
     if len(value) > max_len:
         raise ValueError(f"{name} must be at most {max_len} characters")
-    if any(ch < " " and ch not in "\t" for ch in value):
+    if any(ch < " " for ch in value):
         raise ValueError(f"{name} must not contain control characters")
 
 

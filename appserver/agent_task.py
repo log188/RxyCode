@@ -10,9 +10,12 @@ trees via the runtime; ``resume`` restores from a checkpoint written by
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Any
+
+_logger = logging.getLogger(__name__)
 
 from .eventbus import BusEvent, EventBus
 
@@ -150,6 +153,16 @@ class AgentTask:
         await self._require_state(
             LifecycleState.RUNNING, LifecycleState.PAUSED, LifecycleState.BOOTSTRAP
         )
+        # checkpoint before interrupt (E2 acceptance: interrupt writes the
+        # checkpoint first); a failure is logged, never blocks cancellation
+        try:
+            await self._runtime.save_checkpoint(self.agent_id)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "checkpoint write failed before interrupt for agent %s: %r",
+                self.agent_id,
+                exc,
+            )
         await self._set_state(LifecycleState.CANCELLED)
         main_task = self._main_task
         if main_task is not None and not main_task.done():

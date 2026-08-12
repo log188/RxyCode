@@ -17,7 +17,7 @@
     "event_drop_rate": 0.0,
     "publisher_blocked": false,
     "interrupt_fanout_ms": 0.0,
-    "deadlock_pressure_rounds": 7963,
+    "deadlock_pressure_rounds": 7904,
     "deadlock_hang": false,
     "budget_breaker_ms": 0.0,
     "rb1_real_parallelism": false,
@@ -29,33 +29,33 @@
     "rb_demonstrations": [
       {
         "rb": "RB1",
-        "demo": "speedup_n2 >= 1.5",
-        "value": 0.0,
-        "pass": false
+        "demo": "n/a in --stress mode (see full benchmark run)",
+        "value": null,
+        "pass": null
       },
       {
         "rb": "RB2",
-        "demo": "per-agent AgentContext slices are distinct; contract test test_messages_isolated_between_agents",
-        "value": "isolated",
-        "pass": true
+        "demo": "n/a in --stress mode (see full benchmark run)",
+        "value": null,
+        "pass": null
       },
       {
         "rb": "RB3",
-        "demo": "bus replay by seq matches live order after concurrent publish (bench_event_bus)",
-        "value": false,
-        "pass": false
+        "demo": "n/a in --stress mode (see full benchmark run)",
+        "value": null,
+        "pass": null
       },
       {
         "rb": "RB4",
-        "demo": "data plane stays explicit: runtime never embeds payload blobs in bus events (EB8), delegation via checkpoint refs; contract test_route_dead_letter_does_not_block_publisher",
-        "value": "explicit",
-        "pass": true
+        "demo": "n/a in --stress mode (see full benchmark run)",
+        "value": null,
+        "pass": null
       },
       {
         "rb": "RB5",
-        "demo": "interrupt fan-out latency < 2s with real task cancel",
-        "value_ms": 0.0,
-        "pass": false
+        "demo": "n/a in --stress mode (see full benchmark run)",
+        "value": null,
+        "pass": null
       }
     ]
   }

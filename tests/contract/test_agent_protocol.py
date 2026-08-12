@@ -311,6 +311,11 @@ def test_routing_reason_too_long_rejected():
         _evt("event/agent_routed", experiment_tag="E0", routing_reason="x" * 257)
 
 
+def test_routing_reason_tab_rejected():
+    with pytest.raises(ValidationError):
+        _evt("event/agent_routed", experiment_tag="E0", routing_reason="tab\there")
+
+
 def test_routing_reason_control_chars_rejected():
     with pytest.raises(ValidationError):
         _evt("event/agent_routed", experiment_tag="E0", routing_reason="bad\x00reason")
