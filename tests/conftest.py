@@ -15,6 +15,54 @@ from pathlib import Path
 from string import Template
 from types import SimpleNamespace
 
+# ---------------------------------------------------------------------------
+# Checkout-local package binding (runs before ANY project import).
+#
+# The editable install maps ``RxyCode.RxyCode1_1_0`` to the main working tree
+# (``D:\\agent-demo\\RxyCode\\RxyCode1_1_0``), which can diverge from the
+# checkout under test (worktree/branch).  Bind the canonical package to THIS
+# checkout's root instead and drop the editable meta-path finder so every
+# nested import resolves here too.
+# ---------------------------------------------------------------------------
+if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
+    import types as _types
+
+    _checkout_root = Path(__file__).resolve().parent.parent
+    os.environ["RXYCODE_CHECKOUT_ROOT"] = str(_checkout_root)
+    try:
+        import __editable___rxycode_1_2_9_finder as _editable_finder
+
+        _editable_finder.MAPPING["RxyCode.RxyCode1_1_0"] = str(_checkout_root)
+    except ImportError:
+        pass
+    _canonical = sys.modules.get("RxyCode.RxyCode1_1_0")
+    if _canonical is not None:
+        _canonical.__file__ = str(_checkout_root / "__init__.py")
+        _canonical.__path__ = [str(_checkout_root)]
+    else:
+        _parent_mod = sys.modules.get("RxyCode")
+        if _parent_mod is None:
+            _parent_mod = _types.ModuleType("RxyCode")
+            sys.modules["RxyCode"] = _parent_mod
+        _canonical = _types.ModuleType("RxyCode.RxyCode1_1_0")
+        sys.modules["RxyCode.RxyCode1_1_0"] = _canonical
+        setattr(_parent_mod, "RxyCode1_1_0", _canonical)
+        _canonical.__file__ = str(_checkout_root / "__init__.py")
+        _canonical.__path__ = [str(_checkout_root)]
+        _canonical.__package__ = "RxyCode.RxyCode1_1_0"
+        _canonical_init = _checkout_root / "__init__.py"
+        if _canonical_init.exists():
+            _canonical_source = _canonical_init.read_text(encoding="utf-8-sig")
+            exec(compile(_canonical_source, str(_canonical_init), "exec"), _canonical.__dict__)  # noqa: S102
+    os.environ["_RXYCODE_TEST_CHECKOUT"] = str(_checkout_root)
+    if "core" not in sys.modules:
+        try:
+            import RxyCode.RxyCode1_1_0.core as _core_pkg
+        except ImportError:
+            _core_pkg = None
+        if _core_pkg is not None:
+            sys.modules["core"] = _core_pkg
+
 import pytest
 from langchain_core.messages import AIMessage
 

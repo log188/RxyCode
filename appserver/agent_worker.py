@@ -38,9 +38,13 @@ try:
     from ..core.safety.approval import set_approval_broker
     from ..core.session import Session
 except ImportError:
-    from core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
-    from core.safety.approval import set_approval_broker
-    from core.session import Session
+    from RxyCode.RxyCode1_1_0.core.safety.approval import (
+        ApprovalBroker,
+        ApprovalDecision,
+        ApprovalRequest,
+    )
+    from RxyCode.RxyCode1_1_0.core.safety.approval import set_approval_broker
+    from RxyCode.RxyCode1_1_0.core.session import Session
 
 _logger = logging.getLogger(__name__)
 
@@ -120,7 +124,9 @@ class AgentWorker:
             for old in list(self._answered_request_ids)[:32]:
                 self._answered_request_ids.discard(old)
 
-    async def _write_interrupted_response(self, request_id: int) -> None:
+    async def _write_interrupted_response(
+        self, request_id: int, *, run_id: str | None = None
+    ) -> None:
         """Send the 'cancelled' terminal result for a cancelled prompt request.
 
         A notification flush failure must not prevent the terminal response:
@@ -131,21 +137,23 @@ class AgentWorker:
             await self._flush_pending_writes()
         except BaseException as exc:
             _logger.error("flush failed before interrupted response: %r", exc)
+        result = {
+            "status": "cancelled",
+            "text": "",
+            "thinking": None,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_hit_tokens": 0,
+            "cache_hit_rate": 0.0,
+        }
+        if run_id is not None:
+            result["run_id"] = run_id
         await asyncio.shield(
             self._write_ordered(
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": {
-                        "status": "cancelled",
-                        "text": "",
-                        "thinking": None,
-                        "input_tokens": 0,
-                        "output_tokens": 0,
-                        "cache_hit_tokens": 0,
-                        "cache_hit_rate": 0.0,
-                        "detail": "interrupted",
-                    },
+                    "result": result,
                 }
             )
         )
@@ -363,8 +371,17 @@ class AgentWorker:
                 # write is shielded so an interrupt in the write window
                 # cannot leave the parent hanging.
                 await self._wind_down_stream(tui, coalescer)
-                await self._write_interrupted_response(request_id)
-                raise
+                await self._write_interrupted_response(request_id, run_id=run_id)
+                # A real task cancellation must continue propagating so the
+                # interrupt lifecycle remains cancellable. A Session may also
+                # return CancelledError as a terminal result without the
+                # handler task itself being cancelled; in that case the
+                # terminal response is sufficient and the direct caller must
+                # not receive an unexpected exception.
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+                return
             except Exception as exc:
                 await self._wind_down_stream(tui, coalescer)
                 # Order the error response after all already-queued
