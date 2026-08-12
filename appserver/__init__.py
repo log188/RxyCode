@@ -31,6 +31,10 @@ def _bind_top_level_checkout_to_canonical_package() -> None:
     package.__file__ = str(root / "__init__.py")
     package.__path__ = [str(root)]
     sys.modules[canonical_name] = package
+    init_file = root / "__init__.py"
+    if init_file.exists():
+        source = init_file.read_text(encoding="utf-8")
+        exec(compile(source, str(init_file), "exec"), package.__dict__)  # noqa: S102
     parent.RxyCode1_1_0 = package
 
 
