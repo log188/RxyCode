@@ -51,14 +51,20 @@ function normalizeCommandPayload(
 export async function httpFetchStatus(
   onStatus: (status: StatusInfo | null) => void,
 ): Promise<void> {
+  const s = await httpFetchStatusValue();
+  onStatus(s);
+}
+
+/** Fetch full /status payload; returns null when the backend is offline. */
+export async function httpFetchStatusValue(): Promise<StatusInfo | null> {
   try {
     const resp = await axios.get(`${API_BASE}/status`, {
       timeout: 5000,
       headers: authorizationHeaders(),
     });
-    onStatus(resp.data as StatusInfo);
+    return resp.data as StatusInfo;
   } catch {
-    onStatus(null);
+    return null;
   }
 }
 

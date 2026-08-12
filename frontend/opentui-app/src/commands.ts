@@ -18,6 +18,7 @@ export interface Command {
 export const AVAILABLE_COMMANDS: Command[] = [
   { name: "/session", description: "会话管理（查看/加载）", category: "会话", action: "session" },
   { name: "/save-chat", description: "保存当前对话", category: "会话" },
+  { name: "/copy", description: "复制全部对话文本到剪贴板", category: "会话", keywords: "copy 复制 全选" },
   { name: "/clear", description: "清除对话上下文", category: "会话", keywords: "new session 清除" },
   { name: "/model", description: "切换模型", args: "[name]", category: "Agent", action: "model", keywords: "switch model 模型" },
   { name: "/models", description: "列出所有模型", category: "Agent", action: "model" },
@@ -26,6 +27,7 @@ export const AVAILABLE_COMMANDS: Command[] = [
   { name: "/build", description: "进入构建模式", category: "Agent", keywords: "mode 模式" },
   { name: "/compose", description: "进入编排模式", category: "Agent", keywords: "mode 模式" },
   { name: "/thinking", description: "展开/折叠思考过程", category: "Agent", keywords: "think reason" },
+  { name: "/effort", description: "选择思考强度（档位随当前模型）", args: "[档位]", category: "Agent", keywords: "effort 思考强度 推理 档位" },
   { name: "/memory add", description: "添加记忆", args: "<text>", category: "记忆" },
   { name: "/memory list", description: "列出所有记忆", category: "记忆", action: "memory" },
   { name: "/memory remove", description: "删除记忆", args: "<id>", category: "记忆" },
@@ -56,10 +58,12 @@ export const AVAILABLE_COMMANDS: Command[] = [
 /** Local-only commands handled without POST /command. */
 export const LOCAL_COMMAND_NAMES = new Set([
   "/clear",
+  "/copy",
   "/build",
   "/plan",
   "/compose",
   "/thinking",
+  "/effort",
   "/help",
   "/settings",
   "/children",

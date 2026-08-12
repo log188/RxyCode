@@ -153,9 +153,6 @@ export const httpTransport: ChatTransport = {
       if (event.type === "progress" && !state.hasReasoning) {
         callbacks.onProgress?.(event.message || event.text || "Working...");
       }
-      if (event.type === "tool_call") {
-        callbacks.onProgress?.(event.name ? `Tool: ${event.name}` : "Running tool...");
-      }
       if (event.type === "approval_request") {
         const args = event.args;
         callbacks.onApprovalRequest?.({

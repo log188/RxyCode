@@ -11,6 +11,8 @@ export interface ChatMessage {
   mode?: Mode;
   toolName?: string;
   toolStatus?: ToolStatus;
+  /** tool 消息：默认收起；为 true 时展开显示参数/结果。 */
+  toolExpanded?: boolean;
   done?: boolean;
   live?: boolean;
   /** child_session 专用字段 */
@@ -45,6 +47,8 @@ export interface StatusInfo {
   context_max_k?: number;
   mode?: Mode;
   model?: string;
+  /** /effort 全局思考强度档位（厂商档位值或抽象档位；未设置 = undefined）。 */
+  effort?: string;
 }
 
 export const MODE_COLORS: Record<Mode, string> = {

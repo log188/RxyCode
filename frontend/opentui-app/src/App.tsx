@@ -343,19 +343,23 @@ function ChatLine({
     );
   }
   if (msg.role === "tool") {
+    // 工具消息默认收起：只显示 `>_ 工具名 [状态]`；按 Enter/e 展开看参数与结果。
     const st = msg.toolStatus || "running";
     const icon = st === "running" ? "…" : st === "success" ? "✓" : "✗";
     return (
       <box style={{ width: "100%", paddingLeft: 1, paddingRight: 1, flexDirection: "column" }}>
         <text selectable>
           <span fg={st === "error" ? C.yellow : C.subtext}>
-            {`  ${icon} ${msg.toolName || "tool"} [${st}]`}
+            {`  ${icon} >_ ${msg.toolName || "tool"} [${st}]`}
           </span>
+          {!msg.toolExpanded && msg.content ? (
+            <span fg={C.overlay2}>  · Enter 展开</span>
+          ) : null}
         </text>
-        {msg.content ? (
+        {msg.toolExpanded && msg.content ? (
           <text fg={C.overlay2} selectable>
             {"    "}
-            {msg.content.split("\n").slice(0, 5).join("\n")}
+            {msg.content}
           </text>
         ) : null}
       </box>
@@ -376,6 +380,8 @@ export default function App() {
   const renderer = useRenderer();
   const [mode, setMode] = useState<Mode>("build");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  messagesRef.current = messages;
   const [status, setStatus] = useState<StatusInfo | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<ApprovalInfo | null>(null);
@@ -451,6 +457,45 @@ export default function App() {
     }
   }, [renderer]);
 
+  /** 复制全部对话文本到剪贴板（解决终端鼠标框选受视口限制、无法全部复制的问题）。 */
+  const copyAllMessages = useCallback(() => {
+    const lines: string[] = [];
+    for (const m of messagesRef.current) {
+      if (m.role === "user") lines.push(`> ${m.content}`);
+      else if (m.role === "assistant") lines.push(m.content);
+      else if (m.role === "thinking") lines.push(`[思考] ${m.content}`);
+      else if (m.role === "tool") {
+        const name = m.toolName || "tool";
+        const status = m.toolStatus || "running";
+        lines.push(`[${name} ${status}] ${m.content || ""}`);
+      } else if (m.role === "system") lines.push(`[系统] ${m.content}`);
+      else if (m.role === "child_session") lines.push(`[子代理 ${m.agentId || ""}] ${m.content}`);
+    }
+    const text = lines.join("\n").trim();
+    if (!text) return false;
+    try {
+      renderer.copyToClipboardOSC52(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [renderer]);
+
+  /** 切换最近一条 tool 消息的展开/收起（默认收起）。 */
+  const toggleLastToolExpanded = useCallback(() => {
+    setMessages((prev) => {
+      const idx = [...prev].reverse().findIndex((m) => m.role === "tool");
+      if (idx < 0) return prev;
+      const realIdx = prev.length - 1 - idx;
+      const messages = [...prev];
+      messages[realIdx] = {
+        ...messages[realIdx],
+        toolExpanded: !messages[realIdx].toolExpanded,
+      };
+      return messages;
+    });
+  }, []);
+
   useSelectionHandler((sel: Selection) => {
     selectionRef.current = sel;
     // Auto-copy when mouse selection ends (OpenCode-like).
@@ -500,7 +545,7 @@ export default function App() {
   }, []);
 
   const statusLine = status
-    ? `${status.model || "?"} · ${status.mode || mode} · ctx ${status.context_used_k ?? 0}k`
+    ? `${status.model || "?"} · ${status.mode || mode} · effort ${status.effort ?? "balanced"} · ctx ${status.context_used_k ?? 0}k`
     : "offline";
 
   const settingsDialogs = useSettingsDialogs({
@@ -522,7 +567,7 @@ export default function App() {
 
   const submitTextRef = useRef<((text: string) => Promise<void>) | null>(null);
 
-  const { dialogOpen, openPalette, openPermission, openSession, openModel, openAddModel, routePaletteCommand } =
+  const { dialogOpen, openPalette, openPermission, openSession, openModel, openEffort, openAddModel, routePaletteCommand } =
     settingsDialogs;
 
   useEffect(() => {
@@ -612,6 +657,12 @@ export default function App() {
           clearInput();
           return;
         }
+        if (name === "/copy") {
+          const ok = copyAllMessages();
+          pushSystem(ok ? "已复制全部对话到剪贴板" : "没有可复制的内容");
+          clearInput();
+          return;
+        }
         if (name === "/build" || name === "/plan" || name === "/compose") {
           setMode(name.slice(1) as Mode);
           clearInput();
@@ -691,6 +742,7 @@ export default function App() {
             "/session",
             "/model",
             "/models",
+            "/effort",
             "/addmodel",
             "/list-skills",
             "/list-mcp",
@@ -724,6 +776,11 @@ export default function App() {
         clearInput();
         return;
       }
+      if (name === "/effort" && !args) {
+        openEffort();
+        clearInput();
+        return;
+      }
       if (name === "/addmodel" && !args) {
         openAddModel();
         clearInput();
@@ -745,6 +802,7 @@ export default function App() {
     },
     [
       clearInput,
+      copyAllMessages,
       openAddModel,
       openModel,
       openPermission,
@@ -996,6 +1054,13 @@ export default function App() {
       void toggleThinking();
       return;
     }
+    // Enter（输入框为空时）展开/收起最近一条工具调用（默认收起，>_ 前缀）。
+    const promptText = textareaRef.current?.plainText ?? inputValue;
+    if (isPromptSubmitKey(key) && !promptText.trim()) {
+      key.preventDefault();
+      toggleLastToolExpanded();
+      return;
+    }
     if (isPromptSubmitKey(key)) {
       const text = normalizePromptSubmitText(
         textareaRef.current?.plainText ?? inputValue,
@@ -1112,7 +1177,7 @@ export default function App() {
 
       {progress ? (
         <box style={{ flexShrink: 0, paddingLeft: 1, height: 1 }}>
-          <text fg={C.yellow}>{progress}</text>
+          <text fg={C.yellow}>{progress.length > cols ? `${progress.slice(0, Math.max(1, cols - 3))}…` : progress}</text>
         </box>
       ) : null}
 

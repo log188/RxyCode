@@ -10,6 +10,7 @@ import {
 import type { Mode, StatusInfo } from "../types.ts";
 import {
   httpFetchStatus,
+  httpFetchStatusValue,
   httpSendCommand,
   type CommandResult,
 } from "./httpAdmin.ts";
@@ -487,11 +488,6 @@ class StdioAppserverSession {
         if (event.type === "progress" && !state.hasReasoning) {
           callbacks.onProgress?.(event.message || event.text || "Working...");
         }
-        if (event.type === "tool_call") {
-          callbacks.onProgress?.(
-            event.name ? `Tool: ${event.name}` : "Running tool...",
-          );
-        }
         if (event.type === "tool_result") {
           callbacks.onApprovalRequest?.(null);
         }
@@ -536,11 +532,10 @@ class StdioAppserverSession {
           messages: settleActiveMessages(state.messages),
         });
 
-        this.lastStatus = {
-          input_tokens: result.input_tokens,
-          output_tokens: result.output_tokens,
-          mode,
-        };
+        // 保留完整 status 快照（chat 结束后 finally 会刷新 /status，这里不再
+        // 用只含 input/output/mode 的残缺对象覆盖，避免上下文/缓存统计丢失）。
+        const fresh = await httpFetchStatusValue();
+        if (fresh) this.lastStatus = fresh;
       } catch (e) {
         if (abort.signal.aborted || (e as Error)?.name === "AbortError") {
           publish({
@@ -604,7 +599,14 @@ class StdioAppserverSession {
     } finally {
       callbacks.onStreaming(false);
       callbacks.onProgress?.("");
-      callbacks.onStatus(this.lastStatus);
+      // 用完整 /status 刷新（含 context/cache 统计），而不是残缺的输入输出快照。
+      const final = await httpFetchStatusValue();
+      if (final) {
+        this.lastStatus = final;
+        callbacks.onStatus(final);
+      } else {
+        callbacks.onStatus(this.lastStatus);
+      }
     }
   }
 
