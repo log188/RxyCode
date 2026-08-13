@@ -43,6 +43,8 @@ Watchdog (T4) -> periodic event/server_heartbeat; stall -> kill worker + degrade
 
 Each session gets its own **agent worker subprocess**. Prompt/bootstrap timeouts call
 `AgentHost.kill()` so blocked work cannot hold the main process (T1).
+Background `session/new` warm uses a 180s budget and **single-flight**
+bootstrap: a timed-out waiter does not start a second AgentV2 constructor.
 
 ## Phase 2 hard constraints (P4)
 

@@ -76,6 +76,7 @@ async def test_server_session_set_model_updates_task_record(monkeypatch, tmp_pat
     record = server._sessions.create(tmp_path)
     host = SimpleNamespace(
         alive=lambda: True,
+        bootstrapped=True,
         ensure_bootstrapped=AsyncMock(),
         set_model=AsyncMock(side_effect=lambda model_id, timeout=30.0: {
             "ok": True,
@@ -83,6 +84,7 @@ async def test_server_session_set_model_updates_task_record(monkeypatch, tmp_pat
             "provider_id": "glm",
         }),
     )
+    server._session_hosts[record.session_id] = host
     monkeypatch.setattr(server, "_host_for_session", AsyncMock(return_value=host))
     responses = []
     monkeypatch.setattr(
@@ -96,3 +98,33 @@ async def test_server_session_set_model_updates_task_record(monkeypatch, tmp_pat
     assert record.model_id == "glm/glm-5"
     assert record.provider_id == "glm"
     assert responses[-1]["model_id"] == "glm/glm-5"
+    host.ensure_bootstrapped.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_session_set_model_persists_without_starting_worker(monkeypatch, tmp_path):
+    persisted: list[str] = []
+
+    def fake_set_active(params):
+        persisted.append(str(params.get("id", "")))
+        return {"ok": True, "id": params.get("id")}
+
+    monkeypatch.setattr("appserver.model_routes.set_active", fake_set_active)
+    server = AppServer(stub=True)
+    server._initialized = True
+    record = server._sessions.create(tmp_path)
+    host_factory = AsyncMock(side_effect=AssertionError("must not spawn worker"))
+    monkeypatch.setattr(server, "_host_for_session", host_factory)
+    responses = []
+    monkeypatch.setattr(
+        server, "_respond", AsyncMock(side_effect=lambda _request_id, payload: responses.append(payload))
+    )
+
+    await server._handle_session_set_model(
+        {"session_id": record.session_id, "model_id": "deepseek/deepseek-v4-flash"}, 12
+    )
+
+    assert persisted == ["deepseek/deepseek-v4-flash"]
+    assert record.model_id == "deepseek/deepseek-v4-flash"
+    assert responses[-1]["ok"] is True
+    host_factory.assert_not_awaited()

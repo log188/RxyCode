@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { resetChatTransportForTests } from "../transport/index.ts";
 
 const axiosGet = mock(() =>
   Promise.resolve({
@@ -49,9 +50,16 @@ const { interpretModelSwitchResult, modelSwitchCommand } = await import(
 );
 
 describe("DialogModel HTTP flow", () => {
+  beforeEach(() => {
+    process.env.RXYCODE_TRANSPORT = "http";
+    resetChatTransportForTests();
+  });
+
   afterEach(() => {
     axiosGet.mockClear();
     axiosPost.mockClear();
+    delete process.env.RXYCODE_TRANSPORT;
+    resetChatTransportForTests();
   });
 
   test("list → select second model → POST /command with namespaced id", async () => {

@@ -44,12 +44,21 @@ def bootstrap_agent(
     cfg = load_config()
     i18n.set_lang(cfg.get("language", "zh"))
 
+    # 2026-08-13: 预导入 langchain_openai（含 torch 传递链，实测 ~6.5s）——
+    # AgentV2 已改懒导入（首次 _build_llm_from_config 才触发），这里在
+    # bootstrap 阶段一次性预加载：运行时/切换模型的首次 LLM 构造不再卡 6.5s
+    # （切换模型走 worker.switch_model 复用进程，秒级完成）。
+    try:
+        import langchain_openai  # noqa: F401 - 预导入消除运行时首次构造延迟
+    except Exception as exc:  # pragma: no cover - 预导入失败不阻断 bootstrap
+        log.warning("bootstrap_agent: langchain_openai preimport failed: %s", exc)
+
     try:
         from ..core.agent_v2 import AgentV2 as Agent
     except ImportError:
         from core.agent_v2 import AgentV2 as Agent
 
-    log.info("bootstrap_agent: constructing AgentV2 (may take 1-3 minutes)")
+    log.info("bootstrap_agent: constructing AgentV2")
     agent = Agent()
     log.info("bootstrap_agent: AgentV2 ready")
     return agent

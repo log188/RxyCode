@@ -893,6 +893,7 @@ def test_appserver_stdio_smoke(switch: str):
     env = os.environ.copy()
     env["RXYCODE_APPSERVER_STUB"] = "1"
     env["RXYCODE_ASYNC_RPC"] = switch
+    env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONPATH"] = str(PROJECT_ROOT)
     proc = subprocess.Popen(
         [sys.executable, "-m", "appserver"],
@@ -940,6 +941,7 @@ def test_appserver_interrupt_cancels_hung_prompt(switch: str):
     env = os.environ.copy()
     env["RXYCODE_APPSERVER_STUB"] = "1"
     env["RXYCODE_ASYNC_RPC"] = switch
+    env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONPATH"] = str(PROJECT_ROOT)
     proc = subprocess.Popen(
         [sys.executable, "-m", "appserver"],

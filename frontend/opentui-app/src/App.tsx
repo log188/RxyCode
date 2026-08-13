@@ -294,6 +294,10 @@ function ChatLine({
   wrapW: number;
 }) {
   if (msg.role === "thinking") {
+    const text = (msg.content || "").trim();
+    const placeholder =
+      text === "" || text === "…" || text === "..." || text === "思考中...";
+    if (placeholder) return null;
     return <ThoughtMessage content={msg.content} done={msg.done} expanded={thinkingExpanded} />;
   }
   if (msg.role === "user") {

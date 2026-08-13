@@ -42,6 +42,7 @@ except ImportError:
 _logger = logging.getLogger(__name__)
 
 _DEFAULT_PROMPT_TIMEOUT_SECONDS = 600.0
+_DEFAULT_WARM_TIMEOUT_SECONDS = 180.0
 _SHUTDOWN_PROMPT_WAIT_SECONDS = 30.0
 _REPLAY_EVENT_METHODS = {
     "event/task_started",
@@ -470,7 +471,7 @@ class AppServer:
         try:
             async with self._session_lock(session_id):
                 host = await self._host_for_session(session_id)
-                await host.ensure_bootstrapped(timeout=30.0)
+            await host.ensure_bootstrapped(timeout=_DEFAULT_WARM_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -517,12 +518,14 @@ class AppServer:
                 await self._emit_job_state(session_id, job_id, "running")
 
                 run_id = uuid.uuid4().hex
-                await self._emit_model(
-                    ProgressUpdate(
-                        session_id=session_id,
-                        text="Starting Agent worker…",
+                host = await self._host_for_session(session_id)
+                if not getattr(host, "bootstrapped", False):
+                    await self._emit_model(
+                        ProgressUpdate(
+                            session_id=session_id,
+                            text="Starting Agent worker…",
+                        )
                     )
-                )
 
                 def emit_message(message: dict[str, Any]) -> None:
                     self._watchdog.touch_job(job_id)
@@ -546,7 +549,7 @@ class AppServer:
                         self._schedule_notification(message)
 
                 async def _execute_prompt() -> dict[str, Any]:
-                    host = await self._host_for_session(session_id)
+                    host._emit = emit_message
                     await host.ensure_bootstrapped(timeout=wall_timeout)
                     # Bootstrap is a separate cold-start phase. It has the
                     # outer prompt timeout, but must not be judged as a
@@ -969,9 +972,24 @@ class AppServer:
             await self._respond_error(request_id, -32602, "model_id is required")
             return
         try:
-            host = await self._host_for_session(session_id)
-            await host.ensure_bootstrapped(timeout=30.0)
-            result = await host.set_model(model_id, timeout=30.0)
+            from .model_routes import set_active
+
+            set_active({"id": model_id})
+        except Exception:
+            _logger.warning("could not persist active model %s", model_id, exc_info=True)
+        host = self._session_hosts.get(session_id)
+        result: dict[str, Any] = {"ok": True, "model_id": model_id}
+        try:
+            if (
+                host is not None
+                and host.alive()
+                and getattr(host, "bootstrapped", False)
+            ):
+                switched = await host.set_model(model_id, timeout=30.0)
+                if isinstance(switched, dict):
+                    result.update(switched)
+                    result["ok"] = True
+                    result["model_id"] = model_id
         except Exception as exc:
             await self._respond_error(request_id, -32000, str(exc))
             return

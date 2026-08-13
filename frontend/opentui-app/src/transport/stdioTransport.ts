@@ -16,6 +16,11 @@ import {
 } from "./httpAdmin.ts";
 import { notifyToStreamEvent } from "./notifyToStreamEvent.ts";
 import { shouldClearStreamingOnNotify } from "./streamLifecycle.ts";
+import {
+  parseStdioAdminCommand,
+  statusFromModelsList,
+  type ModelsListPayload,
+} from "./stdioCommands.ts";
 import { resolveChildTarget } from "../childNavigation.ts";
 import type {
   ChatApiCallbacks,
@@ -302,6 +307,58 @@ class StdioAppserverSession {
     });
   }
 
+  isReady(): boolean {
+    return this.client !== null && this.sessionId !== null;
+  }
+
+  async listModels(): Promise<ModelsListPayload> {
+    const client = await this.ensureReady();
+    return (await client.request<ModelsListPayload>("models/list", {})) as ModelsListPayload;
+  }
+
+  async fetchStatusSnapshot(): Promise<StatusInfo | null> {
+    const listed = await this.listModels();
+    this.lastStatus = statusFromModelsList(listed, this.lastStatus);
+    return this.lastStatus;
+  }
+
+  async switchModel(modelId: string): Promise<CommandResult> {
+    const client = await this.ensureReady();
+    const active = (await client.request<{
+      ok?: boolean;
+      id?: string;
+      message?: string;
+    }>("models/set_active", { id: modelId })) as {
+      ok?: boolean;
+      id?: string;
+      message?: string;
+    };
+    if (!active?.ok) {
+      const message = active?.message || `切换失败: ${modelId}`;
+      return { ok: false, action: "error", error: message, message };
+    }
+    if (this.sessionId) {
+      try {
+        await client.request("session/set_model", {
+          session_id: this.sessionId,
+          model_id: modelId,
+        });
+      } catch {
+        // Worker may still be warming; persisted active_model is enough.
+      }
+    }
+    try {
+      await this.fetchStatusSnapshot();
+    } catch {
+      this.lastStatus = { ...(this.lastStatus ?? {}), model: modelId };
+    }
+    return {
+      ok: true,
+      action: "model_changed",
+      message: `已切换: ${modelId}`,
+    };
+  }
+
   async setThinkingExpanded(expanded: boolean): Promise<{
     ok: boolean;
     expanded: boolean;
@@ -532,10 +589,13 @@ class StdioAppserverSession {
           messages: settleActiveMessages(state.messages),
         });
 
-        // 保留完整 status 快照（chat 结束后 finally 会刷新 /status，这里不再
-        // 用只含 input/output/mode 的残缺对象覆盖，避免上下文/缓存统计丢失）。
-        const fresh = await httpFetchStatusValue();
-        if (fresh) this.lastStatus = fresh;
+        // 保留完整 status 快照（chat 结束后 finally 会刷新 models/list + HTTP）。
+        try {
+          await this.fetchStatusSnapshot();
+        } catch {
+          const fresh = await httpFetchStatusValue();
+          if (fresh) this.lastStatus = fresh;
+        }
       } catch (e) {
         if (abort.signal.aborted || (e as Error)?.name === "AbortError") {
           publish({
@@ -599,13 +659,25 @@ class StdioAppserverSession {
     } finally {
       callbacks.onStreaming(false);
       callbacks.onProgress?.("");
-      // 用完整 /status 刷新（含 context/cache 统计），而不是残缺的输入输出快照。
-      const final = await httpFetchStatusValue();
-      if (final) {
-        this.lastStatus = final;
-        callbacks.onStatus(final);
-      } else {
-        callbacks.onStatus(this.lastStatus);
+      // 用 models/list 刷新当前模型（不依赖 HTTP agent 是否已启动）。
+      try {
+        const listed = await this.fetchStatusSnapshot();
+        const httpStatus = await httpFetchStatusValue();
+        const merged = {
+          ...(httpStatus ?? {}),
+          ...(listed ?? this.lastStatus ?? {}),
+          model: listed?.model || httpStatus?.model || this.lastStatus?.model,
+        };
+        this.lastStatus = merged;
+        callbacks.onStatus(merged);
+      } catch {
+        const final = await httpFetchStatusValue();
+        if (final) {
+          this.lastStatus = final;
+          callbacks.onStatus(final);
+        } else {
+          callbacks.onStatus(this.lastStatus);
+        }
       }
     }
   }
@@ -627,12 +699,16 @@ export const stdioTransport: ChatTransport = {
   kind: "stdio",
 
   async fetchStatus(onStatus: (status: StatusInfo | null) => void): Promise<void> {
-    return httpFetchStatus(onStatus);
+    try {
+      onStatus(await sharedSession.fetchStatusSnapshot());
+    } catch {
+      await httpFetchStatus(onStatus);
+    }
   },
 
   async sendCommand(command: string): Promise<CommandResult> {
-    const trimmed = command.trim();
-    if (trimmed === "/thinking") {
+    const parsed = parseStdioAdminCommand(command);
+    if (parsed.kind === "thinking") {
       try {
         const result = await sharedSession.toggleThinkingExpanded();
         return {
@@ -648,16 +724,19 @@ export const stdioTransport: ChatTransport = {
         };
       }
     }
-    const result = await httpSendCommand(command);
-    if (
-      result.ok &&
-      trimmed.startsWith("/model ") &&
-      result.action === "model_changed"
-    ) {
-      await sharedSession.shutdown();
-      sharedSession = new StdioAppserverSession();
+    if (parsed.kind === "model") {
+      try {
+        return await sharedSession.switchModel(parsed.modelId);
+      } catch (e) {
+        return {
+          ok: false,
+          action: "error",
+          error: e instanceof Error ? e.message : String(e),
+          message: e instanceof Error ? e.message : String(e),
+        };
+      }
     }
-    return result;
+    return httpSendCommand(parsed.command);
   },
 
   async cancelActiveRequest(): Promise<void> {
@@ -701,6 +780,15 @@ export const stdioTransport: ChatTransport = {
 /** Best-effort pre-warm of appserver Agent bootstrap (stdio only). */
 export async function warmStdioBootstrap(): Promise<void> {
   await sharedSession.warmBootstrap();
+}
+
+/** Configured models + persisted active id (no HTTP agent required). */
+export async function listStdioModels(): Promise<ModelsListPayload> {
+  return sharedSession.listModels();
+}
+
+export function isStdioSessionReady(): boolean {
+  return sharedSession.isReady();
 }
 
 /** Test hook: reset shared stdio session between tests. */

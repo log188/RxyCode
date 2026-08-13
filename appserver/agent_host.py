@@ -34,6 +34,11 @@ _logger = logging.getLogger(__name__)
 EmitFn = Callable[[dict[str, Any]], None]
 ForwardServerRequest = Callable[[str, dict[str, Any]], Any]
 
+#: Inner bootstrap RPC budget. Waiters may time out sooner; the in-flight
+#: bootstrap must keep running so a later prompt can join it instead of
+#: spawning a second AgentV2 constructor.
+_BOOTSTRAP_RPC_TIMEOUT_SECONDS = 300.0
+
 
 def async_rpc_enabled() -> bool:
     """True when the C1 async transport should be used (default)."""
@@ -509,6 +514,8 @@ class AgentHost:
         self._forward_server_request = forward_server_request
         self._main_loop = main_loop
         self._bootstrapped = False
+        self._bootstrap_task: asyncio.Task[Any] | None = None
+        self._bootstrap_lock = asyncio.Lock()
         self._emit: EmitFn | None = None
         self._async = async_rpc_enabled()
         self._legacy_degraded = False
@@ -796,9 +803,30 @@ class AgentHost:
 
     # ── public API ───────────────────────────────────────────────
 
+    @property
+    def bootstrapped(self) -> bool:
+        return self._bootstrapped
+
     async def ensure_bootstrapped(self, *, timeout: float) -> None:
+        """Join a single in-flight bootstrap instead of starting a second one.
+
+        A short waiter timeout (warm used to be 30s) must not cancel the
+        worker-side constructor; the next prompt waits on the same task.
+        """
         if self._bootstrapped:
             return
+        async with self._bootstrap_lock:
+            if self._bootstrapped:
+                return
+            task = self._bootstrap_task
+            if task is None or task.done():
+                if self._bootstrapped:
+                    return
+                self._bootstrap_task = asyncio.create_task(self._bootstrap_once())
+                task = self._bootstrap_task
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+
+    async def _bootstrap_once(self) -> None:
         await self._pipe_request(
             "bootstrap",
             {
@@ -806,7 +834,7 @@ class AgentHost:
                 "workspace_root": str(self.workspace_root),
                 "session_id": self.session_id,
             },
-            timeout=timeout,
+            timeout=_BOOTSTRAP_RPC_TIMEOUT_SECONDS,
         )
         self._bootstrapped = True
 

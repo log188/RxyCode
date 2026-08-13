@@ -27,7 +27,9 @@ from urllib.parse import urlsplit
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
+# 2026-08-13: ChatOpenAI 改为懒导入——顶层 `from langchain_openai import ChatOpenAI`
+# 会传递导入 torch/transformers（实测 6.5s），拖慢 worker bootstrap（切换模型/
+# 会话重建时的"agent 重启"等待）。使用点在 _build_llm_from_config 内局部导入。
 from openai import AsyncOpenAI
 
 from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
@@ -628,6 +630,7 @@ class UsageTrackingLLM:
         reserved_output_tokens: int = 0,
         provider=None,
         capabilities=None,
+        llm_timeout: float = 90.0,
     ):
         self._llm = llm
         self._provider = provider
@@ -642,6 +645,12 @@ class UsageTrackingLLM:
         self._reserved_output_tokens = max(0, int(reserved_output_tokens or 0))
         # Transient transport-error retry budget (cached from config on first use).
         self._transport_retries: int | None = None
+        # 2026-08-13: LLM 单次调用/流式建立期总超时（默认 90s，须 < watchdog 120s）
+        self._llm_timeout = max(1.0, float(llm_timeout or 90.0))
+
+    def _llm_call_timeout(self) -> float:
+        """LLM 单次调用/流式建立期的总超时（秒）。"""
+        return self._llm_timeout
 
     async def _acquire_rate_limit(self, messages):
         if self._rate_limiter is None:
@@ -870,6 +879,7 @@ class UsageTrackingLLM:
                     messages,
                     provider=self._provider,
                     capabilities=self._capabilities,
+            llm_timeout=float(self.model_config.get('timeout', 90.0) or 90.0),
                 )
                 usage = (
                     reported[0] or self._input_token_cost(messages),
@@ -890,10 +900,16 @@ class UsageTrackingLLM:
 
         Returns (first_chunk, remaining_async_iterator). Used so the
         circuit breaker only guards stream establishment, not every token.
+
+        2026-08-13: 首 chunk 等待加总超时（_llm_call_timeout，默认 90s）——
+        流式建立期挂起（上游无响应）此前会无限等待，watchdog 120s 先杀，
+        用户看到 "job stalled" 而非真实超时错误。
         """
         ait = self._llm.astream(messages, **kwargs).__aiter__()
         try:
-            first = await ait.__anext__()
+            first = await asyncio.wait_for(
+                ait.__anext__(), timeout=self._llm_call_timeout()
+            )
         except StopAsyncIteration:
             return None, ait
         return first, ait
@@ -958,7 +974,11 @@ class UsageTrackingLLM:
             try:
                 ait = self._llm.astream(messages, **kwargs).__aiter__()
                 try:
-                    first = await ait.__anext__()
+                    # 2026-08-13: 首 chunk 等待加总超时（同 _open_stream）——
+                    # 流式建立期挂起不得无限等待，超时后走下方传输重试
+                    first = await asyncio.wait_for(
+                        ait.__anext__(), timeout=self._llm_call_timeout()
+                    )
                 except StopAsyncIteration:
                     _resolve_llm_transport_recovery()
                     return None, ait
@@ -1001,6 +1021,7 @@ class UsageTrackingLLM:
             reserved_output_tokens=self._reserved_output_tokens,
             provider=self._provider,
             capabilities=self._capabilities,
+            llm_timeout=float(self.model_config.get('timeout', 90.0) or 90.0),
         )
 
     def with_structured_output(self, schema, **kwargs):
@@ -1015,6 +1036,7 @@ class UsageTrackingLLM:
             reserved_output_tokens=self._reserved_output_tokens,
             provider=self._provider,
             capabilities=self._capabilities,
+            llm_timeout=float(self.model_config.get('timeout', 90.0) or 90.0),
         )
 
     def __getattr__(self, name):
@@ -1030,6 +1052,9 @@ class AgentV2:
         # B5: 预热状态（惰性初始化；PrewarmState 签名校验 + keep-alive 调度）
         self._prewarm = None
         self._keep_alive_state = None
+        # 2026-08-13: 预热失败冷却时间戳（None=从未尝试）。预热已改为后台
+        # 执行且失败进入 60s 冷却，防止上游慢/挂时每个请求都在入口重复触发。
+        self._prewarm_last_attempt_at: float | None = None
 
         # Resolve model config (same logic as old Agent)
         if model_name and model_name in self._cfg.get("models", {}):
@@ -1159,10 +1184,11 @@ class AgentV2:
             "environment": "safe_allowlist_plus_explicit",
         }
         self._register_tools()
-        # Configured MCP processes are lifecycle-owned by this Agent.  Loading
-        # here makes them available to the first request; every later run also
-        # checks the config fingerprint before exposing tools to the model.
-        self._refresh_mcp_tools(force=True)
+        # Configured MCP processes are lifecycle-owned by this Agent. Connect
+        # them in the background so greetings and the first prompt are not
+        # blocked by per-server connect timeouts (default 30s each).
+        self._mcp_refresh_thread = None
+        self._schedule_mcp_refresh()
 
     def _prepare_graph_state(
         self,
@@ -1652,6 +1678,9 @@ class AgentV2:
         except Exception:  # pragma: no cover
             pass
 
+        # 2026-08-13: ChatOpenAI 懒导入（顶层导入拖慢 worker bootstrap 6.5s）
+        from langchain_openai import ChatOpenAI  # noqa: PLC0415 - 懒导入避免 torch 链
+
         raw_llm = ChatOpenAI(**provider.llm_kwargs(model_config, caps))
 
         return UsageTrackingLLM(
@@ -1663,6 +1692,7 @@ class AgentV2:
             reserved_output_tokens=self._rate_reserved_output_tokens,
             provider=provider,
             capabilities=caps,
+            llm_timeout=float(model_config.get('timeout', 90.0) or 90.0),
         )
 
     def _build_llm(self):
@@ -1739,7 +1769,11 @@ class AgentV2:
         return AsyncOpenAI(
             api_key=self.model_config.get("api_key") or "",
             base_url=self.model_config.get("base_url"),
-            timeout=self.model_config.get("timeout", 600.0),
+            # 2026-08-13: 默认超时 600 → 90s（对齐 _llm_call_timeout 与 watchdog
+            # 120s 层级：LLM 单次调用超时必须先于 watchdog 触发，否则挂起被
+            # 伪装成 "job stalled"）。httpx read timeout 覆盖流式消费期块间等待；
+            # 流式建立期由 _open_stream/_open_stream_with_retry 的 wait_for 兜底。
+            timeout=self.model_config.get("timeout", 90.0),
         )
 
     @staticmethod
@@ -2815,6 +2849,32 @@ class AgentV2:
         directive = getattr(self, "_routing_directive", RoutingDirective.AUTO)
         return is_simple_query(text, directive=directive)
 
+    def _should_emit_analyze_progress(self, user_input: str) -> bool:
+        text = (user_input or "").strip()
+        if not text:
+            return False
+        if _PURE_SOCIAL_GREETING_RE.match(text) or self._is_social_chat(text):
+            return False
+        return True
+
+    def _should_skip_mcp_refresh(self, user_input: str) -> bool:
+        text = (user_input or "").strip()
+        return bool(
+            _PURE_SOCIAL_GREETING_RE.match(text) or self._is_social_chat(text)
+        )
+
+    def _schedule_mcp_refresh(self) -> None:
+        if getattr(self, "_mcp_refresh_thread", None) is not None:
+            return
+        thread = threading.Thread(
+            target=self._refresh_mcp_tools,
+            kwargs={"force": True},
+            name="rxycode-mcp-refresh",
+            daemon=True,
+        )
+        self._mcp_refresh_thread = thread
+        thread.start()
+
     def _effort_for(self, mode: str, text: str) -> str:
         """A21: 按任务性质选推理档位。
 
@@ -2901,6 +2961,67 @@ class AgentV2:
         """B5: 预热请求成功后确认（提交 warmed 状态与时间戳）。"""
         state = self._prewarm_state()
         state.warm(self._prewarm_signature())
+
+    def _schedule_prewarm(self) -> None:
+        """B5: 预热非阻塞化（2026-08-13 修复）——后台调度，绝不让用户请求
+        等待预热完成。失败进入 60s 冷却，避免上游慢/挂时每个请求重复触发。
+        """
+        if getattr(self, "_llm", None) is None:
+            return
+        now = time.monotonic()
+        last = getattr(self, "_prewarm_last_attempt_at", None)
+        if last is not None and now - last < 60.0:
+            return  # 冷却期内不重复预热
+        self._prewarm_last_attempt_at = now
+        try:
+            task = asyncio.create_task(self._prewarm_async())
+            task.add_done_callback(
+                lambda t: None if t.cancelled() else t.exception()
+            )
+        except RuntimeError:
+            pass  # 无事件循环（同步上下文）——跳过预热，不阻塞
+
+    async def _prewarm_async(self) -> None:
+        """B5: 后台预热——发一次最小请求写新前缀；成功 confirm，失败进冷却。
+
+        完整消费流且成功后确认 warmed（失败不标记，冷却后重试）。
+        """
+        _logger.info("B5 prewarm scheduled (background)")
+        try:
+            prewarm_msgs = self._session_prewarm_messages()
+            async for _chunk in self._raw_stream(
+                prewarm_msgs,
+                tools=self._get_core_tools()
+                if hasattr(self, "_get_core_tools")
+                else None,
+                max_tokens=1,
+            ):
+                pass  # 完整消费流（不提前 break）
+            self._confirm_prewarm()
+            _logger.info("B5 prewarm confirmed (background)")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _logger.warning("B5 background prewarm failed: %s", exc)
+            # 失败也进入冷却（_schedule_prewarm 已记录尝试时间戳）——
+            # 冷却窗口由 _prewarm_last_attempt_at 控制
+
+    async def _keep_alive_async(self) -> None:
+        """B5: 后台保活——发 max_tokens=1 空请求保活前缀，不阻塞当前请求。"""
+        from langchain_core.messages import HumanMessage
+
+        try:
+            async for _chunk in self._raw_stream(
+                [HumanMessage(content="keep-alive")],
+                tools=None,
+                max_tokens=1,
+            ):
+                break  # 只消费首个 chunk
+            _logger.info("B5 keep-alive sent (background)")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - 保活失败不影响请求
+            _logger.warning("B5 background keep-alive failed: %s", exc)
 
     def _session_prewarm_messages(self) -> list:
         """B5: 构造预热请求消息（复用真实会话前缀，Cherry Studio 同签名语义）。
@@ -3039,7 +3160,11 @@ class AgentV2:
         token_stats.record_application_cache("precise", bypass=True)
         token_stats.record_application_cache("semantic", bypass=True)
         tui = get_tui()
-        if tui and hasattr(tui, "write_progress"):
+        if (
+            tui
+            and hasattr(tui, "write_progress")
+            and self._should_emit_analyze_progress(user_input)
+        ):
             tui.write_progress("Analyzing your request...")
 
         messages = [SystemMessage(content=system), HumanMessage(content=user_msg)]
@@ -3955,7 +4080,11 @@ class AgentV2:
 
         # Emit thinking progress for UI
         tui = get_tui()
-        if tui and hasattr(tui, "write_progress"):
+        if (
+            tui
+            and hasattr(tui, "write_progress")
+            and self._should_emit_analyze_progress(user_input)
+        ):
             tui.write_progress("Analyzing your request...")
 
         # Cache miss -> call LLM
@@ -4258,51 +4387,29 @@ class AgentV2:
             raise ValueError(
                 f"Unsupported agent mode: {mode!r}. Valid modes: {valid_modes}"
             )
-        # B5: 请求入口校验预热签名——配置变化（模型/cwd/MCP）→ 重建 →
-        # 前缀重建（命中率下降可解释，B5 步骤 5）。重建动作写进度量。
+        # B5: 预热非阻塞化（2026-08-13 修复）——预热改为后台执行，用户请求
+        # 立即进入正常流程。此前预热在 run() 入口同步发最小请求（max_tokens=1
+        # + 全部 core tools + thinking），上游慢/挂时会阻塞每个请求首轮 90s+
+        # （实测 117.6s = 90s 预热超时 + 27.6s 正式请求）；且预热失败不 confirm
+        # → 每个请求都重复触发。失败进入 60s 冷却，不重复轰炸。
         try:
             if self._maybe_rebuild_prewarm():
-                _logger.info(
-                    "B5 prewarm signature changed; cache prefix rebuilt "
-                    "(model/cwd/MCP change)"
-                )
                 token_stats.record_application_cache("precise", bypass=True)
-                # luna 审计 R5/R6/R8：真实重建——发一次最小预热请求写新前缀，
-                # **完整消费流且成功后**才确认 warmed（失败不标记，下次重试）。
-                if getattr(self, "_llm", None) is not None:
-                    from langchain_core.messages import HumanMessage
-
-                    # 复用当前会话消息（含 system/tools，Cherry Studio 同签名语义）
-                    prewarm_msgs = self._session_prewarm_messages()
-                    try:
-                        async for _chunk in self._raw_stream(
-                            prewarm_msgs,
-                            tools=self._get_core_tools() if hasattr(self, "_get_core_tools") else None,
-                            max_tokens=1,
-                        ):
-                            pass  # 完整消费流（不提前 break）
-                        self._confirm_prewarm()
-                    except Exception:
-                        _logger.warning("B5 prewarm request failed; will retry next run")
-                        # 不 confirm → 下次 run 重试
+                self._schedule_prewarm()
         except Exception:  # pragma: no cover - 预热失败不阻断请求
             pass
-        # B5: keep-alive 真实发送（luna 审计 R4）——启用时若距上次调用
-        # ≥5m 且预算未耗尽，经 _raw_stream 发 max_tokens=1 空请求保活前缀。
+        # B5: keep-alive 真实发送（luna 审计 R4）——同样后台化：保活请求
+        # 挂起不得阻塞当前请求（2026-08-13 与预热同步修复）。
         try:
             last_call = getattr(self, "_keep_alive_last_call", None)
             if last_call is not None and self._maybe_keep_alive(last_call_at=last_call):
                 req = (self._keep_alive_state or {}).get("request")
                 if req and getattr(self, "_llm", None) is not None:
-                    from langchain_core.messages import HumanMessage
-
-                    _logger.info("B5 keep-alive request sent (max_tokens=1)")
-                    async for _chunk in self._raw_stream(
-                        [HumanMessage(content="keep-alive")],
-                        tools=None,
-                        max_tokens=1,
-                    ):
-                        break  # 只消费首个 chunk，不阻塞
+                    _logger.info("B5 keep-alive request scheduled (background)")
+                    try:
+                        asyncio.create_task(self._keep_alive_async())
+                    except RuntimeError:
+                        pass  # 无事件循环——跳过保活，不阻塞
             self._keep_alive_last_call = time.monotonic()
         except Exception:  # pragma: no cover - 保活失败不阻断请求
             pass
@@ -4316,7 +4423,8 @@ class AgentV2:
         # here makes an add/remove effective on the next request without an
         # Agent or API restart.  Process startup stays off the event loop.
         if getattr(self, "_tool_orchestrator", None) is not None:
-            await asyncio.to_thread(self._refresh_mcp_tools)
+            if not self._should_skip_mcp_refresh(user_input):
+                await asyncio.to_thread(self._refresh_mcp_tools)
 
         bound_run_id = get_bound_run_id()
         if bound_run_id is not None:
@@ -4840,6 +4948,23 @@ class AgentV2:
         # Fast path for simple queries (build AND plan modes) - tool-aware
         # Social chat must not fall through into LangGraph on tool-path errors.
         social = self._is_social_chat(user_input)
+        if (
+            mode in ("build", "plan")
+            and not force_full
+            and social
+            and _PURE_SOCIAL_GREETING_RE.match(user_input.strip())
+        ):
+            try:
+                _logger.info("route=pure_greeting mode=%s -> fast_reply", mode)
+                return await self._fast_reply(user_input)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _logger.warning("pure greeting fast path failed: %s", exc)
+                return (
+                    "刚才没能完整回复你，我在这儿听着呢。"
+                    "你可以再说一次，或者换个说法。"
+                )
         if mode == "compose" and social:
             try:
                 _logger.info("route=social_chat mode=compose -> fast_tools")

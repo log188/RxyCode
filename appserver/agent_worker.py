@@ -386,11 +386,17 @@ class AgentWorker:
             ),
         )
         set_approval_broker(self._approval)
-        self._agent = await asyncio.to_thread(
-            bootstrap_agent,
-            stub=stub,
-            workspace_root=self._workspace_root,
-        )
+        heartbeat_task = asyncio.create_task(self._prompt_heartbeat(self._session_id))
+        try:
+            self._agent = await asyncio.to_thread(
+                bootstrap_agent,
+                stub=stub,
+                workspace_root=self._workspace_root,
+            )
+        finally:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
         await self._flush_pending_writes()
         await self._write_ordered(
             {

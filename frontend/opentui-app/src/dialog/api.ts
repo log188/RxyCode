@@ -91,6 +91,25 @@ export async function fetchModels(): Promise<{
   error?: string;
 }> {
   try {
+    const { resolveTransportKind } = await import("../transport/config.ts");
+    if (resolveTransportKind() === "stdio") {
+      const { isStdioSessionReady, listStdioModels } = await import(
+        "../transport/stdioTransport.ts"
+      );
+      if (isStdioSessionReady()) {
+        const listed = await listStdioModels();
+        return {
+          ok: true,
+          models: (listed.models ?? []) as ModelInfo[],
+          active: listed.active ?? "",
+          recent: Array.isArray(listed.recent) ? listed.recent : [],
+        };
+      }
+    }
+  } catch {
+    // Fall through to HTTP for hybrid / tests.
+  }
+  try {
     const resp = await axios.get(`${API_BASE}/models`, {
       timeout: 8000,
       headers: authorizationHeaders(),
