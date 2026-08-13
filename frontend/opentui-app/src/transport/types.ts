@@ -1,4 +1,5 @@
 import type { ApprovalDecision, ApprovalInfo } from "../ApprovalDialog.tsx";
+import type { QuestionInfo, QuestionReply } from "../questionInfo.ts";
 import type { Mode, StatusInfo } from "../types.ts";
 import type { CommandResult } from "./httpAdmin.ts";
 
@@ -12,6 +13,7 @@ export interface ChatApiCallbacks {
   onStatus: (status: StatusInfo | null) => void;
   onProgress?: (text: string) => void;
   onApprovalRequest?: (info: ApprovalInfo | null) => void;
+  onQuestionRequest?: (info: QuestionInfo | null) => void;
 }
 
 export type TransportKind = "http" | "stdio";
@@ -22,6 +24,7 @@ export interface ChatTransport {
   sendCommand(command: string): Promise<CommandResult>;
   cancelActiveRequest(): Promise<void>;
   respondApproval(approvalId: string, decision: ApprovalDecision): Promise<boolean>;
+  respondQuestion(questionId: string, reply: QuestionReply): Promise<boolean>;
   sendChatMessage(
     content: string,
     mode: Mode,

@@ -1,4 +1,5 @@
 import type { ApprovalDecision, ApprovalInfo } from "./ApprovalDialog.tsx";
+import type { QuestionReply } from "./questionInfo.ts";
 import { getChatTransport } from "./transport/index.ts";
 import type { CommandResult } from "./transport/httpAdmin.ts";
 import type { ChatApiCallbacks, MessageUpdater } from "./transport/types.ts";
@@ -23,6 +24,13 @@ export async function respondApproval(
   decision: ApprovalDecision,
 ): Promise<boolean> {
   return getChatTransport().respondApproval(approvalId, decision);
+}
+
+export async function respondQuestion(
+  questionId: string,
+  reply: QuestionReply,
+): Promise<boolean> {
+  return getChatTransport().respondQuestion(questionId, reply);
 }
 
 export async function sendChatMessage(
@@ -51,3 +59,4 @@ export async function openParentSession() {
 }
 
 export type { ApprovalInfo };
+export type { QuestionInfo, QuestionReply } from "./questionInfo.ts";

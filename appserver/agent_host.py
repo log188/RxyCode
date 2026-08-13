@@ -33,6 +33,7 @@ from .jsonrpc import parse_line
 _logger = logging.getLogger(__name__)
 EmitFn = Callable[[dict[str, Any]], None]
 ForwardServerRequest = Callable[[str, dict[str, Any]], Any]
+WORKER_SERVER_REQUESTS = frozenset({"approval/request", "question/request"})
 
 #: Inner bootstrap RPC budget. Waiters may time out sooner; the in-flight
 #: bootstrap must keep running so a later prompt can join it instead of
@@ -372,7 +373,7 @@ class AsyncRpcPipe:
                 is_response = "result" in msg or "error" in msg
                 if has_method:
                     # Worker-initiated message (notification or request such as
-                    # approval/request).  Forward it regardless of whether it
+                    # approval/request, question/request).  Forward it regardless of whether it
                     # also carries result/error (malformed) or collides with a
                     # pending host request id — never resolve a host future
                     # from a message that claims to be a worker message.
@@ -673,7 +674,7 @@ class AgentHost:
                 pending.put(message)
                 return
         method = message.get("method")
-        if isinstance(method, str) and method == "approval/request":
+        if isinstance(method, str) and method in WORKER_SERVER_REQUESTS:
             params = message.get("params") or {}
             if not isinstance(params, dict):
                 params = {}
@@ -684,7 +685,7 @@ class AgentHost:
             def _complete() -> None:
                 try:
                     future = asyncio.run_coroutine_threadsafe(
-                        self._forward_server_request("approval/request", params),
+                        self._forward_server_request(method, params),
                         self._main_loop,
                     )
                     result = future.result(timeout=125.0)
@@ -710,9 +711,9 @@ class AgentHost:
             self._emit(message)
 
     def _route_notification(self, message: dict[str, Any]) -> None:
-        """Async-path notification router (approval/request + event/*)."""
+        """Async-path notification router (approval/question requests + event/*)."""
         method = message.get("method")
-        if isinstance(method, str) and method == "approval/request":
+        if isinstance(method, str) and method in WORKER_SERVER_REQUESTS:
             params = message.get("params") or {}
             if not isinstance(params, dict):
                 params = {}
@@ -723,7 +724,7 @@ class AgentHost:
             async def _complete() -> None:
                 try:
                     result = await self._forward_server_request(
-                        "approval/request", params
+                        method, params
                     )
                     self._respond_to_worker(rid, result, error=None)
                 except Exception as exc:
@@ -873,11 +874,14 @@ class AgentHost:
     ) -> dict[str, Any]:
         """Run a subagent RPC on this Primary session's owned worker.
 
-        The emitter remains attached after the request returns because an
-        accepted child task continues asynchronously and must keep delivering
-        ``child_session/*`` notifications to the appserver client.
+        Do not replace a live prompt emitter. GUI child-session polls used to
+        swap ``_emit`` to a path that does not ``touch_job``, so collapsed
+        thinking (no reasoning events) looked dead and the 120s watchdog
+        killed the in-flight prompt. Child notifications still flow through
+        the prompt emitter while a job is running.
         """
-        self._emit = emit
+        if self._emit is None:
+            self._emit = emit
         return await self._pipe_request(method, params, timeout=timeout)
 
     async def set_model(self, model_id: str, *, timeout: float = 30.0) -> dict[str, Any]:

@@ -19,6 +19,8 @@ export type {
   MessageDelta,
   PromptRequest,
   ProtocolNotification,
+  QuestionRequest,
+  QuestionResponse,
   RunComplete,
   ToolBegin,
   ToolEnd,

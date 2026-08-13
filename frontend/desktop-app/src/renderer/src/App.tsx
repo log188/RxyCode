@@ -1,6 +1,7 @@
 import { Activity, Menu, Settings, ShieldCheck, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import ApprovalModal from './components/ApprovalModal'
+import QuestionModal from './components/QuestionModal'
 import ApprovalRulesModal from './components/ApprovalRulesModal'
 import ChatArea from './components/ChatArea'
 import Composer from './components/Composer'
@@ -68,6 +69,7 @@ function App(): React.JSX.Element {
   const activeChildSessions =
     activeSessionId === null ? [] : (conversation.state.childSessionsByRoot[activeSessionId] ?? [])
   const pendingApproval = conversation.state.approvals[0] ?? null
+  const pendingQuestion = conversation.pendingQuestion
   const effectiveWorkspace = effectiveWorkspaceRoot(workspaceSettings, info?.repoRoot ?? '')
   const models = useModels({
     client: conversation.protocolClient,
@@ -355,6 +357,13 @@ function App(): React.JSX.Element {
           onReject={() => conversation.resolveApproval(pendingApproval.requestId, 'rejected')}
           onAlwaysAllow={(scope, hours) => conversation.saveAlwaysAllowRule(pendingApproval.requestId, scope, hours)}
           onDismiss={() => conversation.dismissApproval(pendingApproval.requestId)}
+        />
+      )}
+      {pendingQuestion !== null && (
+        <QuestionModal
+          request={pendingQuestion}
+          onAnswer={(answer) => conversation.resolveQuestion(pendingQuestion.question_id, { answer })}
+          onCancel={() => conversation.resolveQuestion(pendingQuestion.question_id, { cancelled: true })}
         />
       )}
       <ApprovalRulesModal

@@ -33,6 +33,11 @@ export function notifyToStreamEvent(method: string, params: unknown): StreamEven
         type: "final",
         text: String(p.text ?? ""),
         message: String(p.text ?? ""),
+        input_tokens: p.input_tokens as number | null | undefined,
+        output_tokens: p.output_tokens as number | null | undefined,
+        cache_hit_tokens: p.cache_hit_tokens as number | null | undefined,
+        cache_hit_rate: p.cache_hit_rate as number | null | undefined,
+        reporting_status: p.reporting_status as string | undefined,
       };
     case "event/done":
       return { type: "done" };
@@ -41,6 +46,15 @@ export function notifyToStreamEvent(method: string, params: unknown): StreamEven
         type: "error",
         error: String(p.message ?? p.text ?? "error"),
         message: String(p.message ?? p.text ?? "error"),
+      };
+    case "event/token_usage":
+      return {
+        type: "token_usage",
+        input_tokens: p.input_tokens as number | null | undefined,
+        output_tokens: p.output_tokens as number | null | undefined,
+        cache_hit_tokens: p.cache_hit_tokens as number | null | undefined,
+        cache_hit_rate: p.cache_hit_rate as number | null | undefined,
+        reporting_status: p.reporting_status as string | undefined,
       };
     /* ── Phase B: child_session/* events ─────────────────── */
     case "child_session/created":

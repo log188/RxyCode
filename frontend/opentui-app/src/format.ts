@@ -24,6 +24,17 @@ export function formatHeaderLine(mode: Mode, model: string, thinkingLive: boolea
   return thinkingLive ? `${base} · 思考中` : base;
 }
 
+export function shouldRenderThought(msg: ChatMessage): boolean {
+  if (msg.role !== "thinking") return true;
+  const text = (msg.content || "").trim();
+  const placeholder =
+    text === "" || text === "…" || text === "..." || text === "思考中...";
+  if (!placeholder) return true;
+  // Live placeholder must keep the Thought header + spinner visible.
+  // Only hide a settled empty thought (greetings with no reasoning).
+  return msg.done !== true;
+}
+
 export function formatInputHint(isStreaming: boolean): string {
   return isStreaming ? "Processing..." : "Ready";
 }

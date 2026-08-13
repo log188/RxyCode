@@ -198,13 +198,13 @@ class TestAskQuestions:
 
     def test_question_with_input(self):
         from RxyCode.RxyCode1_1_0.tools.question_tool import ask_questions
-        with patch("builtins.input", return_value="test answer"):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value="test answer"):
             result = ask_questions([{"question": "name?", "header": "Profile"}])
             assert "test answer" in result
 
     def test_question_with_options(self):
         from RxyCode.RxyCode1_1_0.tools.question_tool import ask_questions
-        with patch("builtins.input", return_value="1"):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value="1"):
             result = ask_questions([{
                 "question": "choose?",
                 "options": [
@@ -216,7 +216,7 @@ class TestAskQuestions:
 
     def test_question_invalid_choice(self):
         from RxyCode.RxyCode1_1_0.tools.question_tool import ask_questions
-        with patch("builtins.input", return_value="invalid"):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value="invalid"):
             result = ask_questions([{
                 "question": "choose?",
                 "options": [{"label": "A", "value": "a"}]
@@ -226,13 +226,13 @@ class TestAskQuestions:
 
     def test_question_eof_error(self):
         from RxyCode.RxyCode1_1_0.tools.question_tool import ask_questions
-        with patch("builtins.input", side_effect=EOFError):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=EOFError):
             result = ask_questions([{"question": "q?"}])
             assert "[no input]" in result
 
     def test_question_value_error_in_choice(self):
         from RxyCode.RxyCode1_1_0.tools.question_tool import ask_questions
-        with patch("builtins.input", side_effect=ValueError):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=ValueError):
             result = ask_questions([{
                 "question": "q?",
                 "options": [{"label": "A", "value": "a"}]
@@ -298,6 +298,17 @@ class TestQuestionTool:
             assert await invocation == "A1: continue"
         finally:
             set_question_broker(None)
+
+    @pytest.mark.asyncio
+    async def test_non_tty_without_broker_does_not_call_input(self):
+        from RxyCode.RxyCode1_1_0.core.question import set_question_broker
+        from RxyCode.RxyCode1_1_0.tools.question_tool import ask_questions_async
+
+        set_question_broker(None)
+        with patch("sys.stdin.isatty", return_value=False), patch("builtins.input") as mocked:
+            result = await ask_questions_async([{"question": "哪个环节慢？"}])
+        mocked.assert_not_called()
+        assert "unavailable" in result
 
 
 class TestVisionInput:

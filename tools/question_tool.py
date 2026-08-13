@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Literal
 
 from langchain_core.tools import StructuredTool
@@ -34,6 +35,24 @@ def _as_mapping(value) -> dict:
         return value
     model_dump = getattr(value, "model_dump", None)
     return model_dump() if callable(model_dump) else {}
+
+
+def _stdin_is_interactive() -> bool:
+    stdin = getattr(sys, "stdin", None)
+    isatty = getattr(stdin, "isatty", None)
+    try:
+        return bool(isatty()) if callable(isatty) else False
+    except Exception:
+        return False
+
+
+def _unavailable_answers(questions: list[dict]) -> str:
+    if not questions:
+        return ""
+    return "\n".join(
+        f"A{index + 1}: [no input: question channel unavailable]"
+        for index in range(len(questions))
+    )
 
 
 async def _ask_via_question_broker(questions: list[dict]) -> str | None:
@@ -135,6 +154,8 @@ def ask_questions(questions: list[dict]) -> str:
         via_broker = asyncio.run(_ask_via_question_broker(questions))
         if via_broker is not None:
             return via_broker
+        if not _stdin_is_interactive():
+            return _unavailable_answers(questions)
         return _ask_questions_from_stdin(questions)
     raise RuntimeError(
         "ask_questions() cannot block an active event loop; "
@@ -147,6 +168,8 @@ async def ask_questions_async(questions: list[dict]) -> str:
     via_broker = await _ask_via_question_broker(questions)
     if via_broker is not None:
         return via_broker
+    if not _stdin_is_interactive():
+        return _unavailable_answers(questions)
     return await asyncio.to_thread(_ask_questions_from_stdin, questions)
 
 

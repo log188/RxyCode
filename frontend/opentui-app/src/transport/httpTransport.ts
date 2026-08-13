@@ -1,6 +1,8 @@
 import axios from "axios";
 import { API_BASE, authorizationHeaders } from "../apiClient.ts";
 import type { ApprovalDecision } from "../ApprovalDialog.tsx";
+import { questionInfoFromParams } from "../questionInfo.ts";
+import type { QuestionReply } from "../questionInfo.ts";
 import { consumeJsonSseStream } from "../sseParser.ts";
 import {
   applyStreamEvent,
@@ -13,9 +15,11 @@ import {
   httpCancelActiveRequest,
   httpFetchStatus,
   httpRespondApproval,
+  httpRespondQuestion,
   httpSendCommand,
   type CommandResult,
 } from "./httpAdmin.ts";
+import { applyTokenUsageToStatus } from "./stdioCommands.ts";
 import type {
   ChatApiCallbacks,
   ChatTransport,
@@ -45,6 +49,10 @@ export const httpTransport: ChatTransport = {
 
   async respondApproval(approvalId: string, decision: ApprovalDecision): Promise<boolean> {
     return httpRespondApproval(approvalId, decision);
+  },
+
+  async respondQuestion(questionId: string, reply: QuestionReply): Promise<boolean> {
+    return httpRespondQuestion(questionId, reply);
   },
 
   async invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult> {
@@ -149,7 +157,12 @@ export const httpTransport: ChatTransport = {
       });
     };
 
+    let lastStatus: StatusInfo | null = null;
     const handleEvent = (event: StreamEvent) => {
+      if (event.type === "token_usage" || event.type === "final") {
+        lastStatus = applyTokenUsageToStatus(lastStatus, event);
+        callbacks.onStatus(lastStatus);
+      }
       if (event.type === "progress" && !state.hasReasoning) {
         callbacks.onProgress?.(event.message || event.text || "Working...");
       }
@@ -161,6 +174,17 @@ export const httpTransport: ChatTransport = {
           risk: String(event.risk || "WRITE"),
           args: typeof args === "string" ? args : JSON.stringify(args ?? {}),
         });
+      }
+      if (event.type === "question_request") {
+        callbacks.onQuestionRequest?.(
+          questionInfoFromParams({
+            question_id: event.question_id,
+            question: event.question,
+            header: event.header,
+            options: event.options,
+            input_type: event.input_type,
+          }),
+        );
       }
       if (event.type === "tool_result") {
         callbacks.onApprovalRequest?.(null);

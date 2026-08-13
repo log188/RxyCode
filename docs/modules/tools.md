@@ -122,10 +122,12 @@ Every tool carries a static risk level in `core/safety/policy.py`
 
 All calls go through the safety gate in
 `execution/tool_orchestrator.py::execute_tool` — see
-[docs/modules/safety.md](safety.md). The question tool no longer blocks the
-API event loop: when an approval broker is active it delegates the prompt
-through the broker (SSE approval_request in API mode) instead of raw
-`input()`.
+[docs/modules/safety.md](safety.md). The question tool asks the user over a
+dedicated channel (`core/question.py`), not the safety-approval protocol. In
+stdio appserver mode the worker installs `PipeQuestionBroker` so OpenTUI and
+Desktop receive `question/request` and can render a choice/text dialog. If no
+broker is installed and stdin is not a TTY (worker pipes), the tool returns
+`[no input: question channel unavailable]` instead of blocking on `input()`.
 
 ## Generated File Paths
 

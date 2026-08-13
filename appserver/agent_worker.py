@@ -37,11 +37,15 @@ except ImportError:
 try:
     from ..core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
     from ..core.safety.approval import set_approval_broker
+    from ..core.question import set_question_broker
     from ..core.session import Session
+    from .question import PipeQuestionBroker
 except ImportError:
     from RxyCode.RxyCode1_1_0.core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
     from RxyCode.RxyCode1_1_0.core.safety.approval import set_approval_broker
+    from RxyCode.RxyCode1_1_0.core.question import set_question_broker
     from RxyCode.RxyCode1_1_0.core.session import Session
+    from appserver.question import PipeQuestionBroker
 
 _logger = logging.getLogger(__name__)
 
@@ -172,6 +176,7 @@ class AgentWorker:
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._next_id = 1
         self._approval = _PipeApproval(self._send_parent_request)
+        self._question = PipeQuestionBroker(self._send_parent_request, timeout=120.0)
         self._thinking_expanded = False
         self._active_tui: Any | None = None
         self._write_failures: list[BaseException] = []
@@ -386,6 +391,7 @@ class AgentWorker:
             ),
         )
         set_approval_broker(self._approval)
+        set_question_broker(self._question)
         heartbeat_task = asyncio.create_task(self._prompt_heartbeat(self._session_id))
         try:
             self._agent = await asyncio.to_thread(

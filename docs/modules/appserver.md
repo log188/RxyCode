@@ -21,6 +21,7 @@ messages to **stdout**, and sends all logs to **stderr** only.
 | `jsonrpc.py` | Read/write helpers; `write_message` offloads sync stdout to a thread (T3) |
 | `live_env.py` | Builds the live integration-test env (`build_live_appserver_env`) from real user config for `RXYCODE_APPSERVER_LIVE=1` |
 | `approval.py` | `JsonRpcApproval` broker (bidirectional `approval/request`) |
+| `question.py` | `PipeQuestionBroker` (bidirectional `question/request`) |
 | `runtime.py` | Per-prompt context vars for concurrent session isolation |
 | `tui.py` | `ProtocolTui` maps AgentV2 TUI calls to protocol notifications |
 | `sessions.py` | Multi-session registry |
@@ -37,7 +38,8 @@ Client stdin  -> AppServer._dispatch()
               -> agent_worker: bootstrap_agent(workspace_root) + Session.prompt()
               -> AgentV2.run()
               -> ProtocolTui.emit() -> stdout JSON-RPC notifications
-Approval      -> worker _PipeApproval -> AgentHost -> JsonRpcApproval -> client
+Approval      -> worker _PipeApproval -> AgentHost -> client `approval/request`
+Question      -> worker PipeQuestionBroker -> AgentHost -> client `question/request`
 Watchdog (T4) -> periodic event/server_heartbeat; stall -> kill worker + degraded
 ```
 

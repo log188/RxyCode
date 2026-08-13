@@ -279,9 +279,14 @@ class ProtocolTui:
 
     def write_reasoning(self, text: str) -> None:
         chunk = str(text)
+        started = not self._thinking_acc
         self._thinking_acc += chunk
         if self._expand_thinking:
             self._push_async("reasoning", chunk)
+        elif started and chunk.strip():
+            # Collapsed Thought still needs a liveness event. Otherwise the
+            # appserver watchdog treats silent thinking as a dead job.
+            self.write_progress("思考中...")
 
     def stream_token(self, token: str) -> None:
         self._push_async("token", token)

@@ -4,6 +4,7 @@
  */
 
 import type { ChatMessage, ToolStatus } from "./types.ts";
+import { summarizeQuestionToolArgs } from "./questionInfo.ts";
 
 export interface StreamEvent {
   type: string;
@@ -21,12 +22,22 @@ export interface StreamEvent {
   approval_id?: string;
   tool?: string;
   risk?: string;
+  question_id?: string;
+  question?: string;
+  header?: string;
+  options?: Array<{ label: string; value: string }>;
+  input_type?: string;
   /* Phase B: child session fields */
   childSessionId?: string;
   childStatus?: string;
   parentSessionId?: string;
   agentId?: string;
   usage?: Record<string, unknown>;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_hit_tokens?: number | null;
+  cache_hit_rate?: number | null;
+  reporting_status?: string;
 }
 
 export interface StreamReduceState {
@@ -118,7 +129,16 @@ export function applyStreamEvent(
         ),
       };
     }
-    case "tool_call":
+    case "tool_call": {
+      const toolName = event.name || "tool";
+      const content =
+        toolName === "question"
+          ? summarizeQuestionToolArgs(event.args)
+          : typeof event.args === "string"
+            ? event.args
+            : event.args
+              ? JSON.stringify(event.args)
+              : "";
       return {
         ...next,
         messages: [
@@ -126,18 +146,14 @@ export function applyStreamEvent(
           {
             id: newId("tool"),
             role: "tool",
-            content:
-              typeof event.args === "string"
-                ? event.args
-                : event.args
-                  ? JSON.stringify(event.args)
-                  : "",
+            content,
             timestamp: Date.now(),
-            toolName: event.name || "tool",
+            toolName,
             toolStatus: "running",
           },
         ],
       };
+    }
     case "tool_result": {
       const status: ToolStatus =
         event.status === "error" || event.status === "timeout" || event.status === "cancelled"

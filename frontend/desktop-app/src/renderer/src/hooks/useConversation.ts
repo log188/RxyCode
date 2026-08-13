@@ -12,7 +12,9 @@ import type {
   ApprovalRequest,
   ApprovalResponse,
   InterruptRequest,
-  ProtocolClient
+  ProtocolClient,
+  QuestionRequest,
+  QuestionResponse
 } from '@rxycode/protocol-client'
 import {
   addApprovalRequest,
@@ -84,6 +86,8 @@ export interface UseConversationResult {
   ) => void
   revokeApprovalRule: (ruleId: string) => void
   dismissApproval: (requestId: string) => void
+  pendingQuestion: QuestionRequest | null
+  resolveQuestion: (questionId: string, reply: { answer?: string; cancelled?: boolean }) => void
 }
 
 export function useConversation(
@@ -98,6 +102,7 @@ export function useConversation(
   const [approvalRules, setApprovalRules] = useState<ApprovalRule[]>(() =>
     loadApprovalRules(window.localStorage)
   )
+  const [pendingQuestion, setPendingQuestion] = useState<QuestionRequest | null>(null)
   const stateRef = useRef(state)
   const connectionRef = useRef<ConversationConnection | null>(null)
   const infoRef = useRef(info)
@@ -106,6 +111,12 @@ export function useConversation(
     new Map<
       string,
       { resolve: (response: ApprovalResponse) => void; reject: (error: Error) => void }
+    >()
+  )
+  const pendingQuestionsRef = useRef(
+    new Map<
+      string,
+      { resolve: (response: QuestionResponse) => void; reject: (error: Error) => void }
     >()
   )
   const performanceTraceRef = useRef(new PerformanceTraceRegistry())
@@ -162,6 +173,13 @@ export function useConversation(
 
   const handleServerRequest = useCallback(
     async (method: string, params: unknown): Promise<unknown> => {
+      if (method === 'question/request') {
+        const request = params as QuestionRequest
+        setPendingQuestion(request)
+        return new Promise<QuestionResponse>((resolve, reject) => {
+          pendingQuestionsRef.current.set(request.question_id, { resolve, reject })
+        })
+      }
       if (method !== 'approval/request') {
         throw new Error(`unsupported server request: ${method}`)
       }
@@ -228,12 +246,35 @@ export function useConversation(
     setState((current) => removeApprovalRequest(current, requestId))
   }, [])
 
+  const resolveQuestion = useCallback(
+    (questionId: string, reply: { answer?: string; cancelled?: boolean }): void => {
+      const entry = pendingQuestionsRef.current.get(questionId)
+      if (entry === undefined) return
+      pendingQuestionsRef.current.delete(questionId)
+      entry.resolve({
+        question_id: questionId,
+        answer: reply.cancelled ? undefined : reply.answer,
+        cancelled: Boolean(reply.cancelled)
+      })
+      setPendingQuestion((current) =>
+        current?.question_id === questionId ? null : current
+      )
+    },
+    []
+  )
+
   const handleServerRequestAborted = useCallback((error: Error): void => {
     const pending = [...pendingApprovalsRef.current.entries()]
     pendingApprovalsRef.current.clear()
     for (const [, entry] of pending) {
       entry.reject(error)
     }
+    const questions = [...pendingQuestionsRef.current.entries()]
+    pendingQuestionsRef.current.clear()
+    for (const [, entry] of questions) {
+      entry.reject(error)
+    }
+    setPendingQuestion(null)
     setState((current) => {
       let next = current
       for (const approval of next.approvals) {
@@ -788,6 +829,8 @@ export function useConversation(
     resolveApproval,
     saveAlwaysAllowRule,
     revokeApprovalRule,
-    dismissApproval
+    dismissApproval,
+    pendingQuestion,
+    resolveQuestion
   }
 }

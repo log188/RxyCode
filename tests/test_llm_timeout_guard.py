@@ -141,6 +141,110 @@ class TestOpenAIClientTimeout:
         assert float(value) == 45.0
 
 
+class TestRawStreamFirstChunkTimeout:
+    """_fast_reply uses _raw_stream, which previously had no first-chunk wait_for.
+
+    A silent thinking hang then lost the race to the 120s appserver watchdog.
+    """
+
+    async def test_hanging_first_chunk_raises_timeout(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        from langchain_core.messages import HumanMessage
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+
+        class HangingCompletions:
+            async def create(self, **_kwargs):
+                class Stream:
+                    def __aiter__(self):
+                        return self
+
+                    async def __anext__(self):
+                        await asyncio.Event().wait()
+
+                return Stream()
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {"timeout": 1.0, "model_name": "x", "temperature": 0}
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = None
+        agent._capabilities = None
+        agent._openai_client = lambda: HangingCompletions()
+
+        async def drain() -> None:
+            async for _chunk in agent._raw_stream(
+                [HumanMessage(content="hi")], max_tokens=1
+            ):
+                pass
+
+        start = asyncio.get_event_loop().time()
+        try:
+            await asyncio.wait_for(drain(), timeout=8.0)
+            pytest.fail("_raw_stream completed without a first-chunk timeout")
+        except (asyncio.TimeoutError, TimeoutError):
+            elapsed = asyncio.get_event_loop().time() - start
+            if elapsed >= 7.0:
+                pytest.fail(
+                    "_raw_stream first-chunk wait is unbounded; hung until the test watchdog"
+                )
+        elapsed = asyncio.get_event_loop().time() - start
+        assert elapsed < 6.0
+
+
+class TestFastReplyDisablesThinking:
+    async def test_raw_stream_forces_thinking_disabled(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        from langchain_core.messages import HumanMessage
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+        captured: dict = {}
+
+        class Completions:
+            async def create(self, **kwargs):
+                captured.update(kwargs)
+
+                class Stream:
+                    def __aiter__(self):
+                        return self
+
+                    async def __anext__(self):
+                        raise StopAsyncIteration
+
+                return Stream()
+
+        class Provider:
+            def llm_kwargs(self, model_config, caps):
+                return {"extra_body": {"thinking": {"type": "enabled"}}}
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {"timeout": 5.0, "model_name": "deepseek-v4-flash"}
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = Provider()
+        agent._capabilities = SimpleNamespace(
+            provider="deepseek", prompt_cache_key_required=False
+        )
+        agent._thinking_disabled_this_turn = True
+        agent._openai_client = lambda: Completions()
+
+        async for _chunk in agent._raw_stream(
+            [HumanMessage(content="hi")], max_tokens=1
+        ):
+            pass
+        assert captured["extra_body"]["thinking"] == {"type": "disabled"}
+
+
 class TestPrewarmNonBlocking:
     """2026-08-13: 预热必须非阻塞——用户请求绝不被预热请求拖慢。
 

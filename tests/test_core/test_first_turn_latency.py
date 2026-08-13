@@ -72,6 +72,11 @@ def _run_agent() -> AgentV2:
     return agent
 
 
+def test_fast_reply_disables_extended_thinking():
+    src = inspect.getsource(AgentV2._fast_reply)
+    assert "_thinking_disabled_this_turn" in src
+
+
 def test_chengdu_itinerary_declines_tools():
     assert declines_tools(CHENGDU) is True
     assert declines_tools(CHENGDU_AGAIN) is True

@@ -3,20 +3,28 @@ import type { Subprocess } from "bun";
 import { appendFileSync } from "node:fs";
 import type { ApprovalDecision } from "../ApprovalDialog.tsx";
 import {
+  questionInfoFromParams,
+  questionResultFromReply,
+  type QuestionReply,
+} from "../questionInfo.ts";
+import {
   applyStreamEvent,
   settleActiveMessages,
   type StreamReduceState,
 } from "../streamReducer.ts";
 import type { Mode, StatusInfo } from "../types.ts";
 import {
-  httpFetchStatus,
-  httpFetchStatusValue,
   httpSendCommand,
   type CommandResult,
 } from "./httpAdmin.ts";
 import { notifyToStreamEvent } from "./notifyToStreamEvent.ts";
-import { shouldClearStreamingOnNotify } from "./streamLifecycle.ts";
 import {
+  raceWithAbort,
+  shouldClearStreamingOnNotify,
+  shouldClearStreamingOnUserCancel,
+} from "./streamLifecycle.ts";
+import {
+  applyTokenUsageToStatus,
   parseStdioAdminCommand,
   statusFromModelsList,
   type ModelsListPayload,
@@ -54,6 +62,9 @@ type PromptResult = {
   thinking?: string;
   input_tokens?: number;
   output_tokens?: number;
+  cache_hit_tokens?: number;
+  cache_hit_rate?: number;
+  reporting_status?: string;
 };
 
 let pythonCmdOverride: string[] | null = null;
@@ -76,6 +87,8 @@ class StdioAppserverSession {
     (decision: ApprovalDecision) => void
   >();
   private approvalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private pendingQuestions = new Map<string, (reply: QuestionReply) => void>();
+  private questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private activePromptAbort: AbortController | null = null;
   private activeCallbacks: ChatApiCallbacks | null = null;
   private childViewSessionId: string | null = null;
@@ -105,8 +118,20 @@ class StdioAppserverSession {
     this.pendingApprovals.clear();
   }
 
+  private clearPendingQuestions(reply: QuestionReply = { cancelled: true }): void {
+    for (const timer of this.questionTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.questionTimers.clear();
+    for (const resolve of this.pendingQuestions.values()) {
+      resolve(reply);
+    }
+    this.pendingQuestions.clear();
+  }
+
   private resetSession(reason?: Error): void {
     this.clearPendingApprovals();
+    this.clearPendingQuestions();
     if (this.client) {
       this.client.rejectAllPending(
         reason ?? new Error("appserver session reset"),
@@ -183,10 +208,26 @@ class StdioAppserverSession {
     this.client = client;
 
     client.onServerRequest = async (method, params) => {
-      if (method !== "approval/request") {
-        return { decision: "rejected" };
-      }
       const payload = (params ?? {}) as Record<string, unknown>;
+      if (method === "question/request") {
+        const info = questionInfoFromParams(payload);
+        const reply = await new Promise<QuestionReply>((resolve) => {
+          this.pendingQuestions.set(info.questionId, resolve);
+          const timer = setTimeout(() => {
+            if (!this.pendingQuestions.has(info.questionId)) return;
+            this.questionTimers.delete(info.questionId);
+            this.pendingQuestions.delete(info.questionId);
+            resolve({ timedOut: true });
+          }, 120_000);
+          this.questionTimers.set(info.questionId, timer);
+          this.activeCallbacks?.onQuestionRequest?.(info);
+        });
+        this.activeCallbacks?.onQuestionRequest?.(null);
+        return questionResultFromReply(info.questionId, reply);
+      }
+      if (method !== "approval/request") {
+        return {};
+      }
       const requestId = String(payload.request_id ?? "");
       const details = payload.details as Record<string, unknown> | undefined;
       const argsRaw = details?.args;
@@ -317,8 +358,12 @@ class StdioAppserverSession {
   }
 
   async fetchStatusSnapshot(): Promise<StatusInfo | null> {
-    const listed = await this.listModels();
-    this.lastStatus = statusFromModelsList(listed, this.lastStatus);
+    try {
+      const listed = await this.listModels();
+      this.lastStatus = statusFromModelsList(listed, this.lastStatus);
+    } catch {
+      // Keep lastStatus. Never fall back to HTTP /status (different process, always 0).
+    }
     return this.lastStatus;
   }
 
@@ -411,15 +456,32 @@ class StdioAppserverSession {
     return true;
   }
 
+  resolveQuestion(questionId: string, reply: QuestionReply): boolean {
+    const resolve = this.pendingQuestions.get(questionId);
+    if (!resolve) return false;
+    const timer = this.questionTimers.get(questionId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.questionTimers.delete(questionId);
+    }
+    this.pendingQuestions.delete(questionId);
+    resolve(reply);
+    return true;
+  }
+
   async interrupt(): Promise<void> {
-    if (!this.sessionId) return;
-    try {
-      const client = await this.ensureReady();
-      await client.request("session/interrupt", { session_id: this.sessionId });
-    } catch {
-      // best-effort
+    if (shouldClearStreamingOnUserCancel()) {
+      this.activeCallbacks?.onStreaming(false);
+      this.activeCallbacks?.onProgress?.("");
     }
     this.activePromptAbort?.abort();
+    if (!this.sessionId) return;
+    const sessionId = this.sessionId;
+    void this.ensureReady()
+      .then((client) => client.request("session/interrupt", { session_id: sessionId }))
+      .catch(() => {
+        // best-effort; UI already left Processing
+      });
   }
 
   async invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult> {
@@ -487,6 +549,9 @@ class StdioAppserverSession {
 
     try {
       const client = await this.ensureReady();
+      if (signal?.aborted) {
+        throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+      }
       if (!this.sessionId) {
         throw new Error("appserver session not ready");
       }
@@ -537,6 +602,10 @@ class StdioAppserverSession {
       client.onNotification = (method, params) => {
         priorOnNotification?.(method, params);
         const event = notifyToStreamEvent(method, params);
+        if (event?.type === "token_usage" || event?.type === "final") {
+          this.lastStatus = applyTokenUsageToStatus(this.lastStatus, event);
+          callbacks.onStatus(this.lastStatus);
+        }
         if (!event) return;
         if (!sawStreamActivity) {
           sawStreamActivity = true;
@@ -567,13 +636,26 @@ class StdioAppserverSession {
       abort.signal.addEventListener("abort", onAbort);
 
       try {
-        const result = (await client.request<PromptResult>("session/prompt", {
-          session_id: this.sessionId,
-          text: content,
-          mode,
-          thinking_expanded: thinkingExpandedPref,
-          timeout_seconds: 600,
-        })) as PromptResult;
+        const result = (await raceWithAbort(
+          client.request<PromptResult>("session/prompt", {
+            session_id: this.sessionId,
+            text: content,
+            mode,
+            thinking_expanded: thinkingExpandedPref,
+            timeout_seconds: 600,
+          }),
+          signal,
+          abort.signal,
+        )) as PromptResult;
+
+        if (
+          result.input_tokens != null ||
+          result.output_tokens != null ||
+          result.cache_hit_tokens != null
+        ) {
+          this.lastStatus = applyTokenUsageToStatus(this.lastStatus, result);
+          callbacks.onStatus(this.lastStatus);
+        }
 
         if (result.text) {
           const finalEvent = applyStreamEvent(
@@ -589,12 +671,11 @@ class StdioAppserverSession {
           messages: settleActiveMessages(state.messages),
         });
 
-        // 保留完整 status 快照（chat 结束后 finally 会刷新 models/list + HTTP）。
+        // 保留完整 status 快照（chat 结束后 finally 会刷新 models/list）。
         try {
           await this.fetchStatusSnapshot();
         } catch {
-          const fresh = await httpFetchStatusValue();
-          if (fresh) this.lastStatus = fresh;
+          // Keep lastStatus from token_usage / prompt result.
         }
       } catch (e) {
         if (abort.signal.aborted || (e as Error)?.name === "AbortError") {
@@ -644,40 +725,38 @@ class StdioAppserverSession {
         signal?.removeEventListener("abort", onAbort);
       }
     } catch (e) {
-      const message =
-        e instanceof Error ? e.message : "appserver 启动失败，请检查 Python 路径";
-      callbacks.onMessages((prev) => [
-        ...prev,
-        {
-          id: newId("system"),
-          role: "system",
-          content: `启动失败: ${message}`,
-          timestamp: Date.now(),
-        },
-      ]);
-      callbacks.onStatus(null);
+      if (signal?.aborted || (e as Error)?.name === "AbortError") {
+        callbacks.onMessages((prev) => [
+          ...prev,
+          {
+            id: newId("system"),
+            role: "system",
+            content: "Cancelled.",
+            timestamp: Date.now(),
+          },
+        ]);
+      } else {
+        const message =
+          e instanceof Error ? e.message : "appserver 启动失败，请检查 Python 路径";
+        callbacks.onMessages((prev) => [
+          ...prev,
+          {
+            id: newId("system"),
+            role: "system",
+            content: `启动失败: ${message}`,
+            timestamp: Date.now(),
+          },
+        ]);
+      }
     } finally {
       callbacks.onStreaming(false);
       callbacks.onProgress?.("");
-      // 用 models/list 刷新当前模型（不依赖 HTTP agent 是否已启动）。
       try {
         const listed = await this.fetchStatusSnapshot();
-        const httpStatus = await httpFetchStatusValue();
-        const merged = {
-          ...(httpStatus ?? {}),
-          ...(listed ?? this.lastStatus ?? {}),
-          model: listed?.model || httpStatus?.model || this.lastStatus?.model,
-        };
-        this.lastStatus = merged;
-        callbacks.onStatus(merged);
+        this.lastStatus = listed ?? this.lastStatus;
+        callbacks.onStatus(this.lastStatus);
       } catch {
-        const final = await httpFetchStatusValue();
-        if (final) {
-          this.lastStatus = final;
-          callbacks.onStatus(final);
-        } else {
-          callbacks.onStatus(this.lastStatus);
-        }
+        callbacks.onStatus(this.lastStatus);
       }
     }
   }
@@ -699,11 +778,7 @@ export const stdioTransport: ChatTransport = {
   kind: "stdio",
 
   async fetchStatus(onStatus: (status: StatusInfo | null) => void): Promise<void> {
-    try {
-      onStatus(await sharedSession.fetchStatusSnapshot());
-    } catch {
-      await httpFetchStatus(onStatus);
-    }
+    onStatus(await sharedSession.fetchStatusSnapshot());
   },
 
   async sendCommand(command: string): Promise<CommandResult> {
@@ -761,6 +836,10 @@ export const stdioTransport: ChatTransport = {
 
   async respondApproval(approvalId: string, decision: ApprovalDecision): Promise<boolean> {
     return sharedSession.resolveApproval(approvalId, decision);
+  },
+
+  async respondQuestion(questionId: string, reply: QuestionReply): Promise<boolean> {
+    return sharedSession.resolveQuestion(questionId, reply);
   },
 
   async sendChatMessage(

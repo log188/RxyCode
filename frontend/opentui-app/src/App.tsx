@@ -16,17 +16,20 @@ import {
   openChildSession,
   openParentSession,
   respondApproval,
+  respondQuestion,
   sendChatMessage,
   sendCommand,
 } from "./chatApi.ts";
 import { resolveTransportKind } from "./transport/config.ts";
 import { warmStdioBootstrap } from "./transport/stdioTransport.ts";
 import { ApprovalDialog, type ApprovalInfo } from "./ApprovalDialog.tsx";
+import { QuestionDialog } from "./QuestionDialog.tsx";
+import type { QuestionInfo, QuestionReply } from "./questionInfo.ts";
 import { classifyInput, formatCommandResult } from "./commandRouter.ts";
 import { parseMention } from "./mention.ts";
 import { formatChildNavigation } from "./childNavigation.ts";
 import { filterCommands, resolveSlashSubmit, AVAILABLE_COMMANDS, type Command, isBareModelPickerCommand } from "./commands.ts";
-import { APP_VERSION, formatHeaderLine, formatInputHint, formatMessageLine, messageFg } from "./format.ts";
+import { APP_VERSION, formatHeaderLine, formatInputHint, formatMessageLine, messageFg, shouldRenderThought } from "./format.ts";
 import { CHAT_PROMPT_KEY_BINDINGS } from "./promptKeyBindings.ts";
 import { isPromptSubmitKey, normalizePromptSubmitText } from "./promptSubmitKey.ts";
 import { buildStatusSegments, formatStatusBarText } from "./statusBar.ts";
@@ -294,10 +297,7 @@ function ChatLine({
   wrapW: number;
 }) {
   if (msg.role === "thinking") {
-    const text = (msg.content || "").trim();
-    const placeholder =
-      text === "" || text === "…" || text === "..." || text === "思考中...";
-    if (placeholder) return null;
+    if (!shouldRenderThought(msg)) return null;
     return <ThoughtMessage content={msg.content} done={msg.done} expanded={thinkingExpanded} />;
   }
   if (msg.role === "user") {
@@ -357,7 +357,11 @@ function ChatLine({
             {`  ${icon} >_ ${msg.toolName || "tool"} [${st}]`}
           </span>
           {!msg.toolExpanded && msg.content ? (
-            <span fg={C.overlay2}>  · Enter 展开</span>
+            <span fg={C.overlay2}>
+              {msg.toolName === "question"
+                ? `  ${msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content}`
+                : "  · Enter 展开"}
+            </span>
           ) : null}
         </text>
         {msg.toolExpanded && msg.content ? (
@@ -389,6 +393,7 @@ export default function App() {
   const [status, setStatus] = useState<StatusInfo | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<ApprovalInfo | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<QuestionInfo | null>(null);
   const [progress, setProgress] = useState("");
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
   const [sticky, setSticky] = useState<StickyState>(createStickyState());
@@ -410,7 +415,7 @@ export default function App() {
   const scrollAccel = useMemo(() => createScrollAcceleration(), []);
 
   const model = status?.model || process.env.RXYCODE_MODEL || "unknown";
-  const thinkingLive = isStreaming && thinkingExpanded;
+  const thinkingLive = isStreaming;
   const modeColor = MODE_COLORS[mode] || C.brandHot;
   const modeLabel = MODE_LABELS[mode];
 
@@ -604,7 +609,7 @@ export default function App() {
 
   usePaste((event) => {
     // Nested dialogs own paste (focused search input). Do not preventDefault.
-    if (isStreaming || dialogOpen || pendingApproval) return;
+    if (isStreaming || dialogOpen || pendingApproval || pendingQuestion) return;
     let text = "";
     try {
       text = stripAnsiSequences(decodePasteBytes(event.bytes));
@@ -634,7 +639,7 @@ export default function App() {
 
   useEffect(() => {
     try {
-      if (dialogOpen || pendingApproval) {
+      if (dialogOpen || pendingApproval || pendingQuestion) {
         textareaRef.current?.blur?.();
       } else if (!isStreaming) {
         textareaRef.current?.focus?.();
@@ -642,7 +647,7 @@ export default function App() {
     } catch {
       // ignore
     }
-  }, [dialogOpen, pendingApproval, isStreaming]);
+  }, [dialogOpen, pendingApproval, pendingQuestion, isStreaming]);
 
   useEffect(() => {
     if (process.env.RXYCODE_OPEN_PALETTE === "1") {
@@ -840,6 +845,28 @@ export default function App() {
     [pendingApproval, pushSystem],
   );
 
+  const onQuestionRequest = useCallback((info: QuestionInfo | null) => {
+    setPendingQuestion((prev) => {
+      if (info === null) return null;
+      if (prev && prev.questionId === info.questionId) return prev;
+      return info;
+    });
+    if (info) setProgress(`等待回答: ${info.question}`);
+  }, []);
+
+  const onQuestionResponse = useCallback(
+    async (reply: QuestionReply) => {
+      const pending = pendingQuestion;
+      if (!pending) return;
+      setPendingQuestion(null);
+      const ok = await respondQuestion(pending.questionId, reply);
+      if (!ok) {
+        pushSystem("Question response failed");
+      }
+    },
+    [pendingQuestion, pushSystem],
+  );
+
   const submitText = useCallback(
     async (raw: string) => {
       if (isStreaming) return;
@@ -926,24 +953,26 @@ export default function App() {
           onStatus: setStatus,
           onProgress: setProgress,
           onApprovalRequest,
+          onQuestionRequest,
         },
         controller.signal,
       );
       setPendingApproval(null);
+      setPendingQuestion(null);
       abortRef.current = null;
       textareaRef.current?.focus();
     },
-    [clearInput, isStreaming, mode, onApprovalRequest, openModel, paletteIdx, reengageSticky, runLocalOrRemoteCommand],
+    [clearInput, isStreaming, mode, onApprovalRequest, onQuestionRequest, openModel, paletteIdx, reengageSticky, runLocalOrRemoteCommand],
   );
 
   const submitFromInput = useCallback(() => {
-    if (isStreaming || dialogOpen || pendingApproval) return;
+    if (isStreaming || dialogOpen || pendingApproval || pendingQuestion) return;
     const text = normalizePromptSubmitText(
       textareaRef.current?.plainText ?? inputValue,
     );
     if (!text) return;
     void submitText(text);
-  }, [dialogOpen, inputValue, isStreaming, pendingApproval, submitText]);
+  }, [dialogOpen, inputValue, isStreaming, pendingApproval, pendingQuestion, submitText]);
 
   const onPromptKeyDown = useCallback(
     (key: { name?: string; sequence?: string; raw?: string; shift?: boolean; meta?: boolean; ctrl?: boolean; super?: boolean; preventDefault?: () => void }) => {
@@ -951,12 +980,12 @@ export default function App() {
       const text = normalizePromptSubmitText(
         textareaRef.current?.plainText ?? inputValue,
       );
-      if (!text || isStreaming || dialogOpen || pendingApproval) return;
+      if (!text || isStreaming || dialogOpen || pendingApproval || pendingQuestion) return;
       // Stop textarea default newline / submit double-fire; we own submission.
       key.preventDefault?.();
       submitFromInput();
     },
-    [dialogOpen, inputValue, isStreaming, pendingApproval, submitFromInput],
+    [dialogOpen, inputValue, isStreaming, pendingApproval, pendingQuestion, submitFromInput],
   );
 
   submitTextRef.current = submitText;
@@ -972,10 +1001,10 @@ export default function App() {
   const inputScroll = needsInputScroll(inputValue, inputWrapW);
 
   useKeyboard((key) => {
-    if (pendingApproval || dialogOpen) {
-      // Nested dialogs / approval own keyboard; Ctrl+P only opens when closed.
+    if (pendingApproval || pendingQuestion || dialogOpen) {
+      // Nested dialogs / approval / question own keyboard; Ctrl+P only opens when closed.
       if (dialogOpen && !(key.ctrl && key.name === "p")) return;
-      if (pendingApproval && !(key.ctrl && key.name === "p")) return;
+      if ((pendingApproval || pendingQuestion) && !(key.ctrl && key.name === "p")) return;
     }
     if (key.ctrl && key.name === "p") {
       if (!dialogOpen) {
@@ -1026,6 +1055,8 @@ export default function App() {
         return;
       }
       if (isStreaming && abortRef.current) {
+        setIsStreaming(false);
+        setProgress("");
         void cancelActiveRequest();
         abortRef.current.abort();
         abortRef.current = null;
@@ -1077,6 +1108,8 @@ export default function App() {
     }
     if (key.name === "escape") {
       if (isStreaming && abortRef.current) {
+        setIsStreaming(false);
+        setProgress("");
         void cancelActiveRequest();
         abortRef.current.abort();
         abortRef.current = null;
@@ -1227,6 +1260,8 @@ export default function App() {
 
       {pendingApproval ? (
         <ApprovalDialog approval={pendingApproval} onDecision={onApprovalDecision} />
+      ) : pendingQuestion ? (
+        <QuestionDialog question={pendingQuestion} onResponse={onQuestionResponse} />
       ) : dialogOpen ? null : (
       <box
         style={{

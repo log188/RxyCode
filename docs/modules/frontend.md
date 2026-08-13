@@ -14,6 +14,8 @@ rollback via `RXYCODE_TUI=ink`.
 - **Chat transport** (P5): `RXYCODE_TRANSPORT=stdio|http` (default `stdio`)
   - `stdio` (default): spawns `python -m appserver`, uses `@rxycode/protocol-client` JSON-RPC
   - `http`: embedded FastAPI + SSE (`chatApi` → `/chat/stream`) — fallback via `RXYCODE_TRANSPORT=http`
+  - Status bar 上下文/缓存: stdio 消费 `event/token_usage` + `models/list.context_window`（不再依赖 HTTP `/status`）
+  - Esc 立即结束 Processing，后台再发 `session/interrupt`
 - Settings dialogs (models, MCP, memory) still use HTTP API in both modes
 - OpenTUI: `bun run src/index.tsx`; Ink: Node.js process — both launched by `main.py`
 
@@ -28,6 +30,8 @@ rollback via `RXYCODE_TUI=ink`.
 | opentui-app/src/dialog/* | Nested settings / select / confirm / prompt dialogs |
 | opentui-app/src/CommandPalette.tsx | Ctrl+P command palette |
 | opentui-app/src/ApprovalDialog.tsx | Tool approval UI |
+| opentui-app/src/QuestionDialog.tsx | Interactive `question` tool (choice / free text) |
+| opentui-app/src/questionInfo.ts | Parse `question/request` params and summarize tool args |
 | opentui-app/src/Markdown.tsx | Markdown rendering |
 | opentui-app/src/streamReducer.ts | Streaming message state |
 | opentui-app/src/commands.ts / commandRouter.ts | Slash-command parsing/routing（含 `/effort`：2026-08-12，选择思考强度，档位随当前模型，local 命令） |

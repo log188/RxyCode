@@ -43,6 +43,24 @@ def test_top_level_worker_uses_the_same_approval_broker_module_as_agent_core():
     assert completed.stdout.strip() == "True"
 
 
+def test_top_level_worker_uses_the_same_question_broker_module_as_agent_core():
+    root = Path(__file__).resolve().parents[2]
+    probe = (
+        "import appserver; "
+        "from appserver.agent_worker import set_question_broker as worker_setter; "
+        "from RxyCode.RxyCode1_1_0.core.question import set_question_broker as core_setter; "
+        "print(worker_setter is core_setter)"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == "True"
+
+
 def test_top_level_worker_registers_manager_in_canonical_agent_namespace(tmp_path, monkeypatch):
     monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path / "data"))
     import appserver  # noqa: F401

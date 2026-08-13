@@ -817,8 +817,25 @@ class AppServer:
         self._shutdown = True
         await self._respond(request_id, {"ok": True})
 
+    def _touch_jobs_for_notification(self, message: dict[str, Any]) -> None:
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return
+        session_id = str(
+            params.get("session_id") or params.get("root_session_id") or ""
+        )
+        if not session_id:
+            return
+        for job in list(self._watchdog.jobs.values()):
+            if job.session_id == session_id:
+                self._watchdog.touch_job(job.job_id)
+
     def _emit_host_notification(self, message: dict[str, Any]) -> None:
         """Forward worker notifications without blocking the event loop."""
+        self._touch_jobs_for_notification(message)
+        if message.get("method") == "event/heartbeat":
+            # Liveness only; same contract as the in-prompt emit path.
+            return
         self._persist_notification(message)
         try:
             asyncio.get_running_loop()

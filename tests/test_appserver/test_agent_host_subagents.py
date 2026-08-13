@@ -1,6 +1,6 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -33,6 +33,35 @@ async def test_agent_host_forwards_child_session_notifications(tmp_path):
     host._route_notification(notification)
 
     assert emitted == [notification]
+
+
+@pytest.mark.asyncio
+async def test_agent_host_forwards_question_request_like_approval(tmp_path):
+    host = _host(tmp_path)
+    host._forward_server_request = AsyncMock(
+        return_value={"question_id": "q1", "answer": "response"}
+    )
+    host._respond_to_worker = MagicMock()
+
+    host._route_notification(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "question/request",
+            "params": {
+                "session_id": "s1",
+                "question_id": "q1",
+                "question": "哪个环节慢？",
+            },
+        }
+    )
+    await asyncio.sleep(0.05)
+
+    host._forward_server_request.assert_awaited_once()
+    assert host._forward_server_request.await_args.args[0] == "question/request"
+    host._respond_to_worker.assert_called_once_with(
+        7, {"question_id": "q1", "answer": "response"}, error=None
+    )
 
 
 @pytest.mark.asyncio

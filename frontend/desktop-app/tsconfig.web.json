@@ -10,11 +10,11 @@
   "compilerOptions": {
     "composite": true,
     "jsx": "react-jsx",
+    "noEmit": true,
     "allowImportingTsExtensions": true,
-    "baseUrl": ".",
     "paths": {
       "@renderer/*": [
-        "src/renderer/src/*"
+        "./src/renderer/src/*"
       ]
     }
   }

@@ -67,4 +67,22 @@ describe("applyStreamEvent thinking timing", () => {
     expect(settled.find((m) => m.id === "a1")!.done).toBe(true);
     expect(settled.find((m) => m.id === "tool")!.toolStatus).toBe("cancelled");
   });
+
+  test("question tool_call shows the prompt instead of raw JSON", () => {
+    const next = applyStreamEvent(
+      base(),
+      {
+        type: "tool_call",
+        name: "question",
+        args: {
+          questions: [{ question: "哪个环节慢？", header: "确认问题" }],
+        },
+      },
+      nid,
+    );
+    const tool = next.messages.find((m) => m.role === "tool");
+    expect(tool?.toolName).toBe("question");
+    expect(tool?.content).toBe("确认问题: 哪个环节慢？");
+    expect(tool?.content).not.toContain("questions");
+  });
 });

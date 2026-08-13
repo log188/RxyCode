@@ -1,6 +1,7 @@
 import axios from "axios";
 import { API_BASE, authorizationHeaders } from "../apiClient.ts";
 import type { ApprovalDecision } from "../ApprovalDialog.tsx";
+import type { QuestionReply } from "../questionInfo.ts";
 import type { StatusInfo } from "../types.ts";
 
 export type CommandResult = {
@@ -103,6 +104,27 @@ export async function httpRespondApproval(
     await axios.post(
       `${API_BASE}/approve`,
       { approval_id: approvalId, decision },
+      { headers: authorizationHeaders(), timeout: 10000 },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function httpRespondQuestion(
+  questionId: string,
+  reply: QuestionReply,
+): Promise<boolean> {
+  if (!questionId) return false;
+  try {
+    await axios.post(
+      `${API_BASE}/question/respond`,
+      {
+        question_id: questionId,
+        answer: reply.cancelled || reply.timedOut ? undefined : (reply.answer ?? ""),
+        cancelled: Boolean(reply.cancelled),
+      },
       { headers: authorizationHeaders(), timeout: 10000 },
     );
     return true;

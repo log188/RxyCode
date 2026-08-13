@@ -1,5 +1,10 @@
 ﻿import { describe, expect, test } from "bun:test";
-import { formatMessageLine, formatHeaderLine, formatInputHint } from "./format.ts";
+import {
+  formatMessageLine,
+  formatHeaderLine,
+  formatInputHint,
+  shouldRenderThought,
+} from "./format.ts";
 import type { ChatMessage } from "./types.ts";
 
 describe("message formatting", () => {
@@ -29,5 +34,49 @@ describe("message formatting", () => {
   test("input hint shows Ready/Processing", () => {
     expect(formatInputHint(false)).toBe("Ready");
     expect(formatInputHint(true)).toBe("Processing...");
+  });
+
+  test("live placeholder Thought stays visible while the run is in flight", () => {
+    expect(
+      shouldRenderThought({
+        id: "t1",
+        role: "thinking",
+        content: "…",
+        timestamp: 1,
+        live: true,
+        done: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRenderThought({
+        id: "t2",
+        role: "thinking",
+        content: "思考中...",
+        timestamp: 1,
+        done: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("settled empty Thought is hidden; real reasoning stays", () => {
+    expect(
+      shouldRenderThought({
+        id: "t3",
+        role: "thinking",
+        content: "…",
+        timestamp: 1,
+        done: true,
+        live: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRenderThought({
+        id: "t4",
+        role: "thinking",
+        content: "先看路由再回",
+        timestamp: 1,
+        done: false,
+      }),
+    ).toBe(true);
   });
 });

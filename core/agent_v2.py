@@ -2432,6 +2432,14 @@ class AgentV2:
                 payload["temperature"] = pkwargs["temperature"]
             else:
                 payload.pop("temperature", None)
+        # Greetings / no-tool fast replies must not sit in silent extended
+        # thinking: that is why OpenCode/Claude can answer 你好 immediately
+        # while a thinking-default model looks stalled until first token.
+        if getattr(self, "_thinking_disabled_this_turn", False):
+            body = payload.get("extra_body")
+            if isinstance(body, dict) and "thinking" in body:
+                body["thinking"] = {"type": "disabled"}
+            payload.pop("reasoning_effort", None)
         # B2 (CB3): OpenAI 系按能力注入请求级 prompt_cache_key=session_id，
         # 会话期恒定（跨 turn 前缀复用）；DeepSeek/Anthropic 不注入。
         # B9 (luna R1-2): 注入与否由契约 requires_prompt_cache_key 裁决——
@@ -2491,6 +2499,9 @@ class AgentV2:
         usage: tuple[int, int] | None = None
         _ttft_start: float | None = None
         _ttft_recorded = False
+        first_chunk_timeout = max(
+            1.0, float(self.model_config.get("timeout", 90.0) or 90.0)
+        )
 
         async def _open_provider_stream():
             # B8/luna R1-4/R2-1: TTFT 起点 = 请求实际发出前（不含 client 初始化/
@@ -2505,10 +2516,27 @@ class AgentV2:
 
         try:
             if _circuit_breaker.circuit_breaker_enabled():
-                agen = await _circuit_breaker.get_default_breaker().call(_open_provider_stream)
+                agen = await asyncio.wait_for(
+                    _circuit_breaker.get_default_breaker().call(_open_provider_stream),
+                    timeout=first_chunk_timeout,
+                )
             else:
-                agen = await _open_provider_stream()
-            async for chunk in agen:
+                agen = await asyncio.wait_for(
+                    _open_provider_stream(), timeout=first_chunk_timeout
+                )
+            ait = agen.__aiter__()
+            first_wait = True
+            while True:
+                try:
+                    if first_wait:
+                        chunk = await asyncio.wait_for(
+                            ait.__anext__(), timeout=first_chunk_timeout
+                        )
+                        first_wait = False
+                    else:
+                        chunk = await ait.__anext__()
+                except StopAsyncIteration:
+                    break
                 # B8/luna R1-4/R2-1: 首个**含内容**的 chunk 到达即记录 TTFT
                 # （空 chunk/keepalive 不计数）；局部标志，每请求独立。
                 if _ttft_start is not None and not _ttft_recorded:
@@ -4158,6 +4186,7 @@ class AgentV2:
 
             _reasoning_buffer = []
             received_real_usage = False
+            self._thinking_disabled_this_turn = True
             async for chunk in self._raw_stream(messages):
                 if not getattr(chunk, "choices", None):
                     usage = getattr(chunk, "usage", None)
@@ -4269,6 +4298,8 @@ class AgentV2:
             return answer
         except Exception as e:
             return "[error: " + str(e) + "]"
+        finally:
+            self._thinking_disabled_this_turn = False
 
 
     def _should_use_subagents(self, user_input: str) -> bool:

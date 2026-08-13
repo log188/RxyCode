@@ -36,6 +36,50 @@ describe("notifyToStreamEvent", () => {
     });
   });
 
+  test("maps event/final token fields for the status bar", () => {
+    expect(
+      notifyToStreamEvent("event/final", {
+        session_id: "s1",
+        run_id: "r1",
+        text: "done",
+        input_tokens: 900,
+        output_tokens: 100,
+        cache_hit_tokens: 400,
+        cache_hit_rate: 44.4,
+        reporting_status: "reported",
+      }),
+    ).toEqual({
+      type: "final",
+      text: "done",
+      message: "done",
+      input_tokens: 900,
+      output_tokens: 100,
+      cache_hit_tokens: 400,
+      cache_hit_rate: 44.4,
+      reporting_status: "reported",
+    });
+  });
+
+  test("maps event/token_usage for the status bar", () => {
+    expect(
+      notifyToStreamEvent("event/token_usage", {
+        session_id: "s1",
+        input_tokens: 1200,
+        output_tokens: 300,
+        cache_hit_tokens: 800,
+        cache_hit_rate: 66.7,
+        reporting_status: "reported",
+      }),
+    ).toEqual({
+      type: "token_usage",
+      input_tokens: 1200,
+      output_tokens: 300,
+      cache_hit_tokens: 800,
+      cache_hit_rate: 66.7,
+      reporting_status: "reported",
+    });
+  });
+
   test("returns null for unknown methods", () => {
     expect(notifyToStreamEvent("event/server_heartbeat", {})).toBeNull();
   });
