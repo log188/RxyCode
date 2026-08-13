@@ -1,5 +1,11 @@
 """P6 request routing: explicit directives and inventory coverage."""
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 from RxyCode.RxyCode1_1_0.core.request_routing import (
     ROUTING_INVENTORY,
     RoutingDirective,
@@ -8,6 +14,57 @@ from RxyCode.RxyCode1_1_0.core.request_routing import (
     is_simple_query,
     parse_routing_directive,
 )
+
+
+class _Memory:
+    async def initialize(self):
+        return None
+
+    def load_session(self):
+        return None
+
+    def get_context_for_prompt(self):
+        return ""
+
+    def add_interaction(self, *_args):
+        return None
+
+    def save_session(self):
+        return None
+
+
+def _routed_agent() -> AgentV2:
+    agent = object.__new__(AgentV2)
+    agent._cancelled = False
+    agent._active_task = None
+    agent._session_loaded = True
+    agent._session_id = "request-routing"
+    agent._memory = _Memory()
+    agent._llm = None
+    agent._tool_orchestrator = None
+    agent._tool_tracer = None
+    agent._thinking_history = []
+    agent._last_thinking = ""
+    agent._detect_file_operation = MagicMock(return_value=None)
+    agent._detect_download_intent = MagicMock(return_value=None)
+    agent._is_simple_query = AgentV2._is_simple_query.__get__(agent, AgentV2)
+    agent._is_social_chat = AgentV2._is_social_chat.__get__(agent, AgentV2)
+    agent._has_creation_product_intent = AgentV2._has_creation_product_intent.__get__(
+        agent, AgentV2
+    )
+    agent._should_use_subagents = MagicMock(return_value=False)
+    agent._fast_reply = AsyncMock(return_value="fast")
+    agent._fast_reply_with_tools = AsyncMock(return_value="tool path")
+    agent._run_plan_only = AsyncMock(return_value="plan only")
+    agent._graph = SimpleNamespace(
+        ainvoke=AsyncMock(return_value={"final_response": "graph answer"})
+    )
+    return agent
+
+
+REFACTOR = "帮我重构整个项目的认证模块，把代码整理干净。"
+CODE_TASK = "分析当前目录的代码并修复 calc.py 里的 bug。"
+PROJECT_TASK = "给这个项目补测试并跑一遍。"
 
 
 def test_routing_inventory_has_twenty_five_sites():
@@ -41,7 +98,7 @@ def test_auto_keeps_plain_chat_simple():
     assert is_simple_query("what happened?") is True
 
 
-def test_file_bugfix_request_uses_full_path():
+def test_file_bugfix_request_is_not_classified_simple():
     text = (
         "当前目录下有一个 calc.py，"
         "请修复 sum_up_to(n) 的 off-by-one bug，"
@@ -51,13 +108,42 @@ def test_file_bugfix_request_uses_full_path():
     assert is_simple_query(text) is False
 
 
-def test_mutable_default_bugfix_request_uses_full_path():
+def test_mutable_default_bugfix_request_is_not_classified_simple():
     text = (
         "当前目录下的 cart.py 里 Cart 类使用了可变默认参数 items=[]，"
         "请修复这个经典 bug，然后运行 python -m pytest test_cart.py -q 确认通过。"
     )
     assert has_structured_pipeline_signal(text) is True
     assert is_simple_query(text) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", [REFACTOR, CODE_TASK, PROJECT_TASK])
+async def test_code_project_sentences_do_not_enter_langgraph(text):
+    agent = _routed_agent()
+    result = await agent._run_impl(text, mode="build")
+    assert result == "tool path"
+    agent._fast_reply_with_tools.assert_awaited_once_with(text)
+    agent._graph.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_code_task_does_not_enter_langgraph():
+    agent = _routed_agent()
+    result = await agent._run_impl(REFACTOR, mode="plan")
+    assert result == "plan only"
+    agent._run_plan_only.assert_awaited_once_with(REFACTOR)
+    agent._graph.ainvoke.assert_not_awaited()
+    agent._fast_reply_with_tools.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_directive_enters_langgraph():
+    agent = _routed_agent()
+    result = await agent._run_impl("/pipeline " + REFACTOR, mode="build")
+    assert result == "graph answer"
+    agent._graph.ainvoke.assert_awaited_once()
+    agent._fast_reply_with_tools.assert_not_awaited()
 
 
 def test_relative_py_mention_without_modify_stays_simple():

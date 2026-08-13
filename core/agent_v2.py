@@ -1876,6 +1876,30 @@ class AgentV2:
             caps = DEFAULT_CAPABILITIES
         return provider.extract_reasoning(delta, caps) or ""
 
+    def _stream_chunk_is_useful(self, chunk) -> bool:
+        """True when a stream chunk can surface thinking, text, or a tool call.
+
+        Empty SSE keepalives must not count as the first packet: they used to
+        cancel the 90s wait_for, after which a hang never timed out and the
+        CLI thinking panel stayed empty until the 120s watchdog killed the job.
+        """
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            return False
+        delta = getattr(choices[0], "delta", None)
+        if delta is None:
+            return False
+        if getattr(delta, "content", None):
+            return True
+        if getattr(delta, "tool_calls", None):
+            return True
+        if self._provider_reasoning(delta):
+            return True
+        extra = getattr(delta, "reasoning_content", None) or ""
+        if extra:
+            return True
+        return False
+
     def _prompt_variant(self) -> str:
         """A9: variant selector from current model capabilities."""
         caps = getattr(self, "_capabilities", None)
@@ -2502,6 +2526,9 @@ class AgentV2:
         first_chunk_timeout = max(
             1.0, float(self.model_config.get("timeout", 90.0) or 90.0)
         )
+        tui = get_tui()
+        if tui and hasattr(tui, "write_progress"):
+            tui.write_progress("正在连接模型…")
 
         async def _open_provider_stream():
             # B8/luna R1-4/R2-1: TTFT 起点 = 请求实际发出前（不含 client 初始化/
@@ -2525,30 +2552,34 @@ class AgentV2:
                     _open_provider_stream(), timeout=first_chunk_timeout
                 )
             ait = agen.__aiter__()
-            first_wait = True
+            useful_deadline = time.monotonic() + first_chunk_timeout
+            got_useful = False
             while True:
                 try:
-                    if first_wait:
+                    if got_useful:
                         chunk = await asyncio.wait_for(
                             ait.__anext__(), timeout=first_chunk_timeout
                         )
-                        first_wait = False
                     else:
-                        chunk = await ait.__anext__()
+                        remaining = useful_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise asyncio.TimeoutError(
+                                "timed out waiting for first useful stream chunk"
+                            )
+                        chunk = await asyncio.wait_for(
+                            ait.__anext__(), timeout=remaining
+                        )
                 except StopAsyncIteration:
                     break
-                # B8/luna R1-4/R2-1: 首个**含内容**的 chunk 到达即记录 TTFT
-                # （空 chunk/keepalive 不计数）；局部标志，每请求独立。
-                if _ttft_start is not None and not _ttft_recorded:
-                    choices = getattr(chunk, "choices", None) or []
-                    if choices:
-                        delta = getattr(choices[0], "delta", None)
-                        content = getattr(delta, "content", "") or ""
-                        if content:
-                            _ttft_recorded = True
-                            token_stats.record_ttft(
-                                (time.monotonic() - _ttft_start) * 1000
-                            )
+                # First useful packet = reasoning, visible text, or tool_calls.
+                # Empty keepalives must not start the idle-timeout window.
+                if self._stream_chunk_is_useful(chunk):
+                    if _ttft_start is not None and not _ttft_recorded:
+                        _ttft_recorded = True
+                        token_stats.record_ttft(
+                            (time.monotonic() - _ttft_start) * 1000
+                        )
+                    got_useful = True
                 last_chunk = chunk
                 choices = getattr(chunk, "choices", None) or []
                 if choices:
@@ -2899,7 +2930,8 @@ class AgentV2:
         )
 
     def _schedule_mcp_refresh(self) -> None:
-        if getattr(self, "_mcp_refresh_thread", None) is not None:
+        thread = getattr(self, "_mcp_refresh_thread", None)
+        if thread is not None and thread.is_alive():
             return
         thread = threading.Thread(
             target=self._refresh_mcp_tools,
@@ -4499,12 +4531,12 @@ class AgentV2:
 
         # ``download_mcp`` writes config atomically.  Reading the fingerprint
         # here makes an add/remove effective on the next request without an
-        # Agent or API restart.  Process startup stays off the event loop.
+        # Agent or API restart.  Never await MCP on the user turn: a hung
+        # optional server used to consume the 120s watchdog before the first
+        # thinking token. Background refresh is enough for the next turn.
         if getattr(self, "_tool_orchestrator", None) is not None:
             if not self._should_skip_mcp_refresh(user_input):
-                thread = getattr(self, "_mcp_refresh_thread", None)
-                if thread is None or not thread.is_alive():
-                    await asyncio.to_thread(self._refresh_mcp_tools)
+                self._schedule_mcp_refresh()
 
         bound_run_id = get_bound_run_id()
         if bound_run_id is not None:
@@ -4964,11 +4996,11 @@ class AgentV2:
     async def _run_impl(self, user_input: str, mode: str = "build") -> str:
         """Run the agent on user input.
 
-        Fast path: simple questions get answered directly via LLM.
+        Fast path: greetings and no-tool turns use _fast_reply.
+        Interactive build turns use the streaming tool loop (_fast_reply_with_tools).
+        LangGraph runs only for /full or /pipeline.
         Download path: skill/MCP download intents handled directly.
-        Sub-agent path: complex tasks that can be parallelized (Build mode).
         Compose path: Plan + Build combined (Compose mode).
-        Full path: complex tasks go through LangGraph pipeline.
         """
         # Tracks whether automatic fallback could duplicate a mutating action.
         # It is intentionally reset once per top-level request, not per tool
@@ -5077,12 +5109,19 @@ class AgentV2:
         if (
             mode in ("build", "plan")
             and not force_full
-            and (force_fast or self._is_simple_query(user_input))
         ):
             try:
                 if social:
                     _logger.info("route=social_chat mode=%s -> fast_tools", mode)
+                else:
+                    _logger.info(
+                        "route=stream_default mode=%s force_fast=%s -> fast_tools",
+                        mode,
+                        force_fast,
+                    )
                 return await self._fast_reply_with_tools(user_input)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 if social:
                     _logger.warning("social chat fast path failed (no graph): %s", exc)
@@ -5095,27 +5134,10 @@ class AgentV2:
                 if self._side_effecting_tool_attempted:
                     return side_effect_failure_notice(str(exc))
                 _logger.warning(
-                    "tool-aware fast path failed; falling through to full pipeline: %s",
-                    exc,
-                    )
-
-        if (
-            mode in ("build", "plan")
-            and not force_full
-            and self._has_creation_product_intent(user_input)
-        ):
-            try:
-                _logger.info("route=creation_product mode=%s -> fast_tools", mode)
-                return await self._fast_reply_with_tools(user_input)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if self._side_effecting_tool_attempted:
-                    return side_effect_failure_notice(str(exc))
-                _logger.warning(
-                    "creation product fast path failed; falling through: %s",
+                    "tool-aware fast path failed (no graph fallback): %s",
                     exc,
                 )
+                return f"[error] {type(exc).__name__}: {str(exc)[:200]}"
 
         # Compose 模式: Plan + Build 结合
         if mode == "compose":

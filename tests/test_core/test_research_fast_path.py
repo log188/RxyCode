@@ -618,9 +618,9 @@ async def test_run_nonfresh_tool_failure_falls_through_without_tool_free_reply()
 
     result = await agent.run("Explain merge sort")
 
-    assert result == "pipeline answer"
+    assert "tool path failed" in result
     agent._fast_reply.assert_not_awaited()
-    agent._graph.ainvoke.assert_awaited_once()
+    agent._graph.ainvoke.assert_not_awaited()
 
 
 @pytest.mark.asyncio

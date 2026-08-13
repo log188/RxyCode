@@ -113,14 +113,46 @@ async def test_small_game_uses_tool_fast_path_not_langgraph():
     agent._fast_reply.assert_not_awaited()
 
 
+REFACTOR = "帮我重构整个项目的认证模块，把代码整理干净。"
+CODE_TASK = "分析当前目录的代码并修复 calc.py 里的 bug。"
+
+
+@pytest.mark.asyncio
+async def test_complex_code_task_uses_stream_loop_not_langgraph():
+    agent = _run_agent()
+    result = await agent._run_impl(REFACTOR, mode="build")
+    assert result == "tool path"
+    agent._fast_reply_with_tools.assert_awaited_once_with(REFACTOR)
+    agent._graph.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_code_project_sentence_does_not_enter_graph():
+    agent = _run_agent()
+    result = await agent._run_impl(CODE_TASK, mode="build")
+    assert result == "tool path"
+    agent._graph.ainvoke.assert_not_awaited()
+    agent._fast_reply_with_tools.assert_awaited_once_with(CODE_TASK)
+
+
+@pytest.mark.asyncio
+async def test_full_directive_still_enters_langgraph():
+    agent = _run_agent()
+    result = await agent._run_impl("/full " + REFACTOR, mode="build")
+    assert result == "graph answer"
+    agent._graph.ainvoke.assert_awaited_once()
+    agent._fast_reply_with_tools.assert_not_awaited()
+
+
 def test_run_does_not_schedule_competing_prewarm():
     src = inspect.getsource(AgentV2.run)
     assert "_schedule_prewarm" not in src
 
 
-def test_run_does_not_await_in_flight_mcp_refresh():
+def test_run_does_not_await_mcp_refresh():
     src = inspect.getsource(AgentV2.run)
-    assert "is_alive" in src or "_mcp_refresh_thread" in src
+    assert "asyncio.to_thread" not in src
+    assert "_schedule_mcp_refresh" in src
 
 
 def test_declines_tools_skips_mcp_refresh_on_turn():

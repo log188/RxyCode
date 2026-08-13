@@ -514,7 +514,7 @@ async def test_agent_cancel_cleans_up_the_active_graph_task(monkeypatch):
     )
     agent = _run_agent()
     agent._graph.ainvoke = graph_run
-    task = asyncio.create_task(agent.run("perform a complex build", mode="build"))
+    task = asyncio.create_task(agent.run("/full perform a complex build", mode="build"))
     await started.wait()
 
     assert agent.cancel() is True
@@ -539,7 +539,7 @@ async def test_explicit_parallel_build_uses_validated_graph_not_legacy_subagents
     agent._run_with_subagents = AsyncMock(side_effect=AssertionError("legacy bypass"))
 
     result = await agent.run(
-        "analyze these modules in parallel and report the results",
+        "/full analyze these modules in parallel and report the results",
         mode="build",
     )
 
@@ -740,7 +740,7 @@ async def test_graph_exception_never_calls_tool_free_fallback(monkeypatch):
     agent = _run_agent()
     agent._graph.ainvoke = AsyncMock(side_effect=RuntimeError("graph exploded"))
 
-    result = await agent.run("perform a complex build", mode="build")
+    result = await agent.run("/full perform a complex build", mode="build")
 
     assert "graph exploded" in result
     assert "not repeated" in result.lower()
@@ -759,7 +759,7 @@ async def test_missing_graph_final_never_calls_tool_free_fallback(monkeypatch):
     agent = _run_agent()
     agent._graph.ainvoke = AsyncMock(return_value={"final_response": None})
 
-    result = await agent.run("perform a complex build", mode="build")
+    result = await agent.run("/full perform a complex build", mode="build")
 
     assert "no final response" in result.lower()
     assert "not repeated" in result.lower()
