@@ -585,10 +585,16 @@ export function hydrateSessions(
       }
     }
     if (summary.status !== undefined) {
+      const status = summary.status
+      const staleRunning = status === 'running'
+      const runState = staleRunning ? 'queued' : status
       next = {
         ...next,
-        runStateBySession: { ...next.runStateBySession, [summary.session_id]: summary.status },
-        runningBySession: { ...next.runningBySession, [summary.session_id]: isActiveRunState(summary.status) }
+        runStateBySession: { ...next.runStateBySession, [summary.session_id]: runState },
+        runningBySession: {
+          ...next.runningBySession,
+          [summary.session_id]: !staleRunning && isActiveRunState(runState) && runState !== 'queued'
+        }
       }
     }
   }
@@ -646,6 +652,17 @@ export function restoreSession(state: ConversationState, sessionId: string): Con
     sessions: state.sessions.map((session) =>
       session.sessionId === sessionId ? { ...session, trashedAt: null, updatedAt: Date.now() } : session
     )
+  }
+}
+
+export function releaseStaleRun(state: ConversationState, sessionId: string): ConversationState {
+  const { [sessionId]: _progress, ...progressBySession } = state.progressBySession
+  return {
+    ...state,
+    runningBySession: { ...state.runningBySession, [sessionId]: false },
+    runStateBySession: { ...state.runStateBySession, [sessionId]: 'queued' },
+    errorBySession: { ...state.errorBySession, [sessionId]: null },
+    progressBySession
   }
 }
 

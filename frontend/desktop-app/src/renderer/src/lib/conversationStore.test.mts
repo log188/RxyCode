@@ -18,6 +18,7 @@ import {
   createInitialState,
   hydrateChildSessions,
   hydrateSessions,
+  releaseStaleRun,
   removeApprovalRequest,
   removeApprovalRequestsForSession,
   selectSession,
@@ -344,6 +345,33 @@ test('hydrated task status restores active and terminal state without re-running
   }])
   assert.equal(state.runStateBySession.persisted, 'approval')
   assert.equal(state.runningBySession.persisted, true)
+})
+
+test('hydrated running status is stale after desktop restart and must not lock the composer', () => {
+  const state = hydrateSessions(createInitialState(), [{
+    session_id: 'stuck',
+    workspace_root: WORKSPACE,
+    title: 'New task',
+    status: 'running',
+    created_at: '2026-08-13T00:00:00Z',
+    updated_at: '2026-08-13T00:01:00Z'
+  }])
+  assert.equal(state.runStateBySession.stuck, 'queued')
+  assert.equal(state.runningBySession.stuck, false)
+})
+
+test('releaseStaleRun unlocks a replayed preparing worker and drops leftover progress', () => {
+  let state = addSession(createInitialState(), { sessionId: 's1', workspaceRoot: WORKSPACE })
+  state = applyProtocolNotification(state, 'event/progress', {
+    session_id: 's1',
+    text: 'Preparing Agent worker…'
+  })
+  state = applyProtocolNotification(state, 'event/task_started', { session_id: 's1' })
+  assert.equal(state.runningBySession.s1, true)
+  state = releaseStaleRun(state, 's1')
+  assert.equal(state.runningBySession.s1, false)
+  assert.equal(state.runStateBySession.s1, 'queued')
+  assert.equal(state.progressBySession.s1, undefined)
 })
 
 test('applyError finalizes every running tool when the prompt transport fails', () => {

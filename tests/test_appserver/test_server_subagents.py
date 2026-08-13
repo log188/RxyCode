@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -71,6 +72,70 @@ async def test_appserver_routes_subagent_rpc_to_primary_worker(tmp_path, monkeyp
     assert callable(call.kwargs["emit"])
     respond.assert_awaited_once_with(
         71, {"accepted": True, "request_id": "req-1"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_child_session_replay_does_not_start_or_wait_on_worker(tmp_path, monkeypatch):
+    """Desktop startup must not bootstrap AgentV2 just to replay child events."""
+    server = AppServer(stub=True)
+    server._initialized = True
+    session = server._sessions.create(tmp_path)
+    host_factory = AsyncMock(side_effect=AssertionError("must not spawn worker"))
+    monkeypatch.setattr(server, "_host_for_session", host_factory)
+    respond = AsyncMock()
+    monkeypatch.setattr(server, "_respond", respond)
+
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 81,
+            "method": "child_sessions/events",
+            "params": {"root_session_id": session.session_id, "cursor": 0},
+        }
+    )
+
+    host_factory.assert_not_awaited()
+    respond.assert_awaited_once_with(
+        81,
+        {
+            "root_session_id": session.session_id,
+            "events": [],
+            "next_cursor": 0,
+            "gap_detected": False,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_child_session_list_skips_unbootstrapped_host(tmp_path, monkeypatch):
+    server = AppServer(stub=True)
+    server._initialized = True
+    session = server._sessions.create(tmp_path)
+    host = SimpleNamespace(
+        alive=lambda: True,
+        bootstrapped=False,
+        ensure_bootstrapped=AsyncMock(),
+        run_subagent_rpc=AsyncMock(),
+    )
+    server._session_hosts[session.session_id] = host
+    monkeypatch.setattr(server, "_host_for_session", AsyncMock(return_value=host))
+    respond = AsyncMock()
+    monkeypatch.setattr(server, "_respond", respond)
+
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 82,
+            "method": "child_sessions/list",
+            "params": {"root_session_id": session.session_id},
+        }
+    )
+
+    host.ensure_bootstrapped.assert_not_awaited()
+    host.run_subagent_rpc.assert_not_awaited()
+    respond.assert_awaited_once_with(
+        82, {"root_session_id": session.session_id, "sessions": []}
     )
 
 

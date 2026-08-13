@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import type { TimelineItem } from '../lib/conversationStore.mts'
+import { shouldShowStartupProgress } from '../lib/taskPresentation.mts'
 
 interface ChatAreaProps {
   timeline: TimelineItem[]
@@ -130,7 +131,11 @@ function ChatArea({ timeline, running, error, progress, onOpenInspector }: ChatA
       {timeline.length === 0 ? (
         <div className="chat-empty">
           <p>新建任务后，在下方输入你的需求。</p>
-          {progress !== null && progress !== undefined && (
+          {shouldShowStartupProgress({
+            timelineLength: 0,
+            running,
+            progress
+          }) && (
             <div className="task-startup-status" data-testid="task-startup-status">
               <CircleDashed className="activity-spinner" aria-hidden="true" size={14} />
               {progress}

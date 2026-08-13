@@ -29,6 +29,7 @@ import {
   hydrateSessions,
   parseLeadingAgentMentions,
   purgeSession,
+  releaseStaleRun,
   replaySessionEvents,
   renameSession,
   removeApprovalRequest,
@@ -39,6 +40,7 @@ import {
   updateApprovalRequestStatus,
   type ConversationState
 } from '../lib/conversationStore.mts'
+import { isNonFatalChildRecoveryError } from '../lib/sessionRecovery.mts'
 import {
   createApprovalRule,
   findAutoApprovalRule,
@@ -268,12 +270,7 @@ export function useConversation(
         // A replay can contain the last persisted `running` status when the
         // appserver returned a recoverable stall before it emitted a terminal
         // event. That historical status must not block the next user turn.
-        setState((current) => ({
-          ...current,
-          runningBySession: { ...current.runningBySession, [sessionId]: false },
-          runStateBySession: { ...current.runStateBySession, [sessionId]: 'queued' },
-          errorBySession: { ...current.errorBySession, [sessionId]: null }
-        }))
+        setState((current) => releaseStaleRun(current, sessionId))
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -305,7 +302,7 @@ export function useConversation(
       const message = error instanceof Error ? error.message : String(error)
       // Older appservers may not expose Phase-B child replay. Ordinary task
       // recovery remains valid, so keep this diagnostic non-fatal.
-      if (!message.toLowerCase().includes('method not found')) {
+      if (!isNonFatalChildRecoveryError(message)) {
         setConnectionError(`child session recovery failed: ${message}`)
       }
     }
@@ -399,9 +396,12 @@ export function useConversation(
                 replay.next_cursor,
                 replay.gap_detected
               ))
+              // Cold attach: persisted running/progress is not a live job.
+              setState((current) => releaseStaleRun(current, rootSessionId))
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
               setConnectionError(`session event recovery failed: ${message}`)
+              setState((current) => releaseStaleRun(current, rootSessionId))
             }
             const cursor = stateRef.current.childEventCursorByRoot[rootSessionId] ?? 0
             try {
@@ -436,7 +436,9 @@ export function useConversation(
               }
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
-              setConnectionError(`child session recovery failed: ${message}`)
+              if (!isNonFatalChildRecoveryError(message)) {
+                setConnectionError(`child session recovery failed: ${message}`)
+              }
             }
           }
           // Session history is independent by root session. Replay it in

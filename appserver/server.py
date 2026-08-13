@@ -859,6 +859,32 @@ class AppServer:
         if method in {"agent/invoke", "task/start"}:
             forwarded.setdefault("parent_session_id", root_session_id)
 
+        # Child replay is read-only. A cold desktop must not wait on AgentV2
+        # bootstrap (30s+) just to learn there are no child sessions yet.
+        if method in {"child_sessions/list", "child_sessions/events"}:
+            host = self._session_hosts.get(root_session_id)
+            if (
+                host is None
+                or not host.alive()
+                or not getattr(host, "bootstrapped", False)
+            ):
+                if method == "child_sessions/list":
+                    await self._respond(
+                        request_id,
+                        {"root_session_id": root_session_id, "sessions": []},
+                    )
+                else:
+                    await self._respond(
+                        request_id,
+                        {
+                            "root_session_id": root_session_id,
+                            "events": [],
+                            "next_cursor": 0,
+                            "gap_detected": False,
+                        },
+                    )
+                return
+
         try:
             host = await self._host_for_session(root_session_id)
             await host.ensure_bootstrapped(timeout=30.0)

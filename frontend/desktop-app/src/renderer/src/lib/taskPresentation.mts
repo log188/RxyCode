@@ -20,3 +20,12 @@ export function formatUsageRate(input: {
   }
   return String(Math.round((input.cacheHitTokens / input.inputTokens) * 100)) + '%'
 }
+
+export function shouldShowStartupProgress(input: {
+  timelineLength: number
+  running: boolean
+  progress?: string | null
+}): boolean {
+  if (!input.running) return false
+  return Boolean(input.progress)
+}
