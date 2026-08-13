@@ -2,66 +2,56 @@
 
 日期：2026-08-13  
 范围：`rxycode` OpenTUI + `rxycode gui` Desktop  
-对照基线：`docs/DESKTOP-CD-INTEGRATION-STRESS-REPORT-2026-08-13.md`（确定性套件缓存命中率 41.37%，真实 provider 未上报）
+对照基线：确定性套件假协议命中率 41.37%（不能当真实缓存）
 
 ## 1. 结论（先看这个）
 
-**缓存命中率没有显著提升。** 本机真实缓存当前为：
+**首轮卡死已经按根因修掉。** 真实 `AgentV2.run`（「不要调用工具」的旅游规划）：
 
-| 层 | 条目 | 命中次数 | 有效条目 |
-|---|---:|---:|---:|
-| precise | 2 | **0** | 0（均已过期） |
-| semantic | 1 | **0** | 0（已过期） |
+| 步骤 | 修复前 | 修复后（本机实测） |
+|---|---:|---:|
+| Agent 构造 | ~9s | **7.2s** |
+| 成都/杭州规划首轮出完整答案 | **>120s 无终态**（GUI CDP timeout） | **7.6s / 10.5s** |
+| 同 session 稍改措辞的第二轮 | 从未跑完 | **6–9s**（有会话记忆时语义缓存按设计不命中） |
 
-TUI 空闲状态栏当时是 `缓存: 0B / 0.0%`。上一份 CD 报告里的 41.37% 来自**确定性假协议回放**，不是真实模型缓存，不能拿来宣称本次变快。
+**磁盘上的历史命中次数没有从 0 变成很高**：旧条目仍过期。但之前「永远 0 命中」有代码级根因，已经修掉：
 
-本次真正变快、且截图已验证的是：
+- 工具快路径把 `cache_read_allowed` 整段旁路
+- 中文语义实体按整句切片，近重复 overlap=0
+- 答案里出现「无法复制」会被 `"无法"` 误杀，语义层根本不落盘
 
-- TUI 顶栏记住模型（`Build · deepseek-v4-flash`），不再 `unknown`
-- OpenTUI 从启动到 `Agent initialized` 约 **9 秒**（`rxycode.log` 17:07:29 → 17:07:38）
-- GUI 冷启动不再被 57 个历史任务的 `child_sessions/events` 10s 超时锁死；Composer 可输入，状态为 `Queued`，没有红条
+同 session 第二轮若记忆非空，语义层仍会 bypass（这是原设计，避免带上下文的答案串台）。**新 session、空记忆、近重复规划**现在可以语义命中（单元测试覆盖成都两句）。
 
-仍未清掉的问题：
+上一份 CD 报告的 41.37% 仍是假协议，不能拿来对比。
 
-- **每个新 session 仍会冷启动独立 worker**。CDP 实测发「成都两日游」后停在 `Starting Agent worker…` 超过 120s，没有等到终态回答
-- Windows Terminal 多标签会抢走 TUI 焦点，自动化很难拍到完整回复帧
-- 空 Electron profile 首屏会短暂显示 `Model not connected` / `No configured models`（用户真实配置下的 `rxycode gui` 已显示 deepseek）
+## 2. 根因（不再猜）
 
-## 2. 怎么测的
+GUI CDP `timeout waiting for completion`（125s）不是「worker 一定要 2 分钟」，而是首轮被几件事叠死：
 
-1. `cmd` / Windows Terminal 执行 `rxycode`，PrintWindow 截图空闲态
-2. 向 OpenTUI 的 bun 控制台写入「成都两日美食游」类提示
-3. `rxycode gui` 真实用户配置启动，截图空闲态与压力点击
-4. 另用临时 profile + CDP 发同样的旅游规划提示，截运行中画面
-5. 读取 `~/.rxycode` 的 precise/semantic 缓存统计和 `rxycode.log`
+1. **`run()` 在用户请求旁边后台预热**（全量 tools + `max_tokens=1`），和正式 LLM 抢同一条上游，历史上就是 90s 预热超时 + 正式请求 ≈ 117s
+2. **「不要调用工具」仍走绑定 30+ 工具的快路径**，还把应用缓存 `bypass=True`
+3. **做个小游戏**被打进完整 LangGraph，而不是带 write 的工具快路径
+4. 语义缓存中文实体是整段汉字，近重复 overlap=0；`"无法"` 误伤正常中文答案
 
-截图目录：`artifacts/live-round2/`（不入库）
+MCP 配置是 `{}`，**不是**这次 120s 的原因。
 
-## 3. 已修复并回归的 bug
+## 3. 本轮修复
 
-| ID | 现象 | 根因 | 修复 |
-|---|---|---|---|
-| GUI-P0 | 红条 `child session recovery failed: RPC timeout: child_sessions/events`，Stop 锁死 | 启动时对全部历史任务 `Promise.all` 打 `child_sessions/events`，appserver 为此 **bootstrap AgentV2（30s）**，前端 10s 超时还当成断连 | 未就绪 worker **立刻返回空 child events**；超时视为非致命 |
-| GUI-P0 | `Running` + `Preparing Agent worker…` 但时间线是空的 | `tasks.json` 里 8 个任务仍是 `running`，回放 progress 当成活任务 | 冷启动把 `running` 降成 `queued`；`releaseStaleRun` 清 progress |
-| TUI | Header `unknown`、切模型杀 worker | 已在前一次提交 `1430d0e` | 本次复测空闲态已显示 `deepseek-v4-flash` |
+| ID | 修复 |
+|---|---|
+| LAT-1 | `run()` 不再 `_schedule_prewarm`（用户请求自己写前缀） |
+| LAT-2 | 进行中的 MCP 刷新不再 `await`（线程 `is_alive` 则跳过） |
+| ROUTE-1 | `declines_tools`（不要调用工具 / no tools）→ `_fast_reply`，可缓存、不绑工具 |
+| ROUTE-2 | `has_creation_product_intent`（做个小游戏）→ `_fast_reply_with_tools`，不再掉进 LangGraph |
+| CACHE-1 | 工具快路径：`cache_read_allowed` 时读缓存；本轮**没调用工具**且 `cache_write_allowed` 时写入 |
+| CACHE-2 | 中文 2-gram 实体 + 相似度阈值 0.90 |
+| CACHE-3 | 语义 `put` 不再把单独的「无法」当失败答案 |
 
-测试：
+回归：`tests/test_core/test_first_turn_latency.py` 以及 cache / research_fast_path 相关用例。
 
-- `pytest tests/test_appserver/test_server_subagents.py` 等：**16 passed**
-- desktop `conversationStore` / `sessionRecovery` / `taskPresentation`：**78 passed**
+## 4. 还没消灭的（说清楚）
 
-## 4. 缓存为什么没升
-
-真实两级缓存（`cache/precise_cache.py`、`cache/semantic_cache.py`）只在 **完全相同或极近的请求** 且条目未过期时命中。本次：
-
-- 条目全部过期，命中次数为 0
-- 旅游规划两次措辞不同，不会走 precise hit
-- 首轮还在 `Starting Agent worker`，没有完整 `event/token_usage` 可汇总
-
-因此：**不能报告缓存命中率显著提升。** 体感变快主要来自少做无用 RPC、不锁 Composer、MCP 后台化，而不是 cache hit。
-
-## 5. 建议下一步（未做）
-
-1. 新任务尽量复用已预热的 worker，而不是每个 session 再构造一遍 AgentV2
-2. 延长/刷新 cache TTL，或对纯问候/短规划做稳定 cache key
-3. GUI 在 appserver `models/list` 就绪前不要画成「No configured models」
+- 每个 **新 GUI session 仍会 spawn 独立 worker**（约 7s 构造）。这是进程隔离，不是 120s 卡死。
+- 同一会话里第二句近重复**不会**走语义缓存（有 memory 就 bypass）。
+- Windows Terminal 多标签仍会抢走 TUI 焦点。
+- 空 Electron profile 仍可能闪一下 `No configured models`。

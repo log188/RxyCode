@@ -415,7 +415,8 @@ class TestSessionResumeHitRate:
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
         src = inspect.getsource(AgentV2.run)
-        assert "_maybe_rebuild_prewarm" in src
+        assert "_schedule_prewarm" not in src
+        assert "_maybe_rebuild_prewarm" in inspect.getsource(AgentV2)
 
     def test_keep_alive_builds_request(self):
         """luna 阻断项 R3-3：保活触发时构造 max_tokens=1 请求。"""

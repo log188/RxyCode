@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ..config.settings import get_data_dir
 from .json_store import atomic_write_json, load_json_index, path_lock
+from .text_normalizer import normalize_query
 
 
 _logger = logging.getLogger(__name__)
@@ -68,10 +69,15 @@ def _sanitize_index(payload: list) -> list:
 def _extract_key_tokens(text: str) -> set:
     """Extract tokens that distinguish the subject of a query."""
     english_words = set(word.lower() for word in re.findall(r"[a-zA-Z]{3,}", text))
-    chinese_segments = set(re.findall(r"[\u4e00-\u9fff]{2,}", text))
     numbers = set(re.findall(r"\d+", text))
     quoted = set(re.findall(r"[\"'`][^\"'`]+[\"'`]", text))
-    return (english_words | chinese_segments | numbers | quoted) - _STOPWORDS
+    chinese_grams: set[str] = set()
+    for run in re.findall(r"[\u4e00-\u9fff]+", text):
+        if len(run) == 1:
+            chinese_grams.add(run)
+        else:
+            chinese_grams.update(run[i : i + 2] for i in range(len(run) - 1))
+    return (english_words | chinese_grams | numbers | quoted) - _STOPWORDS
 
 
 class SemanticCache:
@@ -84,7 +90,7 @@ class SemanticCache:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._index_file = self._cache_dir / "semantic_index.json"
         self._index = self._load_index()
-        self._similarity_threshold = 0.95
+        self._similarity_threshold = 0.90
 
     def _load_index(self) -> list:
         if self._index_file is None:
@@ -114,8 +120,7 @@ class SemanticCache:
             self._index = self._load_index()
 
     def _normalize(self, text: str) -> str:
-        text = re.sub(r"\s+", " ", text.strip())
-        return text.lower()
+        return normalize_query(text)
 
     def _similarity(self, first: str, second: str) -> float:
         return SequenceMatcher(
@@ -195,8 +200,8 @@ class SemanticCache:
         error_indicators = [
             "no information", "not found", "cannot find", "no stored",
             "i don't know", "i cannot", "unable to", "failed", "error",
-            "抱歉", "找不到", "无法", "不知道", "没有找到", "没有存储",
-            "无法确定", "未能找到",
+            "抱歉，我", "找不到", "不知道", "没有找到", "没有存储",
+            "无法确定", "未能找到", "无法完成",
         ]
         if any(indicator in response_lower for indicator in error_indicators):
             return

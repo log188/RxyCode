@@ -180,6 +180,7 @@ from RxyCode.RxyCode1_1_0.core.request_routing import (
     RoutingDirective,
     SOCIAL_CHAT_ROLE_INSTRUCTION,
     SOCIAL_CHAT_TOOL_NAMES,
+    declines_tools,
     detect_download_intent,
     detect_file_operation,
     has_creation_product_intent,
@@ -2853,14 +2854,20 @@ class AgentV2:
         text = (user_input or "").strip()
         if not text:
             return False
-        if _PURE_SOCIAL_GREETING_RE.match(text) or self._is_social_chat(text):
+        if (
+            _PURE_SOCIAL_GREETING_RE.match(text)
+            or self._is_social_chat(text)
+            or declines_tools(text)
+        ):
             return False
         return True
 
     def _should_skip_mcp_refresh(self, user_input: str) -> bool:
         text = (user_input or "").strip()
         return bool(
-            _PURE_SOCIAL_GREETING_RE.match(text) or self._is_social_chat(text)
+            _PURE_SOCIAL_GREETING_RE.match(text)
+            or self._is_social_chat(text)
+            or declines_tools(text)
         )
 
     def _schedule_mcp_refresh(self) -> None:
@@ -3155,10 +3162,42 @@ class AgentV2:
                 citations_required=False,
             )
 
-        # Tool-aware turns may observe or mutate external state, so their answers
-        # are never read from or written to the application answer caches.
-        token_stats.record_application_cache("precise", bypass=True)
-        token_stats.record_application_cache("semantic", bypass=True)
+        memory_fingerprint = None
+        if memory_ctx:
+            memory_fingerprint = hashlib.sha256(memory_ctx.encode("utf-8")).hexdigest()
+        cache_key = json.dumps(
+            [user_input, memory_fingerprint],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        cache_namespace = self._application_cache_namespace()
+        if research_policy.cache_read_allowed:
+            cached = precise_cache.get(system, cache_key, namespace=cache_namespace)
+            precise_hit = bool(cached and cached.get("response"))
+            token_stats.record_application_cache("precise", hit=precise_hit)
+            if precise_hit:
+                token_stats.record_application_cache("semantic", bypass=True)
+                tui = get_tui()
+                if tui and hasattr(tui, "stream_token"):
+                    for ch in cached["response"]:
+                        tui.stream_token(ch)
+                return cached["response"]
+            cached = None
+            if not memory_ctx:
+                cached = semantic_cache.get(user_input, namespace=cache_namespace)
+                semantic_hit = bool(cached and cached.get("response"))
+                token_stats.record_application_cache("semantic", hit=semantic_hit)
+            else:
+                token_stats.record_application_cache("semantic", bypass=True)
+            if cached and cached.get("response"):
+                tui = get_tui()
+                if tui and hasattr(tui, "stream_token"):
+                    for ch in cached["response"]:
+                        tui.stream_token(ch)
+                return cached["response"]
+        else:
+            token_stats.record_application_cache("precise", bypass=True)
+            token_stats.record_application_cache("semantic", bypass=True)
         tui = get_tui()
         if (
             tui
@@ -3284,6 +3323,7 @@ class AgentV2:
             except (TypeError, ValueError):
                 stuck_threshold = 3
             self._stuck_detector = StuckDetector(threshold=max(2, stuck_threshold))
+            tools_invoked = False
 
             for round_num in range(max_rounds):
                 round_received_real_usage = False
@@ -3410,6 +3450,7 @@ class AgentV2:
                     # No tool calls - tokens already streamed in real-time, done
                     break
 
+                tools_invoked = True
                 # Execute tool calls
                 # DeepSeek-style thinking providers require the assistant's
                 # reasoning_content to be passed back on every subsequent
@@ -3628,6 +3669,18 @@ class AgentV2:
 
             self._memory.add_interaction(user_input, answer)
             self._memory.save_session()
+
+            if (
+                research_policy.cache_write_allowed
+                and not tools_invoked
+                and _should_cache_answer(
+                    answer,
+                    tool_error_occurred=getattr(self, "_tool_error_occurred", False),
+                )
+            ):
+                precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
+                if not memory_ctx:
+                    semantic_cache.put(user_input, answer, namespace=cache_namespace)
 
             # Context tracking uses the final assembled turn. Usage accounting is
             # handled per model round above so mixed real/estimated rounds are not
@@ -4387,17 +4440,11 @@ class AgentV2:
             raise ValueError(
                 f"Unsupported agent mode: {mode!r}. Valid modes: {valid_modes}"
             )
-        # B5: 预热非阻塞化（2026-08-13 修复）——预热改为后台执行，用户请求
-        # 立即进入正常流程。此前预热在 run() 入口同步发最小请求（max_tokens=1
-        # + 全部 core tools + thinking），上游慢/挂时会阻塞每个请求首轮 90s+
-        # （实测 117.6s = 90s 预热超时 + 27.6s 正式请求）；且预热失败不 confirm
-        # → 每个请求都重复触发。失败进入 60s 冷却，不重复轰炸。
-        try:
-            if self._maybe_rebuild_prewarm():
-                token_stats.record_application_cache("precise", bypass=True)
-                self._schedule_prewarm()
-        except Exception:  # pragma: no cover - 预热失败不阻断请求
-            pass
+        # Do not schedule a competing max_tokens=1 prewarm here. The user
+        # request itself writes the provider prefix; a background prewarm on
+        # the same HTTP client was still adding a 90s hang next to TTFT
+        # (live GUI CDP: Chengdu itinerary stuck >120s).
+
         # B5: keep-alive 真实发送（luna 审计 R4）——同样后台化：保活请求
         # 挂起不得阻塞当前请求（2026-08-13 与预热同步修复）。
         try:
@@ -4424,7 +4471,9 @@ class AgentV2:
         # Agent or API restart.  Process startup stays off the event loop.
         if getattr(self, "_tool_orchestrator", None) is not None:
             if not self._should_skip_mcp_refresh(user_input):
-                await asyncio.to_thread(self._refresh_mcp_tools)
+                thread = getattr(self, "_mcp_refresh_thread", None)
+                if thread is None or not thread.is_alive():
+                    await asyncio.to_thread(self._refresh_mcp_tools)
 
         bound_run_id = get_bound_run_id()
         if bound_run_id is not None:
@@ -4951,6 +5000,22 @@ class AgentV2:
         if (
             mode in ("build", "plan")
             and not force_full
+            and declines_tools(user_input)
+        ):
+            try:
+                _logger.info("route=declines_tools mode=%s -> fast_reply", mode)
+                return await self._fast_reply(user_input)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _logger.warning("no-tool fast path failed: %s", exc)
+                return (
+                    "刚才没能完整回复你，我在这儿听着呢。"
+                    "你可以再说一次，或者换个说法。"
+                )
+        if (
+            mode in ("build", "plan")
+            and not force_full
             and social
             and _PURE_SOCIAL_GREETING_RE.match(user_input.strip())
         ):
@@ -5000,6 +5065,24 @@ class AgentV2:
                     return side_effect_failure_notice(str(exc))
                 _logger.warning(
                     "tool-aware fast path failed; falling through to full pipeline: %s",
+                    exc,
+                    )
+
+        if (
+            mode in ("build", "plan")
+            and not force_full
+            and self._has_creation_product_intent(user_input)
+        ):
+            try:
+                _logger.info("route=creation_product mode=%s -> fast_tools", mode)
+                return await self._fast_reply_with_tools(user_input)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self._side_effecting_tool_attempted:
+                    return side_effect_failure_notice(str(exc))
+                _logger.warning(
+                    "creation product fast path failed; falling through: %s",
                     exc,
                 )
 

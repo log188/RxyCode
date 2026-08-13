@@ -298,13 +298,13 @@ async def test_side_effect_task_keeps_answer_despite_unfetched_citation():
 
 
 @pytest.mark.asyncio
-async def test_tool_aware_fast_path_bypasses_application_answer_caches(monkeypatch):
+async def test_tool_free_fast_path_reuses_application_answer_cache(monkeypatch):
     from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
     from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache
     from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 
-    precise_get = MagicMock(return_value={"response": "polluted precise answer"})
-    semantic_get = MagicMock(return_value={"response": "polluted semantic answer"})
+    precise_get = MagicMock(return_value={"response": "cached merge-sort answer"})
+    semantic_get = MagicMock()
     precise_put = MagicMock()
     semantic_put = MagicMock()
     record_cache = MagicMock()
@@ -317,15 +317,15 @@ async def test_tool_aware_fast_path_bypasses_application_answer_caches(monkeypat
 
     result = await agent._fast_reply_with_tools("Summarize merge sort")
 
-    assert result == "fresh uncached answer"
-    precise_get.assert_not_called()
+    assert result == "cached merge-sort answer"
+    precise_get.assert_called()
     semantic_get.assert_not_called()
     precise_put.assert_not_called()
     semantic_put.assert_not_called()
-    assert record_cache.call_args_list == [
-        (("precise",), {"bypass": True}),
-        (("semantic",), {"bypass": True}),
-    ]
+    assert any(
+        call.args[:1] == ("precise",) and call.kwargs.get("hit") is True
+        for call in record_cache.call_args_list
+    )
 
 
 @pytest.mark.asyncio

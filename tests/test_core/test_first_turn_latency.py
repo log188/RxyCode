@@ -1,0 +1,130 @@
+"""First-turn latency and cache: travel-plan / small-game / no-tool prompts.
+
+Live GUI CDP hung >120s on 「成都两日游」 because:
+1. tool-aware fast path always bypassed application caches
+2. creation requests fell through to LangGraph
+3. run() scheduled a competing prewarm (90s) beside the user LLM call
+4. run() awaited MCP refresh even when a background refresh was in flight
+"""
+from __future__ import annotations
+
+import inspect
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+from RxyCode.RxyCode1_1_0.core.request_routing import (
+    declines_tools,
+    has_creation_product_intent,
+    resolve_fast_reply_tool_allowlist,
+)
+
+
+CHENGDU = "用三句话规划成都两日美食游，不要改文件，不要调用工具。"
+CHENGDU_AGAIN = "再用三句话规划成都两日美食游，同样不要改文件不要调用工具。"
+SNAKE = "做个贪吃蛇小游戏"
+
+
+class _Memory:
+    async def initialize(self):
+        return None
+
+    def load_session(self):
+        return None
+
+    def get_context_for_prompt(self):
+        return ""
+
+    def add_interaction(self, *_args):
+        return None
+
+    def save_session(self):
+        return None
+
+
+def _run_agent() -> AgentV2:
+    agent = object.__new__(AgentV2)
+    agent._cancelled = False
+    agent._active_task = None
+    agent._session_loaded = True
+    agent._session_id = "first-turn"
+    agent._memory = _Memory()
+    agent._llm = None
+    agent._tool_orchestrator = None
+    agent._tool_tracer = None
+    agent._thinking_history = []
+    agent._last_thinking = ""
+    agent._detect_file_operation = MagicMock(return_value=None)
+    agent._detect_download_intent = MagicMock(return_value=None)
+    agent._is_simple_query = AgentV2._is_simple_query.__get__(agent, AgentV2)
+    agent._is_social_chat = AgentV2._is_social_chat.__get__(agent, AgentV2)
+    agent._has_creation_product_intent = AgentV2._has_creation_product_intent.__get__(
+        agent, AgentV2
+    )
+    agent._should_use_subagents = MagicMock(return_value=False)
+    agent._fast_reply = AsyncMock(return_value="cached itinerary")
+    agent._fast_reply_with_tools = AsyncMock(return_value="tool path")
+    agent._graph = SimpleNamespace(
+        ainvoke=AsyncMock(return_value={"final_response": "graph answer"})
+    )
+    return agent
+
+
+def test_chengdu_itinerary_declines_tools():
+    assert declines_tools(CHENGDU) is True
+    assert declines_tools(CHENGDU_AGAIN) is True
+    assert declines_tools(SNAKE) is False
+    assert declines_tools("帮我写一个跑酷小游戏") is False
+
+
+def test_declines_tools_binds_no_tools():
+    assert resolve_fast_reply_tool_allowlist(CHENGDU, None) == frozenset()
+
+
+def test_small_game_is_creation_not_full_project():
+    assert has_creation_product_intent(SNAKE) is True
+    assert has_creation_product_intent("帮我写一个跑酷小游戏") is True
+
+
+@pytest.mark.asyncio
+async def test_no_tool_itinerary_uses_cacheable_fast_reply():
+    agent = _run_agent()
+    result = await agent._run_impl(CHENGDU, mode="build")
+    assert result == "cached itinerary"
+    agent._fast_reply.assert_awaited_once_with(CHENGDU)
+    agent._fast_reply_with_tools.assert_not_awaited()
+    agent._graph.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_small_game_uses_tool_fast_path_not_langgraph():
+    agent = _run_agent()
+    result = await agent._run_impl(SNAKE, mode="build")
+    assert result == "tool path"
+    agent._fast_reply_with_tools.assert_awaited_once_with(SNAKE)
+    agent._graph.ainvoke.assert_not_awaited()
+    agent._fast_reply.assert_not_awaited()
+
+
+def test_run_does_not_schedule_competing_prewarm():
+    src = inspect.getsource(AgentV2.run)
+    assert "_schedule_prewarm" not in src
+
+
+def test_run_does_not_await_in_flight_mcp_refresh():
+    src = inspect.getsource(AgentV2.run)
+    assert "is_alive" in src or "_mcp_refresh_thread" in src
+
+
+def test_declines_tools_skips_mcp_refresh_on_turn():
+    agent = object.__new__(AgentV2)
+    assert agent._should_skip_mcp_refresh(CHENGDU) is True
+    assert agent._should_skip_mcp_refresh("读取 src/main.py") is False
+
+
+def test_declines_tools_skips_analyze_progress():
+    agent = object.__new__(AgentV2)
+    assert agent._should_emit_analyze_progress(CHENGDU) is False
+    assert agent._should_emit_analyze_progress("帮我重构整个项目") is True

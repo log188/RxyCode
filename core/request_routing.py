@@ -183,6 +183,21 @@ def is_social_chat(text: str) -> bool:
     return False
 
 
+_DECLINE_TOOLS_RE = re.compile(
+    r"不要调用工具|不要使用工具|不要用工具|"
+    r"do\s+not\s+(?:call|use)\s+tools?|"
+    r"don't\s+(?:call|use)\s+tools?|"
+    r"\bno tools\b|"
+    r"without\s+(?:using\s+)?tools?",
+    re.IGNORECASE,
+)
+
+
+def declines_tools(text: str) -> bool:
+    """True when the user forbids tool/file side effects for this turn."""
+    return bool(_DECLINE_TOOLS_RE.search(text or ""))
+
+
 def resolve_fast_reply_tool_allowlist(
     user_input: str,
     allowed_tool_names: frozenset[str] | None,
@@ -190,6 +205,8 @@ def resolve_fast_reply_tool_allowlist(
     """Return tool allowlist for fast-reply (E6 social whitelist)."""
     if allowed_tool_names is not None:
         return allowed_tool_names
+    if declines_tools(user_input):
+        return frozenset()
     if is_social_chat(user_input):
         return SOCIAL_CHAT_TOOL_NAMES
     if GIT_FORCE_RE.search(user_input):

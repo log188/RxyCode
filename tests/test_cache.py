@@ -249,10 +249,31 @@ class TestSemanticCache:
         result = cache.get("How to use JavaScript decorators?")
         assert result is None
 
+    def test_chinese_near_duplicate_itinerary_hits(self):
+        cache = self._make_cache()
+        cache._similarity_threshold = 0.90
+        cache.put(
+            "用三句话规划成都两日美食游，不要改文件，不要调用工具。",
+            "Day1 宽窄巷子，Day2 熊猫基地。更多细节见正文。",
+        )
+        result = cache.get(
+            "再用三句话规划成都两日美食游，同样不要改文件不要调用工具。"
+        )
+        assert result is not None
+        assert result["cache_type"] == "semantic"
+
     def test_error_responses_not_cached(self):
         cache = self._make_cache()
         cache.put("What is X?", "I don't know about X.")
         assert len(cache._index) == 0
+
+    def test_chinese_itinerary_containing_wufa_is_still_cached(self):
+        cache = self._make_cache()
+        cache.put(
+            "用三句话规划成都两日美食游",
+            "第一天宽窄巷子，第二天熊猫基地，夜市小吃无法复制但值得去。",
+        )
+        assert len(cache._index) == 1
 
     def test_short_responses_not_cached(self):
         cache = self._make_cache()
