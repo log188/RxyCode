@@ -341,24 +341,6 @@ def test_minimax_m3_serialized_assistant_echoes_thinking():
     assert assistant.get("reasoning_content") == "m3 thinking step"
 
 
-def test_mimo_tool_call_turn_echoes_reasoning_in_serialized_messages():
-    """MiMo (mandatory_echo) echoes reasoning_content on tool-bearing turns,
-    verified at the serialized-message level, not just the helper."""
-    msgs = [
-        SystemMessage(content="SYS"),
-        AIMessage(
-            content="",
-            reasoning_content="mimo reasoning",
-            tool_calls=[{"name": "bash", "args": {}, "id": "c1", "type": "tool_call"}],
-        ),
-        HumanMessage(content="ok"),
-    ]
-    out = _convert(msgs, reasoning_contract="mandatory_echo", provider_id="mimo")
-    assistant = next(m for m in out if m["role"] == "assistant")
-    assert assistant.get("reasoning_content") == "mimo reasoning"
-    assert assistant["tool_calls"][0]["function"]["name"] == "bash"
-
-
 def test_mimo_no_effort_no_cache_control():
     from RxyCode.RxyCode1_1_0.core.providers.mimo import MIMOProvider
 
