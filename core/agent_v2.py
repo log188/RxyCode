@@ -2605,6 +2605,17 @@ class AgentV2:
                 raise AssertionError(
                     "unknown fallback must stay implicit (cache_mode=auto)"
                 )
+            # fallback rule 2: protocol stays openai-compatible — the payload
+            # must keep the OpenAI chat.completions shape (messages/model/stream)
+            if str(fb.get("protocol") or "") != "openai-compatible":
+                raise AssertionError(
+                    "unknown fallback protocol must stay openai-compatible"
+                )
+            if "messages" not in payload or "model" not in payload:
+                raise AssertionError(
+                    "unknown fallback payload must be OpenAI chat.completions "
+                    "shaped (openai-compatible)"
+                )
             fb_variant = str(fb.get("prompt_variant") or "default")
             if caps is not None:
                 from dataclasses import replace as _dc_replace

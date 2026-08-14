@@ -242,6 +242,71 @@ def test_unknown_model_request_sends_session_affinity_header(monkeypatch):
     assert not any("x-opencode-session" in k.casefold() for k in h)
 
 
+def test_unknown_model_five_points_on_raw_stream_path():
+    """Five-point fallback exercised on the real _raw_stream injection path:
+    contract None -> default variant + openai-compatible shape + no
+    cache_control + no prompt_cache_key + sorted tools. (Session header lives
+    on the HTTP client layer, covered by the production-path test above.)"""
+    import asyncio
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from langchain_core.tools import StructuredTool
+
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.catalog import get_contract, reset_contract_cache
+
+    reset_contract_cache()
+    assert get_contract("no-such", "mystery") is None  # rule 0: no contract
+
+    captured: dict = {}
+
+    class FakeClient:
+        def create(self, **payload):
+            captured["payload"] = payload
+            raise RuntimeError("stop-after-capture")
+
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        provider="unknown",
+        prompt_variant="guessed-by-id",
+        supports_function_calling=True,
+    )
+    agent = object.__new__(AgentV2)
+    agent._session_id = "sess-fxc6"
+    agent._llm = SimpleNamespace()
+    agent._rate_limiter = None
+    agent.model_config = {"model_name": "totally-mystery", "timeout": 5.0}
+    agent._capabilities = caps
+    agent._provider = None
+    agent._resolve_request_max_tokens = lambda _n: 2048
+    agent._openai_client = lambda: FakeClient()
+    tools = [
+        StructuredTool.from_function(lambda: "ok", name="bash", description="bash"),
+        StructuredTool.from_function(lambda: "ok", name="read", description="read"),
+    ]
+    sys_msg = SimpleNamespace(type="system", content="SYS", additional_kwargs={})
+    user_msg = SimpleNamespace(type="human", content="hi", additional_kwargs={})
+    try:
+        asyncio.run(agent._raw_stream([sys_msg, user_msg], tools=tools).__anext__())
+    except RuntimeError as exc:
+        if "stop-after-capture" not in str(exc):
+            raise
+
+    # rule 1: variant forced to default
+    assert getattr(agent._capabilities, "prompt_variant", None) == "default"
+    # rule 2: openai-compatible shape
+    assert "messages" in captured["payload"] and "stream" in captured["payload"]
+    # rule 3: no cache_control
+    assert "cache_control" not in json.dumps(captured["payload"])
+    # rule 5: no prompt_cache_key anywhere in the payload
+    assert "prompt_cache_key" not in json.dumps(captured["payload"])
+    # rule 4: tools sorted by name
+    names = [t.get("function", {}).get("name", "") for t in (captured["payload"].get("tools") or [])]
+    assert names == sorted(names)
+
+
 def test_unknown_model_full_wire_has_no_key_or_control():
     """The whole serialized payload (not just extra_body) must be free of
     cache_control and prompt_cache_key."""
@@ -291,3 +356,8 @@ def test_unknown_model_full_wire_has_no_key_or_control():
     wire = json.dumps(captured["payload"])
     assert "cache_control" not in wire
     assert "prompt_cache_key" not in wire
+    # fallback rule 2: OpenAI chat.completions shape (openai-compatible)
+    assert "messages" in captured["payload"]
+    assert "model" in captured["payload"]
+    assert "stream" in captured["payload"]
+    assert "system" not in captured["payload"]  # no Anthropic top-level system
