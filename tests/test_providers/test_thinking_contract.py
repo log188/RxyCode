@@ -313,6 +313,23 @@ def test_minimax_m3_no_cache_control_and_adaptive():
     assert body.get("thinking") == {"type": "adaptive"}
 
 
+def test_minimax_m3_payload_no_signature_concept_on_openai_path():
+    """MiniMax M3 (OpenAI-compatible endpoint) has no Anthropic thinking
+    block / signature on the wire here; the signature attribute belongs to the
+    native Anthropic classification used by the Go gateway. Assert the OpenAI
+    path carries adaptive thinking and no cache_control / signature."""
+    from RxyCode.RxyCode1_1_0.core.providers.minimax import MiniMaxProvider
+
+    kwargs = _provider_llm_kwargs(MiniMaxProvider, "minimax-m3")
+    extra = kwargs.get("extra_body") or {}
+    assert extra.get("thinking") == {"type": "adaptive"}
+    assert "cache_control" not in json.dumps(kwargs)
+    assert "signature" not in json.dumps(kwargs)
+    payload = _capture_raw_stream("minimax-m3", "minimax", _two_tools())
+    assert "cache_control" not in json.dumps(payload)
+    assert "signature" not in json.dumps(payload)
+
+
 def test_minimax_m3_serialized_assistant_echoes_thinking():
     msgs = [
         SystemMessage(content="SYS"),
@@ -413,9 +430,14 @@ def test_integrated_qwen_raw_stream_never_echoes_reasoning():
 def test_deepseek_raw_payload_thinking_no_cache_control():
     """DeepSeek keeps its current thinking params; the wire payload must not
     contain cache_control (implicit family)."""
+    from RxyCode.RxyCode1_1_0.core.providers.deepseek import DeepSeekProvider
+
+    kwargs = _provider_llm_kwargs(DeepSeekProvider, "deepseek-v4-flash")
+    extra = kwargs.get("extra_body") or {}
+    assert extra.get("thinking") == {"type": "enabled"}  # current thinking kept
+    assert "cache_control" not in json.dumps(kwargs)
     payload = _capture_raw_stream("deepseek-v4-flash", "deepseek", _two_tools())
     assert "cache_control" not in json.dumps(payload)
-    assert "thinking" in json.dumps(payload) or True  # payload carries the request
 
 
 def test_gpt_raw_payload_has_no_anthropic_params():
