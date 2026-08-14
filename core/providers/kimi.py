@@ -148,6 +148,16 @@ class KimiProvider(BaseProvider):
         # 别写太宽」原则收紧为 startswith/白名单，不在本卡范围。
         return "moonshot" in url or "kimi" in name
 
+    def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
+        kwargs = super().llm_kwargs(model_config, caps)
+        # FXC5: kimi-k3 sends only reasoning_effort — never a thinking object
+        # ({type: enabled} 400s on k3). k2.x keeps base's thinking:{type:enabled}
+        # and sends no reasoning_effort.
+        family = _family(str(model_config.get("model_name") or ""))
+        if family == "kimi-k3":
+            kwargs.setdefault("extra_body", {}).pop("thinking", None)
+        return kwargs
+
     def capabilities(self, model_config: dict) -> ModelCapabilities:
         model_name = str(model_config.get("model_name") or "").lower()
         family = _family(model_name)

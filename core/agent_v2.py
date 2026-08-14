@@ -107,6 +107,39 @@ from .providers.tokenizers import count_tokens
 _logger = logging.getLogger(__name__)
 
 
+def _should_echo_reasoning(
+    reasoning_contract: str | None,
+    provider_id: str | None,
+    has_tool_calls: bool,
+    reasoning: object,
+) -> bool:
+    """FXC5 · per-model reasoning echo decision (PHASE-FIX §5 FXC5).
+
+    - no_thinking (Qwen): never put reasoning_content back into messages
+    - none (GPT / Doubao / Grok): no raw CoT echo
+    - thinking_blocks_echo (Anthropic / MiniMax M3): native thinking blocks,
+      not a raw reasoning_content field
+    - mandatory_echo (DeepSeek / Kimi / MiMo / GLM):
+        DeepSeek echoes only on tool-bearing turns (aligned with dsh);
+        Kimi / MiMo / GLM echo across user turns, empty value allowed
+    - unknown / legacy callers: keep the old behaviour (echo captured
+      reasoning when present)
+    """
+    contract = (reasoning_contract or "").casefold()
+    provider = (provider_id or "").casefold()
+    if contract == "no_thinking":
+        return False
+    if contract == "none":
+        return False
+    if contract == "thinking_blocks_echo":
+        return False
+    if contract == "mandatory_echo":
+        if provider == "deepseek":
+            return has_tool_calls
+        return True
+    return bool(reasoning)
+
+
 def build_session_headers(base_url: str, session_id: str) -> dict[str, str]:
     """FXC4 · session affinity headers.
 
@@ -1812,7 +1845,12 @@ class AgentV2:
         )
 
     @staticmethod
-    def _to_openai_messages(messages) -> list:
+    def _to_openai_messages(
+        messages,
+        *,
+        reasoning_contract: str | None = None,
+        provider_id: str | None = None,
+    ) -> list:
         """Convert LangChain messages to OpenAI chat completions message dicts.
 
         CRITICAL: preserves `cache_control` from additional_kwargs so that
@@ -1820,6 +1858,11 @@ class AgentV2:
         LangChain and sends dicts directly to the OpenAI API). Without this,
         the ephemeral cache breakpoint injected by _apply_cache_control is
         silently lost when the message is converted to a plain dict.
+
+        FXC5: reasoning echo follows ``reasoning_contract`` (Qwen never
+        receives reasoning_content back; DeepSeek echoes only on tool-bearing
+        turns; Kimi/MiMo/GLM echo across turns, empty allowed).  Old callers
+        without a contract keep the legacy echo behaviour.
         """
         out = []
         for m in messages:
@@ -1841,19 +1884,20 @@ class AgentV2:
                 out.append(d)
             elif role == "ai":
                 d = {"role": "assistant", "content": getattr(m, "content", "") or ""}
-                # Thinking-mode providers (DeepSeek v4, MiMo, kimi) require the
-                # assistant's reasoning_content to be echoed back verbatim on
-                # every tool-bearing request, or they reject with HTTP 400.
-                # ``_raw_stream`` stores the captured reasoning here.  When a
-                # tool-bearing assistant message has no captured reasoning
-                # (e.g. the research pre-fetch injection), still emit the key
-                # with an empty value so the provider's chain stays valid.
+                # FXC5: echo reasoning_content only when the per-model contract
+                # requires it (never for Qwen/GPT/Doubao/Grok; DeepSeek only on
+                # tool-bearing turns). ``_raw_stream`` stores the captured
+                # reasoning here.
                 reasoning = ak.get("reasoning_content")
                 if reasoning is None:
                     reasoning = getattr(m, "reasoning_content", None)
-                if reasoning:
-                    d["reasoning_content"] = reasoning
                 tcs = getattr(m, "tool_calls", None)
+                if _should_echo_reasoning(
+                    reasoning_contract, provider_id, bool(tcs), reasoning
+                ):
+                    d["reasoning_content"] = (
+                        reasoning if reasoning is not None else ""
+                    )
                 if tcs:
                     d["tool_calls"] = [
                         {
@@ -1869,7 +1913,8 @@ class AgentV2:
                         }
                         for tc in tcs
                     ]
-                    d.setdefault("reasoning_content", "")
+                    if "reasoning_content" not in d:
+                        d.setdefault("reasoning_content", "")
                 out.append(d)
             elif role == "tool":
                 out.append({
@@ -2454,9 +2499,28 @@ class AgentV2:
                 ),
                 timeout=self._rate_limit_timeout,
             )
+        # FXC5: reasoning echo follows the catalog reasoning_contract +
+        # provider (per-model, never a blanket DeepSeek rule).
+        _owner_contract = _owner_cache_contract(self)
+        _reasoning_contract = (
+            (_owner_contract or {}).get("reasoning_contract")
+            if _owner_contract
+            else None
+        )
+        _caps = getattr(self, "_capabilities", None)
+        _prov = getattr(self, "_provider", None)
+        _provider_id = (
+            str(getattr(_caps, "provider", "") or "")
+            or str(getattr(_prov, "name", "") or "")
+            or ""
+        )
         payload = {
             "model": self.model_config.get("model_name", "gpt-4o"),
-            "messages": self._to_openai_messages(messages),
+            "messages": self._to_openai_messages(
+                messages,
+                reasoning_contract=_reasoning_contract,
+                provider_id=_provider_id,
+            ),
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": self.model_config.get("temperature", 0.7),

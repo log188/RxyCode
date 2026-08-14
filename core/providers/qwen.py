@@ -241,8 +241,13 @@ class QwenProvider(BaseProvider):
 
     def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
         kwargs = super().llm_kwargs(model_config, caps)
-        # §7.7 问 5：3.7 混合思考经 extra_body enable_thinking（默认开启，可关）；
-        # 3.8 仅思考不可关 → 不注入 enable_thinking（关不掉，注入无意义）。
+        # FXC5: Qwen uses enable_thinking in extra_body, NEVER a thinking object
+        # ({type: enabled/disabled} 400s on DashScope). Base's default
+        # thinking:{type:enabled} is removed here.
+        body = kwargs.setdefault("extra_body", {})
+        body.pop("thinking", None)
+        # §7.7 问 5：3.7 可调 enable_thinking（默认关可开）；3.8 思考默认开 —
+        # 不显式 false；禁止 {type:disabled}。
         family = _family(str(model_config.get("model_name") or ""))
         if (
             family is not None
@@ -250,6 +255,5 @@ class QwenProvider(BaseProvider):
             and caps.supports_reasoning
             and caps.thinking_default_on
         ):
-            body = kwargs.setdefault("extra_body", {})
             body.setdefault("enable_thinking", True)
         return kwargs
