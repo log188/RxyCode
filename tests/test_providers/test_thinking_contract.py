@@ -531,10 +531,12 @@ def test_glm_wire_payload_serialized_messages():
 
 
 def test_minimax_m3_thinking_echo_boundary():
-    """MiniMax M3: thinking_blocks_echo echoes the captured thinking; the
-    signature attribute is produced by the native Anthropic classification
-    (Go gateway). RxyCode talks to the minimax OpenAI-compatible endpoint, so
-    the OpenAI path carries no invented signature field."""
+    """MiniMax M3 (official OpenAI-compatible endpoint, api.minimaxi.com
+    /v1/chat/completions, per platform.minimaxi.com/docs/api-reference/
+    text-chat-openai): thinking adaptive, response carries reasoning_content /
+    reasoning_details (format MiniMax-response-v1). The Anthropic `signature`
+    attribute does not exist on the official MiniMax OpenAI API — it belongs
+    to Anthropic Messages protocol only, so no signature is invented here."""
     msgs = [
         SystemMessage(content="SYS"),
         AIMessage(content="m3 answer", reasoning_content="m3 thinking step"),
