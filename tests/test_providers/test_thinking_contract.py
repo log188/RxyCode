@@ -30,6 +30,16 @@ def _convert(msgs, reasoning_contract=None, provider_id=None):
 # ---------------------------------------------------------------------------
 
 
+def test_thinking_blocks_echo_echoes_captured_thinking():
+    # MiniMax M3 / Anthropic (thinking_blocks_echo): the captured thinking
+    # is echoed back.  On OpenAI-compatible endpoints it rides
+    # reasoning_content; the signature attribute belongs to the native
+    # Anthropic classification (not this path).
+    assert _should_echo_reasoning("thinking_blocks_echo", "minimax", True, "thinking") is True
+    assert _should_echo_reasoning("thinking_blocks_echo", "minimax", False, "thinking") is True
+    assert _should_echo_reasoning("thinking_blocks_echo", "minimax", True, None) is False
+
+
 def test_qwen_never_echoes_reasoning():
     assert _should_echo_reasoning("no_thinking", "qwen", True, "reasoning") is False
     assert _should_echo_reasoning("no_thinking", "qwen", False, "reasoning") is False
@@ -301,6 +311,17 @@ def test_minimax_m3_no_cache_control_and_adaptive():
     assert "cache_control" not in json.dumps(kwargs)
     body = kwargs.get("extra_body") or {}
     assert body.get("thinking") == {"type": "adaptive"}
+
+
+def test_minimax_m3_serialized_assistant_echoes_thinking():
+    msgs = [
+        SystemMessage(content="SYS"),
+        AIMessage(content="answer", reasoning_content="m3 thinking step"),
+        HumanMessage(content="continue"),
+    ]
+    out = _convert(msgs, reasoning_contract="thinking_blocks_echo", provider_id="minimax")
+    assistant = next(m for m in out if m["role"] == "assistant")
+    assert assistant.get("reasoning_content") == "m3 thinking step"
 
 
 def test_mimo_no_effort_no_cache_control():

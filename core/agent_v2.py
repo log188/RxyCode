@@ -117,8 +117,10 @@ def _should_echo_reasoning(
 
     - no_thinking (Qwen): never put reasoning_content back into messages
     - none (GPT / Doubao / Grok): no raw CoT echo
-    - thinking_blocks_echo (Anthropic / MiniMax M3): native thinking blocks,
-      not a raw reasoning_content field
+    - thinking_blocks_echo (Anthropic / MiniMax M3): echo the captured
+      thinking content back (OpenAI-compatible endpoints carry it as
+      reasoning_content; the signature attribute belongs to the native
+      Anthropic classification, which does not pass through here)
     - mandatory_echo (DeepSeek / Kimi / MiMo / GLM):
         DeepSeek echoes only on tool-bearing turns (aligned with dsh);
         Kimi / MiMo / GLM echo across user turns, empty value allowed
@@ -132,7 +134,7 @@ def _should_echo_reasoning(
     if contract == "none":
         return False
     if contract == "thinking_blocks_echo":
-        return False
+        return bool(reasoning)
     if contract == "mandatory_echo":
         if provider == "deepseek":
             return has_tool_calls
