@@ -226,3 +226,69 @@ def test_v4_cache_min_block_tokens_v4_caliber():
         {"model_name": "deepseek-v4-flash", "base_url": "https://api.deepseek.com/v1"}
     )
     assert caps.cache_min_block_tokens == 1024  # 256-bucket, ~1024 start (V4)
+
+
+# ---------------------------------------------------------------------------
+# FXC4 audit R2 additions: keep-alive default + FX-CB guard rails
+# ---------------------------------------------------------------------------
+
+
+def test_deepseek_keep_alive_defaults_off():
+    from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_enabled
+
+    assert keep_alive_enabled({}) is False  # default off for every provider
+
+
+def test_implicit_family_never_gets_cache_control():
+    """FX-CB9 guard rail: DeepSeek / MiniMax M3 never emit cache_control."""
+    from RxyCode.RxyCode1_1_0.core.catalog import (
+        get_contract,
+        injects_cache_control,
+        reset_contract_cache,
+    )
+
+    reset_contract_cache()
+    for provider, model in (
+        ("deepseek", "deepseek-v4-flash"),
+        ("minimax", "minimax-m3"),
+    ):
+        contract = get_contract(provider, model)
+        assert contract is not None, f"{provider}:{model} missing"
+        assert injects_cache_control(contract) is False
+
+
+def test_unknown_contract_never_injects_control_or_key():
+    from RxyCode.RxyCode1_1_0.core.catalog import (
+        injects_cache_control,
+        injects_prompt_cache_key,
+    )
+
+    assert injects_cache_control(None) is False
+    assert injects_prompt_cache_key(None) is False
+
+
+def test_cache_mode_uses_only_schema_enum():
+    """FX-CB guard: no record uses explicit / breakpoints aliases."""
+    import json
+    from pathlib import Path
+
+    catalog = json.loads(
+        (Path(__file__).resolve().parents[2] / "config" / "model_catalog.json")
+        .read_text(encoding="utf-8")
+    )
+    allowed = {"auto", "cache_key", "auto_and_key", "explicit_breakpoints"}
+    for record in catalog.get("records", []):
+        mode = (record.get("cache_contract") or {}).get("cache_mode")
+        assert mode in allowed, f"illegal cache_mode {mode!r} in {record.get('model_id')}"
+def test_explicit_family_still_injects_control():
+    """Sanity: the explicit family (Claude) still injects, per FX-CB10."""
+    from RxyCode.RxyCode1_1_0.core.catalog import (
+        get_contract,
+        injects_cache_control,
+        reset_contract_cache,
+    )
+
+    reset_contract_cache()
+    contract = get_contract("anthropic", "claude-sonnet-4.5")
+    assert contract is not None
+    assert injects_cache_control(contract) is True
