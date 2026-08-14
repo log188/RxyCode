@@ -292,3 +292,76 @@ def test_explicit_family_still_injects_control():
     contract = get_contract("anthropic", "claude-sonnet-4.5")
     assert contract is not None
     assert injects_cache_control(contract) is True
+
+
+# ---------------------------------------------------------------------------
+# FXC4 audit R3: request-layer capture via httpx fake transport
+# ---------------------------------------------------------------------------
+
+
+def _fake_llm(base_url: str, session_id: str):
+    """Build a ChatOpenAI wired with a capture transport (no network)."""
+    import httpx
+    from langchain_openai import ChatOpenAI
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import build_session_headers
+
+    captured: dict = {}
+
+    def handler(request):
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(
+            200,
+            json={
+                "id": "x",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "hi"},
+                        "finish_reason": "stop",
+                        "index": 0,
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    llm = ChatOpenAI(
+        model="gpt-4o",
+        api_key="sk-test",
+        base_url=base_url,
+        default_headers=build_session_headers(base_url, session_id),
+        http_async_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ),
+    )
+    return llm, captured
+
+
+def _find_header(headers: dict, name: str):
+    for key, value in headers.items():
+        if key.casefold() == name.casefold():
+            return value
+    return None
+
+
+def test_go_gateway_request_carries_all_three_affinity_headers():
+    import asyncio
+
+    llm, captured = _fake_llm("https://opencode.ai/zen/go/v1", "ses_test123")
+    asyncio.get_event_loop().run_until_complete(llm.ainvoke("hi"))
+    h = captured["headers"]
+    assert _find_header(h, "x-opencode-session") == "ses_test123"
+    assert _find_header(h, "x-session-affinity") == "ses_test123"
+    assert _find_header(h, "x-session-id") == "ses_test123"
+
+
+def test_direct_vendor_request_only_sends_session_id():
+    import asyncio
+
+    llm, captured = _fake_llm("https://api.deepseek.com/v1", "ses_test123")
+    asyncio.get_event_loop().run_until_complete(llm.ainvoke("hi"))
+    h = captured["headers"]
+    assert _find_header(h, "x-session-id") == "ses_test123"
+    assert _find_header(h, "x-opencode-session") is None  # never faked
+    assert _find_header(h, "x-session-affinity") is None
