@@ -87,6 +87,9 @@ def mark_last_user_breakpoint(messages: list) -> list:
     只标记最后一条 user 消息的 cache_control ephemeral——单轮工具循环内
     每次 API 调用都命中静态前缀；早期 user 消息不标记（避免前缀抖动）。
     返回新列表，**绝不修改原消息对象**（luna 审计要求）。
+
+    FXC2：生产路径仅在 ``injects_cache_control(contract)`` 为真时调用
+    （``apply_breakpoint_budget`` / ``_apply_cache_control`` 先门控）。
     """
     result = list(messages)
     last_user_idx = None
@@ -182,6 +185,7 @@ def apply_breakpoint_budget(
     tools: Optional[list] = None,
     caps=None,
     cfg: Optional[dict] = None,
+    contract: Optional[dict] = None,
 ) -> list:
     """统一断点预算入口（B3 步骤 2/3：_apply_cache_control 调用它）。
 
@@ -196,7 +200,13 @@ def apply_breakpoint_budget(
     - 打点后执行 tool_pair_integrity 校验（防拆对，API 400 防线）。
 
     返回 (messages, allocated, ttl_seconds)。**绝不修改原消息对象**。
+    FXC2：传入 ``contract`` 时必须 ``injects_cache_control`` 为真才打点。
     """
+    if contract is not None:
+        from .catalog import injects_cache_control
+
+        if not injects_cache_control(contract):
+            return messages, [], resolve_ttl_seconds(cfg)
     breakpoints = getattr(caps, "cache_breakpoints", ()) if caps is not None else ()
     if not breakpoints:
         return messages, [], resolve_ttl_seconds(cfg)
@@ -242,6 +252,7 @@ def apply_breakpoint_budget(
                     additional_kwargs=ak,
                 )
         elif block in ("messages", "tail"):
+            # FXC2: 仅显式族走到这里（调用方 / contract 门控 injects_cache_control）。
             result = mark_last_user_breakpoint(result)
         # tools 块：Anthropic 断点在 tools 定义上（B3 步骤 3 由 provider
         # 层处理——tools 定义随请求体注入 cache_control，本层不操作消息）。

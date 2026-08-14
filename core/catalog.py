@@ -133,9 +133,22 @@ def temperature_override(provider_id: str, model_id: str) -> dict | None:
     return contract.get("temperature_override")
 
 
+def injects_cache_control(contract: dict | None) -> bool:
+    """Unknown and implicit families never emit Anthropic cache_control."""
+    if not contract:
+        return False
+    mode = str(contract.get("cache_mode") or "auto").casefold()
+    if mode != "explicit_breakpoints":
+        return False
+    return int(contract.get("breakpoints_max") or 0) > 0
+
+
+def injects_prompt_cache_key(contract: dict | None) -> bool:
+    if not contract:
+        return False  # 未知模型默认不发 key（§15.3）
+    return bool(contract.get("prompt_cache_key_required"))
+
+
 def requires_prompt_cache_key(provider_id: str, model_id: str) -> bool:
     """是否要求请求级 prompt_cache_key（Kimi 必填，规范 5）。"""
-    contract = get_contract(provider_id, model_id)
-    if contract is None:
-        return False
-    return bool(contract.get("prompt_cache_key_required"))
+    return injects_prompt_cache_key(get_contract(provider_id, model_id))

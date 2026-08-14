@@ -105,13 +105,13 @@ class TestApplyCacheControl:
         wrapper._cache_enabled = cache_enabled
         return wrapper
 
-    def test_injects_cache_control_on_system_message(self):
+    def test_unknown_contract_does_not_inject(self):
+        """FXC2：无 cache_contract 时不打 cache_control。"""
         wrapper = self._make_wrapper(cache_enabled=True)
         msgs = _make_lc_messages()
         result = wrapper._apply_cache_control(msgs)
         ak = getattr(result[0], "additional_kwargs", {})
-        assert "cache_control" in ak
-        assert ak["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in ak
 
     def test_does_not_double_inject(self):
         """If cache_control already exists, don't add another one."""

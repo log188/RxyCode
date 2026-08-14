@@ -609,6 +609,60 @@ def _is_transport_retryable(exc: BaseException) -> bool:
     return False
 
 
+def _owner_cache_contract(owner) -> dict | None:
+    """Read cache_contract from owner fields without __getattr__ delegation."""
+    from .catalog import get_contract
+
+    data = vars(owner)
+    caps = data.get("_capabilities")
+    provider = data.get("_provider")
+    provider_id = (
+        str(getattr(caps, "provider", "") or "")
+        or str(getattr(provider, "name", "") or "")
+        or str(data.get("_rate_provider") or "")
+    )
+    model_id = ""
+    mc = data.get("model_config")
+    if isinstance(mc, dict):
+        model_id = str(mc.get("model_name") or "")
+    if not model_id:
+        model_id = str(data.get("_rate_model") or "")
+    return get_contract(provider_id, model_id)
+
+
+_THINKING_BLOCK_TYPES = frozenset({"thinking", "reasoning", "reasoning_content"})
+
+
+def _promote_explicit_content(content, cache_control: dict):
+    """Explicit-family string content → text block array; never stamp thinking."""
+    if isinstance(content, str):
+        return [
+            {
+                "type": "text",
+                "text": content,
+                "cache_control": dict(cache_control),
+            }
+        ]
+    if not isinstance(content, list):
+        return content
+    blocks = []
+    last_text = -1
+    for block in content:
+        if not isinstance(block, dict):
+            blocks.append(block)
+            continue
+        item = dict(block)
+        kind = str(item.get("type") or "")
+        if kind in _THINKING_BLOCK_TYPES:
+            item.pop("cache_control", None)
+        elif kind == "text" or "text" in item:
+            last_text = len(blocks)
+        blocks.append(item)
+    if last_text >= 0 and isinstance(blocks[last_text], dict):
+        blocks[last_text]["cache_control"] = dict(cache_control)
+    return blocks
+
+
 class UsageTrackingLLM:
     """Wrapper that auto-records token usage on every LLM call.
 
@@ -699,20 +753,10 @@ class UsageTrackingLLM:
         return self._cache_enabled
 
     def _apply_cache_control(self, messages, tools=None):
-        """B3: apply provider-dispatched cache breakpoints (opencode budget).
+        """Apply explicit-family cache breakpoints from cache_contract.
 
-        从 B2 之前的"单一 system 断点"升级为按 provider 能力分派的断点策略
-        （PHASE-B §5 B3）：
-
-        - Anthropic 系（caps.cache_breakpoints 非空）：显式 cache_control
-          ephemeral 打点，分配序 tools→system→messages（≤4 断点预算）。
-        - OpenAI 系：不注入 cache_control（B2 走 prompt_cache_key=session_id，
-          CB3）。
-        - DeepSeek 系：不注入 cache_control（自动前缀 + 命中字段验证，
-          CB3）。
-
-        保留能力门（supports_prompt_cache）与 cache.prompt_prefix_cache 开关；
-        未开启配置或模型不支持缓存时行为与现状一致（CB8）。
+        FXC2：只信 ``injects_cache_control(contract)``。未知 / auto / cache_key
+        族绝不打 ``cache_control``。不再用 ``provider==anthropic`` 启发式。
         """
         if not self._ensure_cache_flag():
             return messages
@@ -724,74 +768,26 @@ class UsageTrackingLLM:
             return messages
         if not messages:
             return messages
-        # 用 vars() 判断属性是否真实存在，避免 __getattr__ 委托到 _llm 造成误判
-        # （wrapper._llm 为 MagicMock 时 self._provider 会委托出非 None 假值）。
-        has_provider = "_provider" in vars(self)
-        has_caps = "_capabilities" in vars(self)
-        caps = getattr(self, "_capabilities", None) if has_caps else None
-        breakpoints = getattr(caps, "cache_breakpoints", ()) if caps is not None else ()
-        # CB8 兼容：无 caps（旧调用路径/测试 wrapper/未知模型）时保持改造前
-        # 语义——对首条 system 注入 cache_control（旧行为不回归）。
-        if not has_caps or not has_provider:
-            first = messages[0]
-            if getattr(first, "type", None) != "system":
-                return messages
-            ak = getattr(first, "additional_kwargs", None) or {}
-            if "cache_control" in ak:
-                return messages
-            cached = SystemMessage(
-                content=first.content,
-                additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
-            )
-            return [cached] + list(messages[1:])
-        # B3 (luna B9-R1): 显式断点由契约 cache_mode 裁决（explicit_breakpoints
-        # 才分派），不再硬编码 anthropic 白名单——Qwen 等显式断点厂商同样生效。
-        # 未识别模型回退 caps（CB8，保持 anthropic 白名单语义）。
-        provider_name = ""
-        if has_provider:
-            provider_name = str(getattr(self._provider, "name", "") or "")
-        caps_provider = str(getattr(caps, "provider", "") or "")
-        contract_mode = None
-        try:
-            from .catalog import get_contract
+        from .catalog import injects_cache_control
 
-            contract = get_contract(
-                caps_provider or provider_name,
-                str(self.model_config.get("model_name") or ""),
-            )
-            if contract is not None:
-                contract_mode = contract.get("cache_mode")
-        except Exception:  # pragma: no cover - 契约异常回退现状
-            pass
-        if contract_mode is not None:
-            # 契约明确：仅 explicit_breakpoints 注入显式断点。
-            if contract_mode != "explicit_breakpoints":
-                return messages
-        else:
-            # CB8：未识别模型保持 anthropic 白名单现状。
-            if (
-                provider_name != "anthropic"
-                and caps_provider != "anthropic"
-            ):
-                return messages
-        # 统一走断点预算入口（allocate_breakpoints 分配序 + ≤4 上限 + TTL 解析）。
-        # B9: 契约显式断点厂商（Qwen 等）caps.cache_breakpoints 可能为空——
-        # 契约声明 explicit_breakpoints 时按 breakpoints_max 注入标准断点序。
-        if not breakpoints and contract_mode == "explicit_breakpoints":
-            try:
-                if (contract.get("breakpoints_max") or 0) > 0:
-                    breakpoints = ("tools", "system", "messages", "tail")
-            except Exception:  # pragma: no cover
-                pass
-        if not breakpoints:
+        contract = _owner_cache_contract(self)
+        if not injects_cache_control(contract):
             return messages
+        has_caps = "_capabilities" in vars(self)
+        caps = vars(self).get("_capabilities") if has_caps else None
+        breakpoints = getattr(caps, "cache_breakpoints", ()) if caps is not None else ()
+        if not breakpoints:
+            from types import SimpleNamespace as _NS
+
+            caps = _NS(cache_breakpoints=("tools", "system", "messages", "tail"))
         from .cache_policy import apply_breakpoint_budget
 
         result, _allocated, _ttl = apply_breakpoint_budget(
             messages,
             tools=tools,
             caps=caps,
-            cfg=getattr(self, "_cfg", None),
+            cfg=vars(self).get("_cfg"),
+            contract=contract,
         )
         return result
 
@@ -880,7 +876,6 @@ class UsageTrackingLLM:
                     messages,
                     provider=self._provider,
                     capabilities=self._capabilities,
-            llm_timeout=float(self.model_config.get('timeout', 90.0) or 90.0),
                 )
                 usage = (
                     reported[0] or self._input_token_cost(messages),
@@ -1794,10 +1789,17 @@ class AgentV2:
             if role == "system":
                 d = {"role": "system", "content": getattr(m, "content", "") or ""}
                 if "cache_control" in ak:
-                    d["cache_control"] = ak["cache_control"]
+                    cc = ak["cache_control"]
+                    d["cache_control"] = cc
+                    d["content"] = _promote_explicit_content(d["content"], cc)
                 out.append(d)
             elif role == "human":
-                out.append({"role": "user", "content": getattr(m, "content", "") or ""})
+                d = {"role": "user", "content": getattr(m, "content", "") or ""}
+                if "cache_control" in ak:
+                    cc = ak["cache_control"]
+                    d["cache_control"] = cc
+                    d["content"] = _promote_explicit_content(d["content"], cc)
+                out.append(d)
             elif role == "ai":
                 d = {"role": "assistant", "content": getattr(m, "content", "") or ""}
                 # Thinking-mode providers (DeepSeek v4, MiMo, kimi) require the
@@ -2464,26 +2466,13 @@ class AgentV2:
             if isinstance(body, dict) and "thinking" in body:
                 body["thinking"] = {"type": "disabled"}
             payload.pop("reasoning_effort", None)
-        # B2 (CB3): OpenAI 系按能力注入请求级 prompt_cache_key=session_id，
-        # 会话期恒定（跨 turn 前缀复用）；DeepSeek/Anthropic 不注入。
-        # B9 (luna R1-2): 注入与否由契约 requires_prompt_cache_key 裁决——
-        # Kimi 等 auto_and_key 厂商同样注入（不再硬编码 openai provider）。
-        # CB3 保持：向不要求 key 的 provider（DeepSeek/Anthropic）绝不注入。
-        contract_pk_key = False
-        try:
-            from .catalog import requires_prompt_cache_key
+        # FXC2: prompt_cache_key 只信 injects_prompt_cache_key(contract)。
+        # 未知模型默认不发 key（§15.3）；禁止 caps.provider==openai 启发式。
+        from .catalog import injects_prompt_cache_key
 
-            contract_pk_key = requires_prompt_cache_key(
-                str(getattr(caps, "provider", "") or ""),
-                str(self.model_config.get("model_name") or ""),
-            )
-        except Exception:  # pragma: no cover - 契约异常回退现状
-            pass
-        caps_pk_key = bool(
-            caps is not None
-            and getattr(caps, "provider", "") == "openai"
-            and getattr(caps, "prompt_cache_key_required", False)
-        )
+        contract = _owner_cache_contract(self)
+        contract_pk_key = injects_prompt_cache_key(contract)
+        caps_pk_key = False
         if contract_pk_key or caps_pk_key:
             # luna R2-2: key 派生含 provider:model（规范 7：换模型 = 缓存全失效）。
             # session_id 会话期恒定（规范 5：Kimi 恢复/退出不得变更）。
@@ -2499,24 +2488,13 @@ class AgentV2:
                     "capabilities.supports_function_calling is False"
                 )
             payload["tools"] = [self._tool_to_openai(t) for t in tools]
-            # B3 (CB2/CB3): Anthropic 系 tools 断点——tools 定义上注入
-            # cache_control ephemeral（分配序 tools 优先；OpenAI/DeepSeek 不注入）。
-            # 双条件与 _apply_cache_control 一致（luna 审计）：实际 provider
-            # 与 caps 都必须声明 anthropic，防止 caps 错误配置绕过 CB3。
-            provider = getattr(self, "_provider", None)
-            actual_provider = str(getattr(provider, "name", "") or "")
-            caps_provider = str(getattr(caps, "provider", "") if caps is not None else "")
-            anthropic_family = (
-                actual_provider == "anthropic" or caps_provider == "anthropic"
-            )
-            if (
-                anthropic_family
-                and caps is not None
-                and "tools" in getattr(caps, "cache_breakpoints", ())
-            ):
-                for tool_def in payload["tools"]:
-                    if isinstance(tool_def, dict):
-                        tool_def["cache_control"] = {"type": "ephemeral"}
+            # FXC2: 显式族只给最后一个 tool 打点；隐式/未知绝不打 cache_control。
+            from .catalog import injects_cache_control
+
+            if injects_cache_control(contract) and payload["tools"]:
+                last_tool = payload["tools"][-1]
+                if isinstance(last_tool, dict):
+                    last_tool["cache_control"] = {"type": "ephemeral"}
 
         last_chunk = None
         partial_output_tokens = 0

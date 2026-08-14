@@ -58,8 +58,7 @@ def _get_wrapper(monkeypatch, enabled: bool):
 
 @pytest.mark.asyncio
 async def test_cache_control_injected_when_enabled(monkeypatch):
-    """Bug C: with prompt_prefix_cache=true, the system message must carry
-    cache_control so DeepSeek caches the prefix."""
+    """FXC2：无 explicit_breakpoints 契约时不注入 cache_control（含 DeepSeek）。"""
     wrapper = _get_wrapper(monkeypatch, enabled=True)
     msgs = [SystemMessage(content="SYS_PROMPT"), HumanMessage(content="hi")]
     await wrapper.ainvoke(msgs)
@@ -67,9 +66,7 @@ async def test_cache_control_injected_when_enabled(monkeypatch):
     recv = wrapper._llm.received
     assert isinstance(recv[0], SystemMessage)
     ak = getattr(recv[0], "additional_kwargs", {}) or {}
-    assert ak.get("cache_control") == {"type": "ephemeral"}, (
-        f"expected cache_control on system message, got {ak}"
-    )
+    assert "cache_control" not in ak
 
 
 @pytest.mark.asyncio
@@ -86,7 +83,7 @@ async def test_no_cache_control_when_disabled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cache_control_injected_on_astream_too(monkeypatch):
-    """The streaming path must apply the same cache_control."""
+    """Streaming path must use the same contract gate (no stamp without contract)."""
     wrapper = _get_wrapper(monkeypatch, enabled=True)
     msgs = [SystemMessage(content="SYS_PROMPT"), HumanMessage(content="hi")]
     async for _ in wrapper.astream(msgs):
@@ -94,4 +91,4 @@ async def test_cache_control_injected_on_astream_too(monkeypatch):
 
     recv = wrapper._llm.received
     ak = getattr(recv[0], "additional_kwargs", {}) or {}
-    assert ak.get("cache_control") == {"type": "ephemeral"}
+    assert "cache_control" not in ak
