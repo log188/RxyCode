@@ -496,3 +496,52 @@ def _two_tools():
         StructuredTool.from_function(lambda: "ok", name="read", description="read"),
         StructuredTool.from_function(lambda: "ok", name="bash", description="bash"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# FXC5 audit R9: unknown-model no-inject, GLM/MiMo wire payload rows
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_model_llm_kwargs_inject_nothing():
+    """FX-CB11 / FXC6: a model without a catalog record must not inherit
+    vendor thinking/reasoning params through base llm_kwargs."""
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.providers.openai import OpenAIProvider
+
+    kwargs = OpenAIProvider().llm_kwargs(
+        {"model_name": "mystery-model", "resolved_max_tokens": 2048,
+         "api_key": "sk-test", "effort": "balanced"},
+        DEFAULT_CAPABILITIES,
+    )
+    assert kwargs.get("extra_body") is None
+    assert "reasoning_effort" not in kwargs
+    assert "thinking" not in json.dumps(kwargs)
+
+
+def test_glm_wire_payload_serialized_messages():
+    """GLM (mandatory_echo) echoes reasoning across turns at the message level."""
+    msgs = [
+        SystemMessage(content="SYS"),
+        AIMessage(content="glm answer", reasoning_content="glm thinking"),
+        HumanMessage(content="continue"),
+    ]
+    out = _convert(msgs, reasoning_contract="mandatory_echo", provider_id="glm")
+    assistant = next(m for m in out if m["role"] == "assistant")
+    assert assistant.get("reasoning_content") == "glm thinking"
+
+
+def test_minimax_m3_thinking_echo_boundary():
+    """MiniMax M3: thinking_blocks_echo echoes the captured thinking; the
+    signature attribute is produced by the native Anthropic classification
+    (Go gateway). RxyCode talks to the minimax OpenAI-compatible endpoint, so
+    the OpenAI path carries no invented signature field."""
+    msgs = [
+        SystemMessage(content="SYS"),
+        AIMessage(content="m3 answer", reasoning_content="m3 thinking step"),
+        HumanMessage(content="continue"),
+    ]
+    out = _convert(msgs, reasoning_contract="thinking_blocks_echo", provider_id="minimax")
+    assistant = next(m for m in out if m["role"] == "assistant")
+    assert assistant.get("reasoning_content") == "m3 thinking step"
+    assert "signature" not in json.dumps(out)  # no invented signature on this path
