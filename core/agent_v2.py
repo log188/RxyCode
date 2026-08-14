@@ -137,7 +137,10 @@ def _should_echo_reasoning(
         if provider == "deepseek":
             return has_tool_calls
         return True
-    return bool(reasoning)
+    # unknown / legacy callers: keep the old behaviour — echo captured
+    # reasoning when present, and still emit the empty placeholder on
+    # tool-bearing turns (provider chain validity).
+    return bool(reasoning) or has_tool_calls
 
 
 def build_session_headers(base_url: str, session_id: str) -> dict[str, str]:
@@ -1913,7 +1916,12 @@ class AgentV2:
                         }
                         for tc in tcs
                     ]
-                    if "reasoning_content" not in d:
+                    # FXC5: the empty-reasoning placeholder is also contract-gated —
+                    # Qwen/GPT/Doubao/Grok must not receive a reasoning_content
+                    # field even on tool-bearing turns.
+                    if _should_echo_reasoning(
+                        reasoning_contract, provider_id, True, reasoning
+                    ):
                         d.setdefault("reasoning_content", "")
                 out.append(d)
             elif role == "tool":

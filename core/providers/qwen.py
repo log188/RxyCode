@@ -241,19 +241,16 @@ class QwenProvider(BaseProvider):
 
     def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
         kwargs = super().llm_kwargs(model_config, caps)
-        # FXC5: Qwen uses enable_thinking in extra_body, NEVER a thinking object
-        # ({type: enabled/disabled} 400s on DashScope). Base's default
-        # thinking:{type:enabled} is removed here.
+        # FXC5/FX-CB11: driven by catalog thinking_param.sample, never by a
+        # model-name heuristic. Qwen sample is "enable_thinking: true|false"
+        # (3.8-preview: false forbidden) — so we set true when thinking is on
+        # and never emit a {type:disabled} thinking object.
+        from RxyCode.RxyCode1_1_0.core.catalog import get_contract
+
+        contract = get_contract("qwen", str(model_config.get("model_name") or ""))
+        sample = str(((contract or {}).get("thinking_param") or {}).get("sample") or "")
         body = kwargs.setdefault("extra_body", {})
-        body.pop("thinking", None)
-        # §7.7 问 5：3.7 可调 enable_thinking（默认关可开）；3.8 思考默认开 —
-        # 不显式 false；禁止 {type:disabled}。
-        family = _family(str(model_config.get("model_name") or ""))
-        if (
-            family is not None
-            and family != "qwen3.8-max-preview"
-            and caps.supports_reasoning
-            and caps.thinking_default_on
-        ):
+        body.pop("thinking", None)  # DashScope uses enable_thinking, not {type}
+        if "enable_thinking" in sample and caps.supports_reasoning and caps.thinking_default_on:
             body.setdefault("enable_thinking", True)
         return kwargs

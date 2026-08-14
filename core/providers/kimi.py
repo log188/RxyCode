@@ -150,11 +150,15 @@ class KimiProvider(BaseProvider):
 
     def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
         kwargs = super().llm_kwargs(model_config, caps)
-        # FXC5: kimi-k3 sends only reasoning_effort — never a thinking object
-        # ({type: enabled} 400s on k3). k2.x keeps base's thinking:{type:enabled}
-        # and sends no reasoning_effort.
-        family = _family(str(model_config.get("model_name") or ""))
-        if family == "kimi-k3":
+        # FXC5/FX-CB11: the thinking shape comes from catalog thinking_param,
+        # never from model-name heuristics. kimi-k3 sample is
+        # "reasoning_effort: {...}" -> only effort, drop base's thinking object;
+        # k2.x sample is "{type:enabled, keep:all}" -> keep the thinking object.
+        from RxyCode.RxyCode1_1_0.core.catalog import get_contract
+
+        contract = get_contract("kimi", str(model_config.get("model_name") or ""))
+        sample = str(((contract or {}).get("thinking_param") or {}).get("sample") or "")
+        if "reasoning_effort" in sample:
             kwargs.setdefault("extra_body", {}).pop("thinking", None)
         return kwargs
 

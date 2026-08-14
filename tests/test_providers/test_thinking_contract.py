@@ -177,3 +177,87 @@ def test_kimi_k3_sends_reasoning_effort_not_thinking_object():
     body = kwargs.get("extra_body") or {}
     # k3 must not carry a thinking object ({type: enabled} 400s on k3)
     assert body.get("thinking") is None
+
+
+# ---------------------------------------------------------------------------
+# FXC5 audit R1: decision-table rows + contract-gated empty placeholder
+# ---------------------------------------------------------------------------
+
+
+def test_qwen_tool_call_turn_has_no_reasoning_content():
+    """no_thinking: even a tool-bearing Qwen turn must not carry
+    reasoning_content (including the empty placeholder)."""
+    msgs = [
+        SystemMessage(content="SYS"),
+        AIMessage(
+            content="",
+            reasoning_content="thinking but qwen",
+            tool_calls=[{"name": "bash", "args": {}, "id": "c1", "type": "tool_call"}],
+        ),
+        HumanMessage(content="ok"),
+    ]
+    out = _convert(msgs, reasoning_contract="no_thinking", provider_id="qwen")
+    assistant = next(m for m in out if m["role"] == "assistant")
+    assert "reasoning_content" not in assistant
+
+
+def test_gpt_tool_call_turn_has_no_reasoning_content():
+    msgs = [
+        SystemMessage(content="SYS"),
+        AIMessage(
+            content="",
+            reasoning_content="chain",
+            tool_calls=[{"name": "bash", "args": {}, "id": "c1", "type": "tool_call"}],
+        ),
+        HumanMessage(content="ok"),
+    ]
+    out = _convert(msgs, reasoning_contract="none", provider_id="openai")
+    assistant = next(m for m in out if m["role"] == "assistant")
+    assert "reasoning_content" not in assistant
+
+
+def test_legacy_unknown_contract_tool_call_keeps_empty_placeholder():
+    """Unknown/legacy callers keep the old behaviour: empty reasoning is
+    still emitted on tool-bearing turns (provider chain validity)."""
+    msgs = [
+        SystemMessage(content="SYS"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "bash", "args": {}, "id": "c1", "type": "tool_call"}],
+        ),
+        HumanMessage(content="ok"),
+    ]
+    out = _convert(msgs)  # no contract -> legacy
+    assistant = next(m for m in out if m["role"] == "assistant")
+    assert assistant.get("reasoning_content") == ""
+
+
+def test_kimi_k27_thinking_object_no_effort():
+    from RxyCode.RxyCode1_1_0.core.providers.kimi import KimiProvider
+
+    kwargs = _provider_llm_kwargs(KimiProvider, "kimi-k2.7-code", {"effort": "max"})
+    body = kwargs.get("extra_body") or {}
+    assert body.get("thinking") == {"type": "enabled"}  # k2.x keeps thinking
+    assert "reasoning_effort" not in kwargs  # k2.x sends no effort
+
+
+def test_mimo_echoes_reasoning_across_turns():
+    msgs = [
+        SystemMessage(content="SYS"),
+        AIMessage(content="ok", reasoning_content=""),
+        HumanMessage(content="continue"),
+    ]
+    out = _convert(msgs, reasoning_contract="mandatory_echo", provider_id="mimo")
+    assistant = next(m for m in out if m["role"] == "assistant")
+    assert assistant.get("reasoning_content") == ""
+
+
+def test_glm_echoes_reasoning_across_turns():
+    msgs = [
+        SystemMessage(content="SYS"),
+        AIMessage(content="ok", reasoning_content="thinking"),
+        HumanMessage(content="continue"),
+    ]
+    out = _convert(msgs, reasoning_contract="mandatory_echo", provider_id="glm")
+    assistant = next(m for m in out if m["role"] == "assistant")
+    assert assistant.get("reasoning_content") == "thinking"
