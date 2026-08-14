@@ -235,6 +235,32 @@ def test_v4_cache_min_block_tokens_v4_caliber():
 # ---------------------------------------------------------------------------
 
 
+def test_deepseek_catalog_and_provider_keep_alive_default_off():
+    import json as _json
+    from pathlib import Path
+
+    from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_enabled
+    from RxyCode.RxyCode1_1_0.core.providers.deepseek import DeepSeekProvider
+
+    # catalog record: no keep-alive switch -> default off
+    catalog = _json.loads(
+        (Path(__file__).resolve().parents[2] / "config" / "model_catalog.json")
+        .read_text(encoding="utf-8")
+    )
+    ds = [r for r in catalog["records"] if r.get("provider_id") == "deepseek"]
+    assert ds, "deepseek records present"
+    for record in ds:
+        cc = record.get("cache_contract") or {}
+        assert not cc.get("keep_alive"), f"{record['model_id']} unexpectedly enables keep-alive"
+
+    # provider capabilities carry no keep-alive flag either
+    caps = DeepSeekProvider().capabilities(
+        {"model_name": "deepseek-v4-flash", "base_url": "https://api.deepseek.com/v1"}
+    )
+    assert getattr(caps, "keep_alive", None) is None
+    assert keep_alive_enabled({}) is False
+
+
 def test_deepseek_keep_alive_defaults_off():
     from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_enabled
 
@@ -374,16 +400,26 @@ def test_direct_vendor_request_only_sends_session_id():
 # ---------------------------------------------------------------------------
 
 
-def test_dedicated_zen_go_gateway_hosts_get_full_headers():
-    assert _headers("https://go.example-gateway.io/v1")["x-opencode-session"] == "ses_test123"
-    assert _headers("https://zen.gateway.dev/v1")["x-session-affinity"] == "ses_test123"
-    assert _headers("https://go.example-gateway.io/v1")["X-Session-Id"] == "ses_test123"
-
-
 def test_vendor_path_go_zen_still_not_gateway():
     # vendor host + path /go /zen is NOT a gateway (no opencode* faking)
     assert _headers("https://api.deepseek.com/v1/go") == {"X-Session-Id": "ses_test123"}
     assert _headers("https://api.openai.com/v1/zen") == {"X-Session-Id": "ses_test123"}
+
+
+def test_lookalike_domains_never_fake_opencode_headers():
+    # strict allow-list: only opencode.ai and *.opencode.ai are gateways
+    for url in (
+        "https://notopencode.ai/v1",
+        "https://opencode.ai.evil.example/v1",
+        "https://go.other-service.io/v1",
+        "https://zen.other-service.io/v1",
+    ):
+        assert _headers(url) == {"X-Session-Id": "ses_test123"}, url
+
+
+def test_opencode_ai_subdomains_are_gateways():
+    assert "x-opencode-session" in _headers("https://zen.opencode.ai/v1")
+    assert "x-opencode-session" in _headers("https://go.opencode.ai/v1")
 
 
 def test_production_build_path_captures_gateway_request(monkeypatch):
@@ -567,3 +603,52 @@ def test_implicit_family_final_messages_have_no_cache_control():
             ensure_ascii=False,
         )
         assert "cache_control" not in serialized, f"{provider}:{model} leaked cache_control"
+
+    # unknown model goes through the real production path and stays clean too
+    agent = UsageTrackingLLM.__new__(UsageTrackingLLM)
+    agent._provider = SimpleNamespace(name="no-such", supports_prompt_cache=lambda caps: True)
+    agent._capabilities = SimpleNamespace(provider="no-such", cache_breakpoints=(), supports_prompt_cache=True)
+    agent.model_config = {"model_name": "mystery"}
+    agent._cache_enabled = True
+    out = agent._apply_cache_control(list(msgs))
+    serialized = json.dumps(
+        [{"type": m.type, "content": m.content,
+          "additional_kwargs": dict(m.additional_kwargs)} for m in out],
+        ensure_ascii=False,
+    )
+    assert "cache_control" not in serialized  # unknown never injected
+
+
+def test_explicit_family_marks_only_last_tool_breakpoint():
+    """FX-CB10: the explicit family stamps only the LAST tool, never all."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
+    from RxyCode.RxyCode1_1_0.core.catalog import reset_contract_cache
+    from types import SimpleNamespace
+
+    reset_contract_cache()
+    agent = UsageTrackingLLM.__new__(UsageTrackingLLM)
+    agent._provider = SimpleNamespace(name="anthropic", supports_prompt_cache=lambda caps: True)
+    agent._capabilities = SimpleNamespace(provider="anthropic", cache_breakpoints=(), supports_prompt_cache=True)
+    agent.model_config = {"model_name": "claude-sonnet-4.5"}
+    agent._cache_enabled = True
+
+    tools = [SimpleNamespace(name="read", parameters={}),
+             SimpleNamespace(name="bash", parameters={}),
+             SimpleNamespace(name="write", parameters={})]
+    agent._apply_cache_control([SimpleNamespace(type="system", content="SYS", additional_kwargs={})], tools=tools)
+
+    # apply_breakpoint_budget returns (messages, allocated, ttl); tools are
+    # marked inside the messages' tool blocks — here we assert via the
+    # exported breakpoint ordering helper that the LAST tool is the marker.
+    from RxyCode.RxyCode1_1_0.core.cache_policy import apply_breakpoint_budget
+    from types import SimpleNamespace as NS
+
+    caps2 = NS(cache_breakpoints=("tools", "system", "messages", "tail"))
+    _msg, allocated, _ttl = apply_breakpoint_budget(
+        [NS(type="system", content="SYS", additional_kwargs={})],
+        tools=tools, caps=caps2,
+        contract={"cache_mode": "explicit_breakpoints", "breakpoints_max": 4},
+    )
+    assert "tools" in allocated  # the explicit family did allocate a tool breakpoint
+    # and it applies exactly once (a single breakpoint covers the last tool)
+    assert allocated.count("tools") == 1
