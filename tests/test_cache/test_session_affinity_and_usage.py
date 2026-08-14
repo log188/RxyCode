@@ -12,6 +12,8 @@ Coverage per PHASE-FIX §5 FXC4 acceptance:
 
 from __future__ import annotations
 
+import json
+
 from RxyCode.RxyCode1_1_0.core.catalog import read_cached_tokens, reset_contract_cache
 
 
@@ -365,3 +367,203 @@ def test_direct_vendor_request_only_sends_session_id():
     assert _find_header(h, "x-session-id") == "ses_test123"
     assert _find_header(h, "x-opencode-session") is None  # never faked
     assert _find_header(h, "x-session-affinity") is None
+
+
+# ---------------------------------------------------------------------------
+# FXC4 audit R4: zen/go gateway hosts + production-path request capture
+# ---------------------------------------------------------------------------
+
+
+def test_dedicated_zen_go_gateway_hosts_get_full_headers():
+    assert _headers("https://go.example-gateway.io/v1")["x-opencode-session"] == "ses_test123"
+    assert _headers("https://zen.gateway.dev/v1")["x-session-affinity"] == "ses_test123"
+    assert _headers("https://go.example-gateway.io/v1")["X-Session-Id"] == "ses_test123"
+
+
+def test_vendor_path_go_zen_still_not_gateway():
+    # vendor host + path /go /zen is NOT a gateway (no opencode* faking)
+    assert _headers("https://api.deepseek.com/v1/go") == {"X-Session-Id": "ses_test123"}
+    assert _headers("https://api.openai.com/v1/zen") == {"X-Session-Id": "ses_test123"}
+
+
+def test_production_build_path_captures_gateway_request(monkeypatch):
+    """Go gateway through AgentV2._build_llm_from_config: capture the real
+    HTTP request via a fake async client (no network)."""
+    import asyncio
+
+    import httpx
+
+    import RxyCode.RxyCode1_1_0.core.agent_v2 as av2
+
+    captured: dict = {}
+
+    def handler(request):
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(
+            200,
+            json={
+                "id": "x",
+                "object": "chat.completion",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "hi"},
+                     "finish_reason": "stop", "index": 0}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    class _FakeProvider:
+        name = "openai"
+
+        def capabilities(self, model_config):
+            from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+                DEFAULT_CAPABILITIES,
+            )
+
+            return DEFAULT_CAPABILITIES
+
+        def supports_prompt_cache(self, caps):
+            return True
+
+        def extract_cache_read(self, usage, caps):
+            return 0
+
+        def extract_reasoning(self, payload, caps):
+            return ""
+
+        def llm_kwargs(self, model_config, caps):
+            return {
+                "model": "gpt-4o",
+                "api_key": "sk-test",
+                "http_async_client": httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler)
+                ),
+            }
+
+    def fake_resolve(model_config):
+        return _FakeProvider()
+
+    monkeypatch.setattr(av2.providers, "resolve", fake_resolve)
+
+    agent = av2.AgentV2.__new__(av2.AgentV2)
+    agent._session_id = "ses_test123"
+    agent._rate_limiter = None
+    agent._rate_limit_timeout = None
+    agent._rate_provider = None
+    agent._rate_model = None
+    agent._rate_reserved_output_tokens = 0
+
+    llm = agent._build_llm_from_config(
+        {"base_url": "https://opencode.ai/zen/go/v1", "api_key": "sk-test",
+         "model_name": "deepseek/deepseek-v4-flash"}
+    )
+    asyncio.get_event_loop().run_until_complete(llm.ainvoke("hi"))
+    h = captured["headers"]
+    assert _find_header(h, "x-opencode-session") == "ses_test123"
+    assert _find_header(h, "x-session-affinity") == "ses_test123"
+    assert _find_header(h, "x-session-id") == "ses_test123"
+
+
+def test_production_build_path_direct_vendor_only_session_id(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    import RxyCode.RxyCode1_1_0.core.agent_v2 as av2
+
+    captured: dict = {}
+
+    def handler(request):
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(
+            200,
+            json={
+                "id": "x", "object": "chat.completion",
+                "choices": [{"message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop", "index": 0}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    class _FakeProvider:
+        name = "deepseek"
+
+        def capabilities(self, model_config):
+            from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+                DEFAULT_CAPABILITIES,
+            )
+
+            return DEFAULT_CAPABILITIES
+
+        def supports_prompt_cache(self, caps):
+            return True
+
+        def extract_cache_read(self, usage, caps):
+            return 0
+
+        def extract_reasoning(self, payload, caps):
+            return ""
+
+        def llm_kwargs(self, model_config, caps):
+            return {
+                "model": "deepseek-v4-flash",
+                "api_key": "sk-test",
+                "http_async_client": httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler)
+                ),
+            }
+
+    def fake_resolve(model_config):
+        return _FakeProvider()
+
+    monkeypatch.setattr(av2.providers, "resolve", fake_resolve)
+
+    agent = av2.AgentV2.__new__(av2.AgentV2)
+    agent._session_id = "ses_test123"
+    agent._rate_limiter = None
+    agent._rate_limit_timeout = None
+    agent._rate_provider = None
+    agent._rate_model = None
+    agent._rate_reserved_output_tokens = 0
+
+    llm = agent._build_llm_from_config(
+        {"base_url": "https://api.deepseek.com/v1", "api_key": "sk-test",
+         "model_name": "deepseek/deepseek-v4-flash"}
+    )
+    asyncio.get_event_loop().run_until_complete(llm.ainvoke("hi"))
+    h = captured["headers"]
+    assert _find_header(h, "x-session-id") == "ses_test123"
+    assert _find_header(h, "x-opencode-session") is None
+    assert _find_header(h, "x-session-affinity") is None
+
+
+def test_implicit_family_final_messages_have_no_cache_control():
+    """FX-CB9 at the payload level: DeepSeek / MiniMax M3 final messages never
+    carry cache_control (via the real _apply_cache_control)."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
+    from RxyCode.RxyCode1_1_0.core.catalog import reset_contract_cache
+    from types import SimpleNamespace
+
+    reset_contract_cache()
+    msgs = [SimpleNamespace(type="system", content="SYS", additional_kwargs={})]
+    for provider, model, caps_provider in (
+        ("deepseek", "deepseek-v4-flash", "deepseek"),
+        ("minimax", "minimax-m3", "minimax"),
+    ):
+        agent = UsageTrackingLLM.__new__(UsageTrackingLLM)
+        agent._provider = SimpleNamespace(
+            name=provider,
+            supports_prompt_cache=lambda caps: True,
+        )
+        agent._capabilities = SimpleNamespace(
+            provider=caps_provider, cache_breakpoints=(), supports_prompt_cache=True
+        )
+        agent.model_config = {"model_name": model}
+        agent._cache_enabled = True
+        out = agent._apply_cache_control(list(msgs))
+        serialized = json.dumps(
+            [{"type": m.type, "content": m.content,
+              "additional_kwargs": dict(m.additional_kwargs)} for m in out],
+            ensure_ascii=False,
+        )
+        assert "cache_control" not in serialized, f"{provider}:{model} leaked cache_control"

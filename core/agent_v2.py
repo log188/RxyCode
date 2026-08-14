@@ -110,18 +110,25 @@ _logger = logging.getLogger(__name__)
 def build_session_headers(base_url: str, session_id: str) -> dict[str, str]:
     """FXC4 · session affinity headers.
 
-    Go/Zen gateways live on ``opencode.ai`` hosts: send ``x-opencode-session``
-    + ``x-session-affinity`` + ``X-Session-Id`` together.  Direct official
-    endpoints (api.deepseek.com, api.openai.com, ...) only send ``X-Session-Id``
-    — never fake opencode* headers on vendor APIs, even if a path segment
-    happens to contain ``go``/``zen``.
+    Gateway base URLs (``opencode.ai`` hosts, or dedicated ``zen``/``go``
+    gateway hosts) send ``x-opencode-session`` + ``x-session-affinity`` +
+    ``X-Session-Id`` together.  Direct official endpoints only send
+    ``X-Session-Id`` — never fake opencode* headers on vendor APIs, even if
+    a path segment happens to contain ``go``/``zen``.
     """
     session_headers = {"X-Session-Id": str(session_id)}
     try:
-        host = urlsplit(str(base_url or "")).netloc.casefold()
+        netloc = urlsplit(str(base_url or "")).netloc.casefold()
     except Exception:  # noqa: BLE001 - malformed URLs default to direct
-        host = ""
-    if "opencode.ai" in host:
+        netloc = ""
+    hostname = netloc.split(":")[0]
+    is_gateway = (
+        "opencode.ai" in netloc
+        or hostname in ("zen", "go")
+        or hostname.startswith("zen.")
+        or hostname.startswith("go.")
+    )
+    if is_gateway:
         session_headers["x-opencode-session"] = str(session_id)
         session_headers["x-session-affinity"] = str(session_id)
     return session_headers
