@@ -52,6 +52,7 @@ from RxyCode.RxyCode1_1_0.core.prompts import (
     get_role_prompt,
     get_system_prompt,
 )
+from RxyCode.RxyCode1_1_0.core.prompts.registry import get_system_s2
 from RxyCode.RxyCode1_1_0.core.research_policy import (
     ResearchPolicy,
     extract_research_query,
@@ -3317,10 +3318,12 @@ class AgentV2:
                 "distinguish uncertainty, and cite only these exact source URLs:\n"
                 f"{source_list}"
             )
-            # B2 (CB1/CB7): research_contract 是每请求动态内容，绝不允许改写
-            # messages[0]（system 前缀）——否则缓存前缀每请求逐字节变化、命中归零。
-            # 作为独立 SystemMessage 追加到断点之后（system 保持头部不动）。
-            messages.append(SystemMessage(content=research_contract))
+            # FXC3: research_contract 是每请求动态内容，绝不允许改写
+            # messages[0]（S1 前缀），也禁止第二条会变的 SystemMessage。
+            # 作为 user 快照追加（system 保持头部不动）。
+            messages.append(
+                HumanMessage(content=get_system_s2(research_contract=research_contract))
+            )
             messages.append(AIMessage(
                 content="",
                 tool_calls=[call for call, _url, _content in verified_fetches],
