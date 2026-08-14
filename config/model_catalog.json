@@ -9,7 +9,7 @@
       "model_max_output_tokens": 384000,
       "source": "phase-a:deepseek",
       "source_url": "https://api-docs.deepseek.com/guides/thinking_mode",
-      "as_of": "2026-08-13",
+      "as_of": "2026-08-14",
       "cache_contract": {
         "cache_mode": "auto",
         "cache_hit_discount": 0.02,
@@ -40,7 +40,7 @@
       "model_max_output_tokens": 384000,
       "source": "phase-a:deepseek",
       "source_url": "https://api-docs.deepseek.com/guides/thinking_mode",
-      "as_of": "2026-08-13",
+      "as_of": "2026-08-14",
       "cache_contract": {
         "cache_mode": "auto",
         "cache_hit_discount": 0.008,
@@ -353,7 +353,7 @@
       "model_max_output_tokens": null,
       "source": "phase-a:mimo",
       "source_url": "https://api.xiaomimimo.com",
-      "as_of": "2026-08-02",
+      "as_of": "2026-08-14",
       "cache_contract": {
         "cache_mode": "auto",
         "cache_hit_discount": 0.008,
@@ -387,7 +387,7 @@
       "model_max_output_tokens": null,
       "source": "phase-a:mimo",
       "source_url": "https://api.xiaomimimo.com",
-      "as_of": "2026-08-02",
+      "as_of": "2026-08-14",
       "cache_contract": {
         "cache_mode": "auto",
         "cache_hit_discount": 0.02,
@@ -547,7 +547,7 @@
       "model_max_output_tokens": null,
       "source": "phase-a:grok",
       "source_url": "https://api.x.ai",
-      "as_of": "2026-08-02",
+      "as_of": "2026-08-14",
       "cache_contract": {
         "cache_mode": "auto",
         "cache_hit_discount": 0.15,
@@ -578,7 +578,7 @@
       "model_max_output_tokens": null,
       "source": "phase-a:grok",
       "source_url": "https://api.x.ai",
-      "as_of": "2026-08-02",
+      "as_of": "2026-08-14",
       "cache_contract": {
         "cache_mode": "auto",
         "cache_hit_discount": 0.2,
