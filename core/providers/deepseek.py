@@ -42,10 +42,13 @@ _DEEPSEEK_USAGE = UsageFieldMap(
     reasoning=("reasoning_content",),
 )
 
-# §7.1：v4-flash / v4-pro 均为 1M context；max output 384K；compaction ≈90%
+# FXC4: v4-flash / v4-pro 均为 1M context；max output 384K；compaction 更晚
+# （0.97× 窗口 ≈ 1_017_118），旧 90% 点（943_718）不再提前 compact。
+# DeepSeek 磁盘 TTL 为小时到天级，5 分钟空 keep-alive 是 Anthropic 补偿，
+# DeepSeek 默认不启用 keep-alive（keep_alive_enabled 默认 False）。
 _CONTEXT_WINDOW = 1_048_576
 _MAX_OUTPUT = 384_000
-_COMPACTION_THRESHOLD = 943_718
+_COMPACTION_THRESHOLD = int(1_048_576 * 0.97)
 
 # §7.1 问 7：定价分条（USD / 1M；as_of=2026-08-02；source_url=S2）。
 # 缓存写入价：无单独写入价（自动磁盘缓存）→ None。
@@ -178,7 +181,9 @@ class DeepSeekProvider(BaseProvider):
                         "deep": "max",
                     },
                     effort_options=("low", "high", "max"),
-                    cache_min_block_tokens=64,
+                    # FXC4: cache_min_block_tokens V4 口径（256 分桶、约 1024
+                    # 起步）；短 pipeline 低命中不算 bug，不再是 64
+                    cache_min_block_tokens=1024,
                     cache_ttl_s=None,
                     cache_breakpoints=(),
                 )

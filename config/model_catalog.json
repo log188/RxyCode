@@ -22,7 +22,8 @@
           "cache_read": null,
           "cache_creation": null,
           "cost_ticks": null,
-          "reasoning": null
+          "reasoning": null,
+          "cached_alt": "prompt_cache_hit_tokens"
         },
         "reasoning_contract": "mandatory_echo",
         "thinking_param": {
@@ -53,7 +54,8 @@
           "cache_read": null,
           "cache_creation": null,
           "cost_ticks": null,
-          "reasoning": null
+          "reasoning": null,
+          "cached_alt": "prompt_cache_hit_tokens"
         },
         "reasoning_contract": "mandatory_echo",
         "thinking_param": {

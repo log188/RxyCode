@@ -107,6 +107,22 @@ from .providers.tokenizers import count_tokens
 _logger = logging.getLogger(__name__)
 
 
+def build_session_headers(base_url: str, session_id: str) -> dict[str, str]:
+    """FXC4 · session affinity headers.
+
+    Go/Zen gateways (``opencode.ai`` / ``zen`` / ``go`` hosts) keep cache
+    hits on one replica: send ``x-opencode-session`` + ``x-session-affinity``
+    + ``X-Session-Id`` together.  Direct official endpoints only send
+    ``X-Session-Id`` — never fake opencode* headers on vendor APIs.
+    """
+    session_headers = {"X-Session-Id": str(session_id)}
+    host = str(base_url or "").casefold()
+    if "opencode.ai" in host or "/zen" in host or "/go" in host:
+        session_headers["x-opencode-session"] = str(session_id)
+        session_headers["x-session-affinity"] = str(session_id)
+    return session_headers
+
+
 def _get_recovery_tracker():
     """Return a real request-local tracker, never a legacy compatibility hook.
 
@@ -1679,7 +1695,20 @@ class AgentV2:
         # 2026-08-13: ChatOpenAI 懒导入（顶层导入拖慢 worker bootstrap 6.5s）
         from langchain_openai import ChatOpenAI  # noqa: PLC0415 - 懒导入避免 torch 链
 
-        raw_llm = ChatOpenAI(**provider.llm_kwargs(model_config, caps))
+        llm_kwargs = provider.llm_kwargs(model_config, caps)
+        # FXC4: session affinity headers keep gateway cache hits on one replica
+        # (opencode.ai/zen/go gateways) and X-Session-Id on direct endpoints.
+        headers = build_session_headers(
+            str(model_config.get("base_url") or ""),
+            str(self._session_id or ""),
+        )
+        if headers:
+            llm_kwargs["default_headers"] = {
+                **(llm_kwargs.get("default_headers") or {}),
+                **headers,
+            }
+
+        raw_llm = ChatOpenAI(**llm_kwargs)
 
         return UsageTrackingLLM(
             raw_llm,
