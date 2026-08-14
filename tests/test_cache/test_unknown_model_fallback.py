@@ -37,6 +37,52 @@ def test_unknown_fallback_contract_is_documented_and_explicit():
     assert fb.get("cache_mode") == "auto"  # implicit prefix, never explicit
     assert fb.get("breakpoints_max") == 0
     assert fb.get("prompt_cache_key_required") is False
+    assert fb.get("prompt_variant") == "default"
+    assert fb.get("protocol") == "openai-compatible"
+
+
+def test_unknown_fallback_forces_default_variant_in_raw_stream():
+    """FXC6 R1: an unknown model with a non-default variant capability is
+    forced back to the default variant by the injection layer (fallback rule
+    1), instead of raising or guessing."""
+    import asyncio
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    captured: dict = {}
+
+    class FakeClient:
+        def create(self, **payload):
+            captured["payload"] = payload
+            raise RuntimeError("stop-after-capture")
+
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        provider="unknown",
+        prompt_variant="guessed-variant",  # would be an id-based guess
+        supports_function_calling=True,
+    )
+    agent = object.__new__(AgentV2)
+    agent._session_id = "sess-fxc6"
+    agent._llm = SimpleNamespace()
+    agent._rate_limiter = None
+    agent.model_config = {"model_name": "totally-mystery", "timeout": 5.0}
+    agent._capabilities = caps
+    agent._provider = None
+    agent._resolve_request_max_tokens = lambda _n: 2048
+    agent._openai_client = lambda: FakeClient()
+    sys_msg = SimpleNamespace(type="system", content="SYS", additional_kwargs={})
+    user_msg = SimpleNamespace(type="human", content="hi", additional_kwargs={})
+    try:
+        asyncio.run(agent._raw_stream([sys_msg, user_msg], tools=None).__anext__())
+    except RuntimeError as exc:
+        if "stop-after-capture" not in str(exc):
+            raise
+    # fallback rule 1: variant forced to default, never guessed by id
+    assert getattr(agent._capabilities, "prompt_variant", None) == "default"
 
 
 def test_unknown_never_injects_control_or_key():

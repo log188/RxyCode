@@ -2592,8 +2592,30 @@ class AgentV2:
             payload.setdefault("extra_body", {})["prompt_cache_key"] = (
                 self._prompt_cache_key_value()
             )
+        # FXC6: 未知模型（contract is None）走五条 fallback——**强制** default
+        # variant + openai-compatible 协议（fallback 是行为，不抛错）；
+        # cache_control / prompt_cache_key 由 injects_* 对 None 恒 False 保证
+        # 不发；tools 排序 + session 头照旧（B2 / FXC4）。
+        caps = getattr(self, "_capabilities", None)
+        if contract is None:
+            from .catalog import unknown_fallback_contract
+
+            fb = unknown_fallback_contract()
+            if fb.get("cache_mode") != "auto":
+                raise AssertionError(
+                    "unknown fallback must stay implicit (cache_mode=auto)"
+                )
+            fb_variant = str(fb.get("prompt_variant") or "default")
+            if caps is not None:
+                from dataclasses import replace as _dc_replace
+
+                caps_variant = str(getattr(caps, "prompt_variant", "") or "")
+                if caps_variant != fb_variant:
+                    # fallback rule 1: force the default variant so an unknown
+                    # model never inherits a guessed variant
+                    caps = _dc_replace(caps, prompt_variant=fb_variant)
+                    self._capabilities = caps
         if tools:
-            caps = getattr(self, "_capabilities", None)
             if caps is not None and not caps.supports_function_calling:
                 raise ValueError(
                     f"model {self.model_config.get('model_name', '?')} does not support "
@@ -2601,32 +2623,9 @@ class AgentV2:
                     "capabilities.supports_function_calling is False"
                 )
             payload["tools"] = [self._tool_to_openai(t) for t in tools]
-            # FXC2/FXC6: 显式族只给最后一个 tool 打点；隐式/未知绝不打 cache_control。
-            # 未知模型（contract is None）按 unknown_fallback_contract() 五条
-            # 处理：不发 cache_control、不发 prompt_cache_key、tools 排序 + session
-            # 头照旧（FXC4）、default variant + openai-compatible。
-            from .catalog import injects_cache_control, unknown_fallback_contract
+            # FXC2: 显式族只给最后一个 tool 打点；隐式/未知绝不打 cache_control。
+            from .catalog import injects_cache_control
 
-            if contract is None:
-                # FXC6: 显式应用五条 fallback（隐式前缀，零注入）——校验当前
-                # caps/provider 与 unknown_fallback_contract() 一致：default
-                # variant + openai-compatible 协议。
-                fb = unknown_fallback_contract()
-                if fb.get("cache_mode") != "auto":
-                    raise AssertionError(
-                        "unknown fallback must stay implicit (cache_mode=auto)"
-                    )
-                fb_variant = str(fb.get("prompt_variant") or "default")
-                caps_variant = str(getattr(caps, "prompt_variant", "") or "")
-                if caps_variant and caps_variant != fb_variant:
-                    raise AssertionError(
-                        f"unknown model must use default variant, got "
-                        f"{caps_variant!r} (fallback={fb_variant!r})"
-                    )
-                if str(fb.get("protocol") or "") != "openai-compatible":
-                    raise AssertionError(
-                        "unknown fallback protocol must stay openai-compatible"
-                    )
             if injects_cache_control(contract) and payload["tools"]:
                 last_tool = payload["tools"][-1]
                 if isinstance(last_tool, dict):
