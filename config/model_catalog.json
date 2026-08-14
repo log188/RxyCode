@@ -603,6 +603,37 @@
         "temperature_override": null,
         "prompt_cache_key_required": false
       }
+    },
+    {
+      "provider_id": "qwen",
+      "model_id": "qwen3.7-plus",
+      "model_context_window": 1000000,
+      "model_max_output_tokens": 65536,
+      "source": "qwen3.7-plus (official mainline, Phase A Q6) - FXC1 catalog supplement",
+      "source_url": "https://help.aliyun.com/zh/model-studio",
+      "as_of": "2026-08-14",
+      "cache_contract": {
+        "cache_mode": "explicit_breakpoints",
+        "cache_hit_discount": 0.1,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": 1024,
+        "breakpoints_max": 4,
+        "breakpoint_lookback": 20,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": "cache_creation_input_tokens",
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "no_thinking",
+        "thinking_param": {
+          "type": "object",
+          "sample": "enable_thinking: true|false"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
     }
   ],
   "families": [
