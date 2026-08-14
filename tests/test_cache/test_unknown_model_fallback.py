@@ -242,7 +242,7 @@ def test_unknown_model_request_sends_session_affinity_header(monkeypatch):
     assert not any("x-opencode-session" in k.casefold() for k in h)
 
 
-def test_unknown_model_five_points_on_raw_stream_path():
+def test_unknown_model_five_points_on_raw_stream_path(monkeypatch):
     """Five-point fallback exercised on the real _raw_stream injection path:
     contract None -> default variant + openai-compatible shape + no
     cache_control + no prompt_cache_key + sorted tools. (Session header lives
@@ -259,6 +259,14 @@ def test_unknown_model_five_points_on_raw_stream_path():
 
     reset_contract_cache()
     assert get_contract("no-such", "mystery") is None  # rule 0: no contract
+
+    # prove the injection layer actually receives None: pin get_contract to
+    # return None for this model on the real _raw_stream path
+    import RxyCode.RxyCode1_1_0.core.agent_v2 as _av2
+
+    monkeypatch.setattr(
+        _av2, "_owner_cache_contract", lambda owner: None
+    )
 
     captured: dict = {}
 
@@ -305,6 +313,13 @@ def test_unknown_model_five_points_on_raw_stream_path():
     # rule 4: tools sorted by name
     names = [t.get("function", {}).get("name", "") for t in (captured["payload"].get("tools") or [])]
     assert names == sorted(names)
+    # rule 4 (headers): session affinity header shape for an unknown vendor
+    # base_url (carried by the HTTP client layer, FXC4 production path)
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import build_session_headers
+
+    hdr = build_session_headers("https://api.unknown-vendor.example/v1", "sess-fxc6")
+    assert hdr.get("X-Session-Id") == "sess-fxc6"
+    assert "x-opencode-session" not in hdr  # never faked on vendor hosts
 
 
 def test_unknown_model_full_wire_has_no_key_or_control():
