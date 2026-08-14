@@ -145,8 +145,8 @@ def test_run_does_not_schedule_competing_prewarm():
 
 def test_run_does_not_await_in_flight_mcp_refresh():
     src = inspect.getsource(AgentV2.run)
-    assert "is_alive" in src and "_mcp_refresh_thread" in src
-    assert "_mcp_refresh_needed_now" in src
+    assert "_schedule_mcp_refresh" in src
+    assert "asyncio.to_thread" not in src
 
 
 def test_declines_tools_skips_mcp_refresh_on_turn():

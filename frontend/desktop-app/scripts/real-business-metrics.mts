@@ -1,3 +1,5 @@
+import { relative, resolve } from 'node:path'
+
 export interface UsageSample {
   input_tokens: number | null
   output_tokens: number | null
@@ -16,6 +18,27 @@ export function isMeaningfulProtocolEvent(message: Record<string, any>): boolean
     text.includes('build in progress') ||
     text.includes('\u6b63\u5728\u7b49\u5f85\u6a21\u578b\u54cd\u5e94')
   )
+}
+
+export function hasInFlightTool(
+  messages: Array<Record<string, any>>,
+  sessionId: string,
+  atMs: number,
+  untilMs?: number
+): boolean {
+  const open = new Set<string>()
+  for (const message of messages) {
+    const method = String(message.method ?? '')
+    const sid = String(message.params?.session_id ?? '')
+    const at = Number(message.__at_ms)
+    if (sid !== sessionId || !Number.isFinite(at)) continue
+    if (untilMs !== undefined && at >= untilMs) continue
+    const callId = String(message.params?.call_id ?? '')
+    if (!callId) continue
+    if (method === 'event/tool_begin' && at <= atMs) open.add(callId)
+    if (method === 'event/tool_end' && at <= atMs) open.delete(callId)
+  }
+  return open.size > 0
 }
 
 export interface UsageSummary {
@@ -59,6 +82,37 @@ export function terminalOutcomeIssue(status: string, finalAnswer: string): strin
     return 'succeeded task has no non-empty Final Answer'
   }
   return null
+}
+
+export const requiredWebDeliverables = ['index.html', 'README.md', 'TEST-REPORT.md'] as const
+
+export function missingWebDeliverables(files: string[]): string[] {
+  const names = new Set(files.map((file) => file.replace(/\\/g, '/').split('/').pop() ?? file))
+  return requiredWebDeliverables.filter((file) => !names.has(file))
+}
+
+export function playProbeUrl(argv: string[]): string | undefined {
+  return argv.find((arg) => arg.startsWith('http://') || arg.startsWith('https://'))
+}
+
+export function staticFilePath(root: string, requestUrl: string): string | null {
+  const rel = decodeURIComponent(String(requestUrl.split('?')[0] ?? '')).replace(/^[/\\]+/, '') || 'index.html'
+  if (rel.split(/[/\\]/).includes('..')) return null
+  const resolved = resolve(root, rel)
+  const back = relative(resolve(root), resolved)
+  if (back.startsWith('..') || back.split(/[/\\]/).includes('..')) return null
+  return resolved
+}
+
+export function parseHudScore(text: string): number {
+  const n = Number(String(text).replace(/[^0-9.-]/g, ''))
+  return Number.isFinite(n) ? n : 0
+}
+
+export function gameEnteredPlayableState(state: string, score: number): boolean {
+  if (parseHudScore(String(score)) > 0) return true
+  if (Number(score) > 0) return true
+  return /running|playing|\brun\b|运行|进行|游玩/i.test(state)
 }
 
 export interface LayoutElement {

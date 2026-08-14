@@ -2216,6 +2216,28 @@ class AgentV2:
             caps = DEFAULT_CAPABILITIES
         return provider.extract_reasoning(delta, caps) or ""
 
+    def _stream_chunk_is_useful(self, chunk) -> bool:
+        """True when a stream chunk can surface thinking, text, or a tool call.
+
+        Empty SSE keepalives must not count as the first packet: they used to
+        cancel the first-chunk wait, after which a hang never timed out and the
+        thinking panel stayed empty until the watchdog killed the job.
+        """
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            return False
+        delta = getattr(choices[0], "delta", None)
+        if delta is None:
+            return False
+        if getattr(delta, "content", None):
+            return True
+        if getattr(delta, "tool_calls", None):
+            return True
+        if self._provider_reasoning(delta):
+            return True
+        extra = getattr(delta, "reasoning_content", None) or ""
+        return bool(extra)
+
     def _prompt_variant(self) -> str:
         """A9: variant selector from current model capabilities."""
         caps = getattr(self, "_capabilities", None)
@@ -2985,6 +3007,9 @@ class AgentV2:
             self.model_config.get("timeout", 90.0),
             self.model_config.get("stream_idle_timeout"),
         )
+        tui = get_tui()
+        if tui and hasattr(tui, "write_progress"):
+            tui.write_progress("正在连接模型…")
         _logger.info(
             "llm_stream_policy seq=%d idle_timeout=%.1fs",
             request_seq,
@@ -3019,15 +3044,11 @@ class AgentV2:
                     _open_provider_stream(), timeout=first_chunk_timeout
                 )
             ait = agen.__aiter__()
-            first_wait = True
+            useful_deadline = time.monotonic() + first_chunk_timeout
+            got_useful = False
             while True:
                 try:
-                    if first_wait:
-                        chunk = await asyncio.wait_for(
-                            ait.__anext__(), timeout=first_chunk_timeout
-                        )
-                        first_wait = False
-                    else:
+                    if got_useful:
                         # A provider may send a partial assistant/tool-call
                         # response and then stop yielding without closing the
                         # SSE stream. Bound every subsequent gap as well; the
@@ -3036,6 +3057,15 @@ class AgentV2:
                         chunk = await asyncio.wait_for(
                             ait.__anext__(), timeout=stream_idle_timeout
                         )
+                    else:
+                        remaining = useful_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise asyncio.TimeoutError(
+                                "timed out waiting for first useful stream chunk"
+                            )
+                        chunk = await asyncio.wait_for(
+                            ait.__anext__(), timeout=remaining
+                        )
                 except StopAsyncIteration:
                     break
                 except asyncio.TimeoutError as exc:
@@ -3043,26 +3073,27 @@ class AgentV2:
                         "provider stopped producing stream events before the idle deadline"
                     ) from exc
                 _stream_chunks += 1
-                # B8/luna R1-4/R2-1: 首个**含内容**的 chunk 到达即记录 TTFT
-                # （空 chunk/keepalive 不计数）；局部标志，每请求独立。
-                if _ttft_start is not None and not _ttft_recorded:
-                    choices = getattr(chunk, "choices", None) or []
-                    if choices:
-                        delta = getattr(choices[0], "delta", None)
-                        content = getattr(delta, "content", "") or ""
-                        _stream_content_chars += len(content)
-                        reasoning_text = self._provider_reasoning(delta) or ""
-                        _stream_reasoning_chars += len(reasoning_text)
-                        for tc_delta in getattr(delta, "tool_calls", None) or []:
-                            fn = getattr(tc_delta, "function", None)
-                            if fn is not None:
-                                _stream_tool_argument_chars += len(
-                                    str(getattr(fn, "arguments", "") or "")
-                                )
-                        if content:
-                            _ttft_recorded = True
-                            token_stats.record_ttft(
-                                (time.monotonic() - _ttft_start) * 1000
+                # First useful packet = reasoning, visible text, or tool_calls.
+                # Empty keepalives must not start the idle-timeout window.
+                if self._stream_chunk_is_useful(chunk):
+                    if _ttft_start is not None and not _ttft_recorded:
+                        _ttft_recorded = True
+                        token_stats.record_ttft(
+                            (time.monotonic() - _ttft_start) * 1000
+                        )
+                    got_useful = True
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
+                    delta = getattr(choices[0], "delta", None)
+                    content = getattr(delta, "content", "") or ""
+                    _stream_content_chars += len(content)
+                    reasoning_text = self._provider_reasoning(delta) or ""
+                    _stream_reasoning_chars += len(reasoning_text)
+                    for tc_delta in getattr(delta, "tool_calls", None) or []:
+                        fn = getattr(tc_delta, "function", None)
+                        if fn is not None:
+                            _stream_tool_argument_chars += len(
+                                str(getattr(fn, "arguments", "") or "")
                             )
                 if _ttft_start is not None and not _first_stream_event_logged:
                     _logger.info(
@@ -5346,6 +5377,15 @@ class AgentV2:
         Read-only probes (webfetch/websearch/read/grep/glob/...) are attempts
         and may legitimately fail while the task still completes.
 
+        Bash is special: it is statically WRITE because a shell *can* mutate
+        state, but agents routinely use it for version probes, syntax checks,
+        and smoke tests. A failed non-DANGER bash command is therefore not
+        critical on its own when the run also produced a verified write — the
+        model already saw the exit code and either recovered or documented it.
+        A bash failure with no successful write still overrides, so
+        ``python script.py`` crashing as the only action cannot be claimed as
+        success. DANGER bash still overrides.
+
         Controlled runtime outcomes (tool timeout / mid-tool cancel) are not
         treated as critical: the agent may be probing limits or recovering by
         documenting the timeout. Hard command errors still override.
@@ -5358,7 +5398,11 @@ class AgentV2:
             or (item.get("result") if isinstance(item, dict) else "")
             or ""
         ).lower()
-        if "timed out after" in result or "cancelled: tool" in result:
+        if (
+            "timed out after" in result
+            or "timeout after" in result
+            or "cancelled: tool" in result
+        ):
             return False
         # Artifact validation against a path that was never required should not
         # keep a timeout-only bash failure critical; handled via detail above.
@@ -5366,6 +5410,25 @@ class AgentV2:
         if not risk and isinstance(item, dict):
             risk = str(item.get("risk") or "").strip().upper()
         return risk in {"WRITE", "DANGER"} or not risk
+
+    @staticmethod
+    def _evidence_tool_name(item) -> str:
+        name = getattr(item, "tool", None)
+        if not name and isinstance(item, dict):
+            name = item.get("tool")
+        return str(name or "").strip().lower()
+
+    @classmethod
+    def _evidence_bash_failure_is_attempt(cls, item, *, has_verified_write: bool) -> bool:
+        """True when a failed bash record must not discard a completed write."""
+        if cls._evidence_tool_name(item) != "bash":
+            return False
+        risk = str(getattr(item, "risk", "") or "").strip().upper()
+        if not risk and isinstance(item, dict):
+            risk = str(item.get("risk") or "").strip().upper()
+        if risk == "DANGER":
+            return False
+        return has_verified_write
 
     @staticmethod
     def _evidence_has_artifact_issue(item) -> bool:
@@ -5426,28 +5489,10 @@ class AgentV2:
         # Agent or API restart.  Process startup stays off the event loop.
         if getattr(self, "_tool_orchestrator", None) is not None:
             if not self._should_skip_mcp_refresh(user_input):
-                # A server handshake can take seconds.  The constructor has
-                # already scheduled the first refresh.  An in-flight initial
-                # refresh is never awaited.  If configuration changed after a
-                # previous refresh (for example download_mcp), preserve the
-                # hot-load contract and wait for that one refresh only.
-                thread = getattr(self, "_mcp_refresh_thread", None)
-                if thread is not None and thread.is_alive():
-                    # Do not wait on the very first refresh (its fingerprint
-                    # is still unset), but do finish a later repair when a
-                    # disconnected MCP client is the reason for the wait.
-                    if (
-                        getattr(self, "_mcp_config_fingerprint", None) is not None
-                        and self._mcp_refresh_needed_now()
-                    ):
-                        await asyncio.to_thread(thread.join, 30.0)
-                        if self._mcp_refresh_needed_now():
-                            await asyncio.to_thread(self._refresh_mcp_tools)
-                else:
-                    if self._mcp_refresh_needed_now():
-                        await asyncio.to_thread(self._refresh_mcp_tools)
-                    else:
-                        self._schedule_mcp_refresh()
+                # Never await MCP on the user turn: a hung optional server used
+                # to consume the watchdog before the first thinking token.
+                # Background refresh is enough for the next turn.
+                self._schedule_mcp_refresh()
         _logger.info(
             "run_stage=mcp_ready elapsed_ms=%d",
             int((time.monotonic() - run_stage_started) * 1000),
@@ -5727,17 +5772,23 @@ class AgentV2:
             # A failed read-only probe (websearch/webfetch/read/grep/...) is an
             # *attempt*, not a verdict: the model may legitimately retry with a
             # different source or strategy and still complete the task. Only
-            # critical failures — WRITE/DANGER tools, or artifact-validation
-            # failures on files the task actually wrote — are authoritative and
-            # override the answer. Otherwise a single 404 during web research
-            # would discard a fully completed, well-sourced answer.
+            # critical failures — mutating WRITE/DANGER tools, or artifact
+            # validation failures on files the task actually wrote — are
+            # authoritative and override the answer. A failed bash smoke test
+            # or version probe must not discard files that were already written.
+            has_verified_write = has_verified_side_effect(evidence)
             critical_failures = [
                 item
                 for item in evidence
                 if item.status == "failed"
                 and (
-                    self._evidence_is_critical(item)
-                    or self._evidence_has_artifact_issue(item)
+                    self._evidence_has_artifact_issue(item)
+                    or (
+                        self._evidence_is_critical(item)
+                        and not self._evidence_bash_failure_is_attempt(
+                            item, has_verified_write=has_verified_write
+                        )
+                    )
                 )
             ]
             if critical_failures:

@@ -82,6 +82,9 @@ class TestShellExecutor:
 
         assert shell == "powershell"
         assert "Get-Command java" in translated
+        assert "Get-Command chrome,2" not in executor.translate_command("where chrome 2>&1")[0]
+        assert "Get-Command chrome" in executor.translate_command("where chrome 2>&1")[0]
+        assert "2>&1" in executor.translate_command("where chrome 2>&1")[0]
         assert "[Environment]::OSVersion.VersionString" in translated
         assert "Get-ChildItem -Path . -Recurse -Directory -Filter 'bin'" in translated
 

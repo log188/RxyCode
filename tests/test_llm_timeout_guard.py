@@ -41,6 +41,22 @@ class FakeHangingStream:
         await asyncio.Event().wait()  # hangs forever
 
 
+class _FakeTui:
+    def __init__(self):
+        self.progress: list[str] = []
+        self.reasoning: list[str] = []
+        self.tokens: list[str] = []
+
+    def write_progress(self, msg):
+        self.progress.append(msg)
+
+    def write_reasoning(self, msg):
+        self.reasoning.append(msg)
+
+    def stream_token(self, tok):
+        self.tokens.append(tok)
+
+
 class StreamHolder:
     """Plain holder so astream() returns an object whose __aiter__ is real."""
 
@@ -222,6 +238,160 @@ class TestRawStreamFirstChunkTimeout:
                 )
         elapsed = asyncio.get_event_loop().time() - start
         assert elapsed < 6.0
+
+    async def test_empty_keepalive_then_hang_times_out(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        from langchain_core.messages import HumanMessage
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+
+        empty = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="", reasoning_content="", tool_calls=None
+                    )
+                )
+            ]
+        )
+
+        class EmptyThenHang:
+            def __init__(self):
+                self.n = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                self.n += 1
+                if self.n == 1:
+                    return empty
+                await asyncio.Event().wait()
+
+        class Completions:
+            async def create(self, **_kwargs):
+                return EmptyThenHang()
+
+        tui = _FakeTui()
+        monkeypatch.setattr(agent_v2, "get_tui", lambda: tui)
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {"timeout": 1.0, "model_name": "x", "temperature": 0}
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = None
+        agent._capabilities = None
+        agent._openai_client = lambda: Completions()
+
+        async def drain() -> None:
+            async for _chunk in agent._raw_stream(
+                [HumanMessage(content="hi")], max_tokens=1
+            ):
+                pass
+
+        start = asyncio.get_event_loop().time()
+        try:
+            await asyncio.wait_for(drain(), timeout=8.0)
+            pytest.fail("empty keepalive cancelled the useful-first-chunk timeout")
+        except (asyncio.TimeoutError, TimeoutError):
+            elapsed = asyncio.get_event_loop().time() - start
+            if elapsed >= 7.0:
+                pytest.fail("hang after empty chunk was unbounded")
+        elapsed = asyncio.get_event_loop().time() - start
+        assert elapsed < 6.0
+        assert tui.progress and tui.progress[0] == "正在连接模型…"
+
+    async def test_reasoning_counts_as_useful_and_records_ttft(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        from langchain_core.messages import HumanMessage
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+        recorded: list[float] = []
+        monkeypatch.setattr(
+            agent_v2.token_stats, "record_ttft", lambda ms: recorded.append(ms)
+        )
+
+        chunks = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="", reasoning_content="", tool_calls=None
+                        )
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="",
+                            reasoning_content="先看需求",
+                            tool_calls=None,
+                        )
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="好的", reasoning_content="", tool_calls=None
+                        )
+                    )
+                ]
+            ),
+        ]
+
+        class SeqStream:
+            def __init__(self):
+                self.n = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.n >= len(chunks):
+                    raise StopAsyncIteration
+                item = chunks[self.n]
+                self.n += 1
+                return item
+
+        class Completions:
+            async def create(self, **_kwargs):
+                return SeqStream()
+
+        tui = _FakeTui()
+        monkeypatch.setattr(agent_v2, "get_tui", lambda: tui)
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {"timeout": 5.0, "model_name": "x", "temperature": 0}
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = None
+        agent._capabilities = None
+        agent._openai_client = lambda: Completions()
+
+        got = []
+        async for chunk in agent._raw_stream(
+            [HumanMessage(content="hi")], max_tokens=1
+        ):
+            got.append(chunk)
+        assert len(got) == 3
+        assert recorded, "TTFT must record on first reasoning chunk"
+        assert agent._stream_chunk_is_useful(chunks[0]) is False
+        assert agent._stream_chunk_is_useful(chunks[1]) is True
+        assert tui.progress and tui.progress[0] == "正在连接模型…"
 
     async def test_partial_stream_cannot_wait_forever_for_next_chunk(self, monkeypatch):
         """A response that starts and then goes silent has its own deadline."""

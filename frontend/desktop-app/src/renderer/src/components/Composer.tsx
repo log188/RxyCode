@@ -11,6 +11,7 @@ interface ComposerProps {
   onSend: (text: string) => void
   onStop: () => void
   models: ModelEntry[]
+  modelsLoading?: boolean
   selectedModelId: string
   onSelectModel: (modelId: string) => void
   permissionMode: PermissionMode
@@ -29,6 +30,7 @@ function Composer({
   onSend,
   onStop,
   models,
+  modelsLoading = false,
   selectedModelId,
   onSelectModel,
   permissionMode,
@@ -135,7 +137,7 @@ function Composer({
                 onChange={(event) => onSelectModel(event.target.value)}
               >
                 {models.length === 0 ? (
-                  <option value="">No configured models</option>
+                  <option value="">{modelsLoading ? 'Loading models…' : 'No configured models'}</option>
                 ) : (
                   groups.map(([group, entries]) => (
                     <optgroup key={group} label={group}>

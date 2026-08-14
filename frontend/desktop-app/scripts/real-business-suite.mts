@@ -1,11 +1,32 @@
 #!/usr/bin/env node
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DesktopCdpHarness, repositoryDir, waitFor, type CleanupProof } from './cdp-harness.mts'
-import { buildBatchPrompts, realBusinessScenarios, type RealBusinessScenario } from './real-business-scenarios.mts'
-import { aggregateUsage, evaluateLayoutSnapshot, isMeaningfulProtocolEvent, terminalOutcomeIssue, type UsageSample, type UsageSummary } from './real-business-metrics.mts'
+import { DesktopCdpHarness, desktopAppDir, repositoryDir, selectRendererTarget, waitFor, type CleanupProof } from './cdp-harness.mts'
+import { buildBatchPrompts, buildMissingFileRepairPrompt, parseMissingFilenames, realBusinessScenarios, type RealBusinessScenario } from './real-business-scenarios.mts'
+import {
+  aggregateUsage,
+  evaluateLayoutSnapshot,
+  gameEnteredPlayableState,
+  isMeaningfulProtocolEvent,
+  missingWebDeliverables,
+  terminalOutcomeIssue,
+  hasInFlightTool,
+  type UsageSample,
+  type UsageSummary
+} from './real-business-metrics.mts'
 
 type Batch = 'A' | 'B'
 type ProtocolMessage = Record<string, any> & { __at_ms?: number }
@@ -192,7 +213,8 @@ function eventTiming(messages: ProtocolMessage[], startedAt: number, sessionId: 
   const gaps: number[] = []
   for (let index = 1; index < eventTimes.length; index += 1) {
     const gap = eventTimes[index]! - eventTimes[index - 1]!
-    if (gap > 10_000) gaps.push(gap)
+    const previousAt = Number(events[index - 1]!.__at_ms)
+    if (gap > 10_000 && !hasInFlightTool(messages, sessionId, previousAt, Number(events[index]!.__at_ms))) gaps.push(gap)
   }
   const timing: RealBusinessResult['timing'] = {
     wall_ms: Math.max(0, Date.now() - startedAt),
@@ -220,6 +242,16 @@ function copyTree(source: string, target: string): string[] {
     }
   }
   return files
+}
+
+function persistPlayProbe(source: string, batchDir: string, scenarioId: string): void {
+  const destDir = join(batchDir, 'probes')
+  mkdirSync(destDir, { recursive: true })
+  for (const name of ['.rxy-play-probe.json', '.rxy-play-probe.png']) {
+    const from = join(source, name)
+    if (!existsSync(from)) continue
+    cpSync(from, join(destDir, `${scenarioId}${name}`))
+  }
 }
 
 function listFiles(root: string): string[] {
@@ -328,6 +360,20 @@ async function setPermission(harness: DesktopCdpHarness, mode: 'auto_edit' | 'fu
   await waitFor(async () => await harness.evaluate<boolean>(`document.querySelector('[data-testid="composer-permission-mode"]')?.value === ${JSON.stringify(mode)}`) ? true : null, 5_000, `permission mode ${mode}`)
 }
 
+async function stopActiveTask(harness: DesktopCdpHarness, sessionId: string): Promise<void> {
+  await harness.evaluate('document.querySelector("[data-testid=\\"composer-stop\\"]")?.click()')
+  try {
+    await waitFor(async () => await harness.evaluate<boolean>(`(() => {
+      const state = document.querySelector('[data-testid="session-${sessionId}"] .session-state')?.className ?? '';
+      const terminal = /state-(failed|cancelled|timed_out|succeeded|queued)/.test(state);
+      const stop = document.querySelector('[data-testid="composer-stop"]');
+      return terminal && stop == null;
+    })()`) ? true : null, 15_000, 'GUI stop before next prompt')
+  } catch {
+    // Cleanup still records pending RPCs. Do not hide a stuck Stop by waiting forever.
+  }
+}
+
 async function submitPrompt(
   harness: DesktopCdpHarness,
   prompt: string,
@@ -337,20 +383,21 @@ async function submitPrompt(
   approvals: string[]
 ): Promise<{ finalCount: number; beforeFinalCount: number; visibleFeedbackMs: number; sentAt: number }> {
   const stopAndDrain = async (): Promise<void> => {
-    await harness.evaluate('document.querySelector("[data-testid=\\"composer-stop\\"]")?.click()')
+    await stopActiveTask(harness, sessionId)
     try {
       await waitFor(async () => await harness.evaluate<boolean>(`(() => {
-        const state = document.querySelector('[data-testid="session-${sessionId}"] .session-state')?.className ?? '';
-        const terminal = /state-(failed|cancelled|timed_out|succeeded)/.test(state);
         const pending = document.querySelector('[data-testid="diagnostics-pending-rpc"]')?.textContent ?? '';
-        return terminal && !/pending[^0-9]*[1-9]/i.test(pending);
+        return !/pending[^0-9]*[1-9]/i.test(pending);
       })()`) ? true : null, 10_000, 'GUI stop and RPC drain')
     } catch {
       // Cleanup still records pending RPCs and fails the run if the GUI stop
       // contract did not drain. Do not hide that defect by waiting forever.
     }
   }
-  await waitFor(async () => await harness.evaluate<boolean>('!document.querySelector("[data-testid=\\"composer-input\\"]")?.disabled') ? true : null, 10_000, 'composer ready')
+  if (await harness.has('[data-testid="composer-stop"]')) {
+    await stopAndDrain()
+  }
+  await waitFor(async () => await harness.evaluate<boolean>('!document.querySelector("[data-testid=\\"composer-input\\"]")?.disabled && !document.querySelector("[data-testid=\\"composer-stop\\"]")') ? true : null, 15_000, 'composer ready')
   const beforeFinalCount = await harness.evaluate<number>('document.querySelectorAll("[data-testid=\\"final-answer\\"]").length')
   const sentAt = Date.now()
   await harness.typePrompt(prompt)
@@ -420,17 +467,28 @@ async function submitPrompt(
       const lastVisibleEventAt = await harness.evaluate<number>(`(() => {
         const lines = Array.isArray(window.__rxyRealProtocol) ? window.__rxyRealProtocol : [];
         const visible = new Set(['event/message_delta', 'event/tool_begin', 'event/tool_end', 'event/progress', 'event/plan', 'event/step', 'event/error', 'event/final', 'event/recovery_started', 'event/recovery_attempt', 'event/recovery_resolved', 'event/recovery_exhausted']);
-        for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const begun = new Set();
+        const ended = new Set();
+        let last = ${sentAt};
+        for (const line of lines) {
           try {
-            const message = JSON.parse(String(lines[index]));
-            if (visible.has(String(message.method)) &&
-              String(message.params?.session_id ?? '') === ${JSON.stringify(sessionId)} &&
-              typeof message.__at_ms === 'number' &&
-              message.__at_ms >= ${sentAt} &&
-              !(String(message.method) === 'event/progress' && /waiting for model response|build in progress|\u6b63\u5728\u7b49\u5f85\u6a21\u578b\u54cd\u5e94/i.test(String(message.params?.text ?? '')))) return message.__at_ms;
+            const message = JSON.parse(String(line));
+            if (String(message.params?.session_id ?? '') !== ${JSON.stringify(sessionId)}) continue;
+            if (typeof message.__at_ms !== 'number' || message.__at_ms < ${sentAt}) continue;
+            const method = String(message.method);
+            const callId = String(message.params?.call_id ?? '');
+            if (method === 'event/tool_begin' && callId) begun.add(callId);
+            if (method === 'event/tool_end' && callId) ended.add(callId);
+            if (visible.has(method) &&
+              !(method === 'event/progress' && /waiting for model response|build in progress|\u6b63\u5728\u7b49\u5f85\u6a21\u578b\u54cd\u5e94/i.test(String(message.params?.text ?? '')))) {
+              last = message.__at_ms;
+            }
           } catch {}
         }
-        return ${sentAt};
+        for (const callId of begun) {
+          if (!ended.has(callId)) return Date.now();
+        }
+        return last;
       })()`)
       const silentForMs = Date.now() - lastVisibleEventAt
       if (silentForMs > 30_000) {
@@ -445,7 +503,22 @@ async function submitPrompt(
 }
 
 async function startStaticServer(root: string): Promise<{ process: ChildProcess; port: number }> {
-  const source = `const http=require('node:http'),fs=require('node:fs'),path=require('node:path');const root=${JSON.stringify(root)};const s=http.createServer((q,r)=>{const p=path.join(root,q.url==='/'?'index.html':q.url);if(!p.startsWith(root)){r.statusCode=403;return r.end()}fs.createReadStream(p).on('error',()=>{r.statusCode=404;r.end('not found')}).pipe(r)});s.listen(0,'127.0.0.1',()=>console.log('PORT='+s.address().port));`
+  const source = [
+    "const http=require('node:http'),fs=require('node:fs'),path=require('node:path');",
+    `const root=${JSON.stringify(root)};`,
+    "const s=http.createServer((q,r)=>{",
+    "const rel=decodeURIComponent(String((q.url||'/').split('?')[0])).replace(/^[\\\\/]+/,'')||'index.html';",
+    "if(rel.split(/[\\\\/]/).includes('..')){r.statusCode=403;return r.end('forbidden')}",
+    "const p=path.resolve(root,rel);",
+    "const back=path.relative(path.resolve(root),p);",
+    "if(back.startsWith('..')||back.split(/[\\\\/]/).includes('..')){r.statusCode=403;return r.end('forbidden')}",
+    "const ext=path.extname(p);",
+    "const types={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.png':'image/png','.svg':'image/svg+xml','.csv':'text/csv; charset=utf-8','.md':'text/markdown; charset=utf-8'};",
+    "if(types[ext]) r.setHeader('Content-Type', types[ext]);",
+    "fs.createReadStream(p).on('error',()=>{r.statusCode=404;r.end('not found')}).pipe(r)",
+    "});",
+    "s.listen(0,'127.0.0.1',()=>console.log('PORT='+s.address().port));"
+  ].join('')
   const child = spawn(process.execPath, ['-e', source], { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   return await new Promise<{ process: ChildProcess; port: number }>((resolveServer, rejectServer) => {
     let buffer = ''
@@ -481,15 +554,222 @@ function stopProcess(child: ChildProcess): void {
   else child.kill('SIGTERM')
 }
 
+function chromeBinary(): string {
+  const candidates = [
+    process.env.CHROME_PATH,
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    join(process.env['PROGRAMFILES(X86)'] ?? '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0)
+  const found = candidates.find((path) => existsSync(path))
+  if (found === undefined) throw new Error('Chrome/Edge missing for generated page interaction probe')
+  return found
+}
+
+const gamePlayExpression = `(() => {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const readScore = () => {
+    const el = document.querySelector('#score, #scoreVal, #hud-score, #hud-coins, #stat-score, [data-testid="score"]');
+    const n = Number(String((el && el.textContent) || '0').replace(/[^0-9.-]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  };
+  const overlayHidden = () => {
+    const overlay = document.querySelector('#overlay-start, #screen-start, #screen-menu, #menu-screen, #overlay')
+      || document.querySelector('#btn-start, [data-action="newgame"]')?.closest('.overlay, .screen');
+    if (!(overlay instanceof HTMLElement)) return false;
+    if (overlay.classList.contains('hidden')) return true;
+    const style = getComputedStyle(overlay);
+    return style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0;
+  };
+  const readState = () => ({
+    score: readScore(),
+    state: ((document.querySelector('#stateLabel, #state') || {}).textContent || ''),
+    title: document.title,
+    overlayHidden: overlayHidden()
+  });
+  const press = (key) => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+  };
+  return (async () => {
+    const start = document.querySelector('#startBtn, #btn-start, #start-btn, [data-action="start"], [data-action="newgame"], button.big, button.primary, .btn-primary, #screen-start button.btn:not(.alt)')
+      || Array.from(document.querySelectorAll('button')).find((button) => /开始|start|play|new\\s*game/i.test(button.textContent || '') && !/mute|help|pause|resume|restart|静音|帮助|暂停|继续|重新/.test(button.textContent || ''));
+    if (start instanceof HTMLElement) {
+      start.click();
+      press('Enter');
+      press(' ');
+    }
+    let snapshot = readState();
+    const canvas = document.querySelector('canvas');
+    const canvasPainted = () => {
+      if (!(canvas instanceof HTMLCanvasElement)) return false;
+      try {
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return false;
+        const sample = ctx.getImageData(0, 0, Math.min(canvas.width, 48), Math.min(canvas.height, 48)).data;
+        for (let i = 0; i < sample.length; i += 4) {
+          if (sample[i] > 8 || sample[i + 1] > 8 || sample[i + 2] > 8) return true;
+        }
+      } catch {}
+      return false;
+    };
+    for (let i = 0; i < 24 && snapshot.score <= 0 && !/running|playing|run|\\u8fd0\\u884c|\\u8fdb\\u884c|\\u6e38\\u73a9/i.test(snapshot.state) && !snapshot.overlayHidden && !canvasPainted(); i += 1) {
+      press(' '); press('ArrowUp'); press('ArrowRight');
+      await sleep(250);
+      snapshot = readState();
+    }
+    const started = snapshot.score > 0 || /running|playing|run|\\u8fd0\\u884c|\\u8fdb\\u884c|\\u6e38\\u73a9/i.test(snapshot.state) || snapshot.overlayHidden === true || canvasPainted();
+    if (!started) return { ok: false, reason: start instanceof HTMLElement ? 'did not enter a running/playable state' : 'no start control', ...snapshot };
+    for (let i = 0; i < 40 && !/over|end|fail|\\u7ed3\\u675f|\\u5931\\u8d25/i.test(snapshot.state); i += 1) {
+      press(' '); press('ArrowUp'); press('ArrowRight');
+      await sleep(250);
+      snapshot = readState();
+    }
+    const restart = document.querySelector('#restartBtn, #btn-restart');
+    if (restart instanceof HTMLElement) restart.click(); else press('r');
+    await sleep(400);
+    return { ok: true, ...snapshot, afterRestart: readState() };
+  })();
+})()`
+
+const pagePlayExpression = `(() => {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  return (async () => {
+    const text = ((document.body && document.body.innerText) || '').trim();
+    const control = document.querySelector('button, select, input, a[href]');
+    if (control instanceof HTMLElement) control.click();
+    await sleep(300);
+    return { ok: text.length > 40, reason: text.length > 40 ? undefined : 'page has no usable content', title: document.title, textLength: text.length };
+  })();
+})()`
+
+async function evaluateInChrome(url: string, expression: string, screenshotFile: string): Promise<Record<string, any>> {
+  const profileDir = mkdtempSync(join(tmpdir(), 'rxy-chrome-play-'))
+  const child = spawn(chromeBinary(), [
+    '--headless=new',
+    '--disable-gpu',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-extensions',
+    `--user-data-dir=${profileDir}`,
+    '--remote-debugging-port=0',
+    url
+  ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  let socket: WebSocket | null = null
+  try {
+    const activePortFile = join(profileDir, 'DevToolsActivePort')
+    const debugPort = await waitFor(async () => {
+      if (!existsSync(activePortFile)) return null
+      const value = Number(readFileSync(activePortFile, 'utf8').split(/\r?\n/)[0])
+      return Number.isInteger(value) && value > 0 ? value : null
+    }, 20_000, 'Chrome DevToolsActivePort')
+    const target = await waitFor(async () => {
+      try {
+        const pages = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json() as Array<{ type: string; url?: string; webSocketDebuggerUrl?: string }>
+        return selectRendererTarget(pages)
+      } catch {
+        return null
+      }
+    }, 15_000, 'Chrome page target')
+    socket = new WebSocket(target)
+    await new Promise<void>((resolveOpen, rejectOpen) => {
+      socket!.onopen = () => resolveOpen()
+      socket!.onerror = () => rejectOpen(new Error('Chrome CDP websocket failed'))
+    })
+    let sequence = 0
+    const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>()
+    socket.onmessage = (event) => {
+      const message = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: unknown }
+      if (message.id === undefined) return
+      const entry = pending.get(message.id)
+      if (entry === undefined) return
+      pending.delete(message.id)
+      if (message.error !== undefined) entry.reject(new Error(JSON.stringify(message.error)))
+      else entry.resolve(message.result)
+    }
+    const send = (method: string, params: unknown = {}, timeoutMs = 30_000): Promise<any> => new Promise((resolveSend, rejectSend) => {
+      const id = ++sequence
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        rejectSend(new Error(`Chrome CDP timed out: ${method}`))
+      }, timeoutMs)
+      pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolveSend(value) },
+        reject: (error) => { clearTimeout(timer); rejectSend(error) }
+      })
+      socket!.send(JSON.stringify({ id, method, params }))
+    })
+    await send('Runtime.enable')
+    await send('Page.enable')
+    await send('Page.navigate', { url })
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 800))
+    const evaluated = await send('Runtime.evaluate', {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+      userGesture: true
+    }, 35_000)
+    if (evaluated.exceptionDetails !== undefined) {
+      throw new Error(evaluated.exceptionDetails.text ?? 'page expression threw')
+    }
+    try {
+      const image = await send('Page.captureScreenshot', { format: 'png' }, 10_000)
+      if (typeof image.data === 'string') writeFileSync(screenshotFile, Buffer.from(image.data, 'base64'))
+    } catch {}
+    return evaluated.result?.value ?? {}
+  } finally {
+    try { socket?.close() } catch {}
+    stopProcess(child)
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 400))
+    try {
+      rmSync(profileDir, { recursive: true, force: true })
+    } catch {
+      // Chrome may keep the profile directory locked on Windows. Probe
+      // success must not depend on deleting that scratch directory.
+    }
+  }
+}
+
+async function playGeneratedWebPage(source: string, port: number, mode: 'game' | 'page' = 'game'): Promise<string | null> {
+  const screenshotFile = join(source, '.rxy-play-probe.png')
+  try {
+    const parsed = await evaluateInChrome(
+      `http://127.0.0.1:${port}/`,
+      mode === 'page' ? pagePlayExpression : gamePlayExpression,
+      screenshotFile
+    ) as { ok?: boolean; score?: number; state?: string; reason?: string; overlayHidden?: boolean }
+    writeFileSync(join(source, '.rxy-play-probe.json'), JSON.stringify(parsed, null, 2))
+    if (parsed.ok !== true) {
+      return `generated page is not playable: ${parsed.reason ?? 'unknown'} (state=${String(parsed.state ?? '')}, score=${String(parsed.score ?? 0)})`
+    }
+    if (mode === 'game' && !gameEnteredPlayableState(String(parsed.state ?? ''), Number(parsed.score ?? 0)) && parsed.overlayHidden !== true && Number(parsed.score ?? 0) <= 0) {
+      return `generated page did not enter a running/playable state (state=${String(parsed.state ?? '')}, score=${String(parsed.score ?? 0)})`
+    }
+    return null
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught)
+    writeFileSync(join(source, '.rxy-play-probe.json'), JSON.stringify({ error: message }, null, 2))
+    return `generated page interaction probe failed: ${message}`
+  }
+}
+
 async function smokeArtifact(scenario: RealBusinessScenario, source: string): Promise<string | null> {
   if (!existsSync(source)) return 'output directory was not created'
   if (scenario.artifactKind === 'web') {
-    if (!existsSync(join(source, 'index.html'))) return 'web artifact has no index.html'
+    const missing = missingWebDeliverables(listFiles(source))
+    if (missing.length > 0) return `web artifact is incomplete; missing ${missing.join(', ')}`
     let server: { process: ChildProcess; port: number } | null = null
     try {
       server = await startStaticServer(source)
       const response = await fetch(`http://127.0.0.1:${server.port}/`)
       if (!response.ok) return `generated web server returned ${response.status}`
+      if (scenario.id === 'T01' || scenario.id === 'T02') {
+        const playError = await playGeneratedWebPage(source, server.port, 'game')
+        if (playError !== null) return playError
+      } else {
+        const playError = await playGeneratedWebPage(source, server.port, 'page')
+        if (playError !== null) return playError
+      }
     } finally {
       if (server !== null) stopProcess(server.process)
     }
@@ -502,6 +782,21 @@ async function smokeArtifact(scenario: RealBusinessScenario, source: string): Pr
     if (missing.length > 0) return `Java artifact is incomplete; missing ${missing.join(', ')}`
     const compile = spawnSync('javac', ['-encoding', 'UTF-8', ...javaFiles], { cwd: source, windowsHide: true, encoding: 'utf8', timeout: 120_000 })
     if (compile.status !== 0) return `javac failed: ${String(compile.stderr).slice(0, 1000)}`
+    const mainFile = javaFiles.find((file) => /public\s+static\s+void\s+main\s*\(/.test(readFileSync(join(source, file), 'utf8')))
+    if (mainFile === undefined) return 'Java artifact has no main(String[]) entry point'
+    const mainSource = readFileSync(join(source, mainFile), 'utf8')
+    const pkg = mainSource.match(/^\s*package\s+([A-Za-z0-9_.]+)\s*;/m)
+    const simple = mainFile.replace(/\\/g, '/').split('/').pop()!.replace(/\.java$/, '')
+    const mainClass = pkg !== null ? `${pkg[1]}.${simple}` : simple
+    const launched = spawn('java', ['-cp', source, mainClass], { cwd: source, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 2500))
+      if (launched.exitCode !== null) {
+        return `Swing process exited immediately with ${launched.exitCode}: ${String(launched.stderr?.read?.() ?? '')}`.slice(0, 500)
+      }
+    } finally {
+      stopProcess(launched)
+    }
   }
   return null
 }
@@ -511,8 +806,9 @@ function buildArtifactRepairPrompt(scenario: RealBusinessScenario, validationErr
     `Artifact repair pass for ${scenario.id}. The previous turn was incomplete and failed validation. Work on the existing ${scenario.outputDir} only.`,
     `Validation failure: ${validationError}`,
     'Inspect every file currently present, identify the root cause, and implement the missing work now. Do not only explain or return a code snippet. Do not claim success without executing the real validation command.',
+    `If the validation failure names missing files, call the write tool now with filePath inside ${scenario.outputDir} for each missing file. A table or Final Answer that lists the filename is not sufficient.`,
     scenario.artifactKind === 'web'
-      ? 'For a web artifact, create a complete index.html entry point, start a local static server, and exercise the required interactions before reporting success.'
+      ? 'For a web artifact, create a complete index.html entry point plus README.md and TEST-REPORT.md, start a local static server, and actually play the page. Fix JavaScript syntax/runtime errors so Start enters a running state, score can increase, collision or game-over can occur, and restart works. Do not claim success if the page stays on a menu or throws Uncaught SyntaxError.'
       : scenario.artifactKind === 'java-swing'
         ? 'For the Java artifact, compile every Java source with javac -encoding UTF-8 and launch the real Swing window before reporting success.'
         : 'For this application artifact, run the smallest real build and smoke test available; do not substitute a description for execution.',
@@ -603,6 +899,8 @@ async function runScenario(
   }
   files = copyTree(outputSource, outputTarget)
   let artifactError = await smokeArtifact(scenario, outputSource)
+  files = copyTree(outputSource, outputTarget)
+  persistPlayProbe(outputSource, batchDir, scenario.id)
   let terminalIssue = terminalOutcomeIssue(status, finalAnswer)
   let validationError = artifactError ?? terminalIssue
   const initialValidationError = validationError
@@ -610,10 +908,14 @@ async function runScenario(
   // more model/tool rounds repairing an artifact. If an artifact really is
   // invalid as well, allow one bounded repair pass and then revalidate.
   const layoutOnlyFailure = layout.issues.length > 0 && artifactError === null && terminalIssue === null
-  const maxRepairAttempts = layoutOnlyFailure ? 0 : 1
+  const missingDocs = /missing /i.test(artifactError ?? '')
+  const maxRepairAttempts = layoutOnlyFailure ? 0 : missingDocs ? 2 : 1
   if (validationError !== null) error = error ?? validationError
   for (let attempt = 1; validationError !== null && attempt <= maxRepairAttempts && !runAbortedByWatchdog; attempt += 1) {
-    const repairPrompt = buildArtifactRepairPrompt(scenario, validationError)
+    const missingFiles = parseMissingFilenames(validationError)
+    const repairPrompt = missingFiles.length > 0
+      ? buildMissingFileRepairPrompt(scenario.outputDir, missingFiles)
+      : buildArtifactRepairPrompt(scenario, validationError)
     repairAttempts.push(repairPrompt)
     try {
       await submitPrompt(
@@ -628,14 +930,18 @@ async function runScenario(
       status = await harness.evaluate<string>(`(() => document.querySelector('[data-testid="session-${sessionId}"] .session-state')?.className.match(/state-(queued|running|approval|succeeded|failed|cancelled|timed_out)/)?.[1] ?? 'unknown')()`)
       files = copyTree(outputSource, outputTarget)
       artifactError = await smokeArtifact(scenario, outputSource)
+      files = copyTree(outputSource, outputTarget)
+      persistPlayProbe(outputSource, batchDir, scenario.id)
       terminalIssue = terminalOutcomeIssue(status, finalAnswer)
       validationError = artifactError ?? terminalIssue
-      if (validationError === null && error === initialValidationError) error = null
+      error = validationError
     } catch (caught) {
       artifactError = caught instanceof Error ? caught.message : String(caught)
     }
   }
-  if (validationError !== null) error = error ?? validationError
+  if (validationError !== null) error = validationError
+  else if (layout.issues.length > 0) error = `layout issues: ${layout.issues.map((issue) => issue.kind).join(', ')}`
+  else error = null
   const allLines = await harness.evaluate<string[]>('window.__rxyRealProtocol ?? []')
   const messages = parseProtocol(allLines)
   // The performance clock starts at Enter/submit, not at the optional

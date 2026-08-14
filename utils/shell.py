@@ -571,7 +571,7 @@ class ShellExecutor:
         )
         # Resolve one or more executables using PowerShell's command lookup.
         command = re.sub(
-            r"(?<![\w-])\bwhich\s+([A-Za-z0-9_.+\-]+(?:\s+[A-Za-z0-9_.+\-]+)*)",
+            r"(?<![\w-])\bwhich\s+([A-Za-z][A-Za-z0-9_.+\-]*(?:\s+[A-Za-z][A-Za-z0-9_.+\-]+)*)",
             lambda m: (
                 "Get-Command "
                 + ",".join(m.group(1).split())
@@ -582,9 +582,10 @@ class ShellExecutor:
         )
         # POSIX/cmd ``where java`` is parsed as PowerShell's Where-Object
         # alias. Resolve it explicitly so environment probes do not trigger
-        # a needless model recovery on Windows.
+        # a needless model recovery on Windows. Do not swallow the ``2`` from
+        # a following ``2>&1`` redirect (that produced ``Get-Command chrome,2``).
         command = re.sub(
-            r"(?<![\w-])\bwhere\s+([A-Za-z0-9_.+\-]+(?:\s+[A-Za-z0-9_.+\-]+)*)",
+            r"(?<![\w-])\bwhere\s+([A-Za-z][A-Za-z0-9_.+\-]*(?:\s+[A-Za-z][A-Za-z0-9_.+\-]+)*)",
             lambda m: "Get-Command " + ",".join(m.group(1).split()) + " | Select-Object -ExpandProperty Source",
             command,
             flags=re.IGNORECASE,

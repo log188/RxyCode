@@ -109,18 +109,38 @@ _COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in DANGEROUS_COMMAND_PA
 # happens to contain a read-looking verb.
 _READ_ONLY_BASH_SEGMENTS = [
     re.compile(r"^(?:pwd|Get-Location)\s*$", re.IGNORECASE),
-    re.compile(r"^(?:ls|ls\.exe|dir|Get-ChildItem)(?:\s+-[\w-]+)*\s*$", re.IGNORECASE),
+    re.compile(
+        r"^(?:ls|ls\.exe|dir|Get-ChildItem)(?:\s+-[\w-]+)*"
+        r"(?:\s+(?:['\"][^'\"<>|]+['\"]|[A-Za-z0-9_.:/\\~-]+))?\s*$",
+        re.IGNORECASE,
+    ),
     re.compile(r"^(?:echo|Write-Output)(?:\s+[^<>|]+)?$", re.IGNORECASE),
+    re.compile(r'^"[^"<>|]+"$'),
     re.compile(r"^(?:where|where\.exe)\s+[A-Za-z0-9_.-]+\s*$", re.IGNORECASE),
     re.compile(
-        r"^(?:node|python|java|javac|npm)(?:\.exe)?\s+(?:--version|-version|-V)\s*$",
+        r"^(?:node|python3?|py|java|javac|npm)(?:\.exe|\.cmd)?\s+"
+        r"(?:--version|-version|-V)\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^node(?:\.exe|\.cmd)?\s+--check\s+[A-Za-z0-9_./\\-]+\.(?:js|mjs|cjs)\s*$",
         re.IGNORECASE,
     ),
     re.compile(
         r"^git\s+(?:status(?:\s+--[\w-]+)*|log(?:\s+[^<>|]+)?)\s*$",
         re.IGNORECASE,
     ),
+    re.compile(r"^(?:cmd(?:\.exe)?\s+/c\s+)?ver\s*$", re.IGNORECASE),
 ]
+
+# Stderr-only redirects are not filesystem writes. Agents routinely append
+# ``2>&1`` to version probes; treating ``>`` as a write would force those
+# probes through WRITE approval and then fail the whole task when a missing
+# Windows alias such as ``python3`` returns exit 1.
+_STDERR_ONLY_REDIRECT_RE = re.compile(
+    r"(?:2>&1|2>\s*/dev/null|2>\s*nul|2>\s*\$null)\s*",
+    re.IGNORECASE,
+)
 
 
 def _is_read_only_bash_probe(command: str) -> bool:
@@ -130,9 +150,12 @@ def _is_read_only_bash_probe(command: str) -> bool:
     conservative.  Any segment not in the explicit allow-list keeps the
     command at WRITE, while dangerous-pattern matching still runs first.
     """
-    if not command or any(token in command for token in (">", "<", "`", "$(", "${")):
+    if not command:
         return False
-    segments = re.split(r"(?:&&|\|\||[;|])", command)
+    normalized = _STDERR_ONLY_REDIRECT_RE.sub(" ", command)
+    if any(token in normalized for token in (">", "<", "`", "$(", "${")):
+        return False
+    segments = re.split(r"(?:&&|\|\||[;&|])", normalized)
     return bool(segments) and all(
         any(pattern.fullmatch(segment.strip()) for pattern in _READ_ONLY_BASH_SEGMENTS)
         for segment in segments

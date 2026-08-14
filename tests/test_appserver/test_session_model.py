@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from appserver.agent_worker import AgentWorker
-from appserver.server import AppServer
+from appserver.server import AppServer, _DEFAULT_WARM_TIMEOUT_SECONDS
 
 
 @pytest.mark.asyncio
@@ -134,7 +134,7 @@ async def test_server_session_set_model_joins_inflight_bootstrap(monkeypatch, tm
         13,
     )
 
-    host.ensure_bootstrapped.assert_awaited_once_with(timeout=30.0)
+    host.ensure_bootstrapped.assert_awaited_once_with(timeout=_DEFAULT_WARM_TIMEOUT_SECONDS)
     host.set_model.assert_awaited_once()
     assert responses[-1]["ok"] is True
 

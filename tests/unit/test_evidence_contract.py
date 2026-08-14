@@ -61,6 +61,24 @@ def test_syntax_error_result_is_failed_even_when_content_matches(tmp_path: Path)
     assert evidence.status == "failed"
 
 
+def test_bracket_mismatch_warning_does_not_fail_written_artifact(tmp_path: Path):
+    """Write succeeded; a helper-file brace warning must not rewrite status."""
+    artifact = tmp_path / "_smoke.js"
+    content = "console.log('smoke')"
+    artifact.write_text(content, encoding="utf-8")
+
+    evidence = build_tool_evidence(
+        "write",
+        {"filePath": str(artifact), "content": content},
+        "[wrote 20 bytes]\n[syntax check: BRACKET_MISMATCH: opens=35, closes=40]",
+        executed=True,
+        approval="auto",
+    )
+
+    assert evidence.status == "succeeded"
+    assert evidence.artifacts[0].valid is True
+
+
 def test_edit_requires_requested_replacement_in_artifact(tmp_path: Path):
     artifact = tmp_path / "module.py"
     artifact.write_text("value = 'old'\n", encoding="utf-8")

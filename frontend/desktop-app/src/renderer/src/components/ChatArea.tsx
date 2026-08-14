@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import type { TimelineItem } from '../lib/conversationStore.mts'
-import { shouldShowStartupProgress } from '../lib/taskPresentation.mts'
+import { shouldShowStartupProgress, visibleRunProgress } from '../lib/taskPresentation.mts'
 
 interface ChatAreaProps {
   timeline: TimelineItem[]
@@ -112,6 +112,7 @@ function TimelineEntry({ item, onOpenInspector }: { item: TimelineItem; onOpenIn
 function ChatArea({ timeline, running, error, progress, onOpenInspector }: ChatAreaProps): React.JSX.Element {
   const scrollRef = useRef<HTMLElement | null>(null)
   const stickToBottomRef = useRef(true)
+  const runProgress = visibleRunProgress({ progress, timelineLength: timeline.length })
 
   useEffect(() => {
     const el = scrollRef.current
@@ -148,7 +149,7 @@ function ChatArea({ timeline, running, error, progress, onOpenInspector }: ChatA
           {running && timeline.at(-1)?.kind !== 'tool_activity' && (
             <div className="running-indicator" data-testid="running-indicator" data-phase={timeline.length <= 2 ? 'startup' : 'working'}>
               <CircleDashed className="activity-spinner" aria-hidden="true" size={15} />
-              {progress ?? (timeline.length <= 2 ? '正在启动 Agent…' : '正在处理')}
+              {runProgress ?? (timeline.length <= 2 ? '正在启动 Agent…' : '正在处理')}
             </div>
           )}
         </div>

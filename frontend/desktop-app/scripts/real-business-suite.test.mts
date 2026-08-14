@@ -1,16 +1,25 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
   buildBatchPrompts,
+  buildMissingFileRepairPrompt,
+  parseMissingFilenames,
   realBusinessScenarios
 } from './real-business-scenarios.mts'
 import {
   aggregateUsage,
   cacheHitRate,
   evaluateLayoutSnapshot,
+  gameEnteredPlayableState,
   isMeaningfulProtocolEvent,
+  missingWebDeliverables,
+  parseHudScore,
+  playProbeUrl,
+  staticFilePath,
   terminalOutcomeIssue,
+  hasInFlightTool,
   timelineKinds
 } from './real-business-metrics.mts'
 import { screenshotPath } from './cdp-harness.mts'
@@ -45,7 +54,9 @@ test('real business suite defines nine complete user scenarios', () => {
 test('real business prompts preserve the required implementation boundaries', () => {
   const byId = Object.fromEntries(realBusinessScenarios.map((scenario) => [scenario.id, scenario.prompt]))
   assert.match(byId.T01, /localStorage|HTML|JavaScript|T01-runner/)
+  assert.match(byId.T01, /write tool|TEST-REPORT/)
   assert.match(byId.T02, /HTML|JavaScript|T02-platformer|two|T02/)
+  assert.match(byId.T02, /README.md|TEST-REPORT/)
   assert.match(byId.T03, /websearch|webfetch|Skill|T03-company/)
   assert.match(byId.T04, /datetime|3000|T04-travel|sources/)
   assert.match(byId.T05, /Java 17|Swing|javac|T05-number-bomb/)
@@ -53,6 +64,21 @@ test('real business prompts preserve the required implementation boundaries', ()
   assert.match(byId.T07, /TCO|T07-ev|websearch/)
   assert.match(byId.T08, /3500|60|T08-rental|websearch/)
   assert.match(byId.T09, /Spring Boot 4.1.0|Maven 3.9.16|MySQL 8|Flyway/)
+})
+
+test('missing-file repair prompt writes documents instead of re-reading source', () => {
+  assert.deepEqual(
+    parseMissingFilenames('web artifact is incomplete; missing README.md, TEST-REPORT.md'),
+    ['README.md', 'TEST-REPORT.md']
+  )
+  const prompt = buildMissingFileRepairPrompt('T02-platformer', ['README.md', 'TEST-REPORT.md'])
+  assert.match(prompt, /T02-platformer\/README\.md/)
+  assert.match(prompt, /T02-platformer\/TEST-REPORT\.md/)
+  assert.match(prompt, /write tool/)
+  assert.match(prompt, /Do not read existing/)
+  assert.doesNotMatch(prompt, /Inspect every file/)
+  assert.doesNotMatch(prompt, /play the page/)
+  assert.deepEqual(parseMissingFilenames('generated page is not playable: no start control'), [])
 })
 
 test('batch prompt builder gives one isolated run and one ordered long-session run', () => {
@@ -104,11 +130,68 @@ test('successful GUI runs must expose a non-empty Final Answer', () => {
   assert.equal(terminalOutcomeIssue('failed', ''), null)
 })
 
+test('web artifacts cannot pass with only an index.html', () => {
+  assert.deepEqual(missingWebDeliverables(['index.html', 'game.js', 'styles.css', 'PLAN.md']), ['README.md', 'TEST-REPORT.md'])
+  assert.deepEqual(missingWebDeliverables(['index.html', 'README.md', 'TEST-REPORT.md']), [])
+})
+
+test('game play probe accepts Chinese running state and rejects the menu', () => {
+  assert.equal(gameEnteredPlayableState('运行中', 0), true)
+  assert.equal(gameEnteredPlayableState('菜单', 0), false)
+  assert.equal(gameEnteredPlayableState('菜单', 12), true)
+  assert.equal(gameEnteredPlayableState('running', 0), true)
+  assert.equal(parseHudScore('得分 33'), 33)
+})
+
+test('play probe reads the http url even when Electron leaves switches in argv', () => {
+  assert.equal(
+    playProbeUrl(['C:\\\\electron.exe', '--disable-gpu', 'play-probe.cjs', 'http://127.0.0.1:9/', 'shot.png']),
+    'http://127.0.0.1:9/'
+  )
+})
+
+test('static file server keeps /game.js inside the artifact root on Windows', () => {
+  const root = 'D:\\\\artifact\\\\T01-runner'
+  assert.equal(staticFilePath(root, '/game.js'), resolve(root, 'game.js'))
+  assert.equal(staticFilePath(root, '/'), resolve(root, 'index.html'))
+  assert.equal(staticFilePath(root, '/../secret.js'), null)
+})
+
+test('web play probe prefers explicit start buttons over the first button on the page', () => {
+  const probe = readFileSync(new URL('./play-generated-page-probe.cjs', import.meta.url), 'utf8')
+  assert.match(probe, /#startBtn, #btn-start/)
+  const suite = readFileSync(new URL('./real-business-suite.mts', import.meta.url), 'utf8')
+  assert.match(suite, /#start-btn/)
+  assert.match(suite, /开始\|start\|play/)
+  assert.match(suite, /canvasPainted|getImageData/)
+  assert.match(suite, /data-action="newgame"/)
+  assert.match(suite, /#screen-menu/)
+  assert.match(suite, /#stat-score/)
+  assert.match(suite, /headless=new/)
+  assert.match(suite, /Chrome may keep the profile directory locked/)
+})
+
+test('a follow-up prompt stops a still-running task before typing into the composer', () => {
+  const suite = readFileSync(new URL('./real-business-suite.mts', import.meta.url), 'utf8')
+  assert.match(suite, /async function stopActiveTask/)
+  assert.match(suite, /if \(await harness\.has\('\[data-testid="composer-stop"\]'\)\)/)
+  assert.match(suite, /composer-stop/)
+})
+
 test('synthetic waiting progress does not reset the real-work watchdog', () => {
   assert.equal(isMeaningfulProtocolEvent({ method: 'event/progress', params: { text: '正在等待模型响应…' } }), false)
   assert.equal(isMeaningfulProtocolEvent({ method: 'event/progress', params: { text: 'Build in progress... 30s' } }), false)
   assert.equal(isMeaningfulProtocolEvent({ method: 'event/progress', params: { text: 'Thinking... (round 1)' } }), true)
   assert.equal(isMeaningfulProtocolEvent({ method: 'event/message_delta', params: { text: 'token' } }), true)
+})
+
+test('an in-flight tool is not treated as GUI silence', () => {
+  const begin = { method: 'event/tool_begin', params: { session_id: 's1', call_id: 'c1' }, __at_ms: 1000 }
+  const waiting = { method: 'event/progress', params: { session_id: 's1', text: '正在等待模型响应…' }, __at_ms: 20000 }
+  const ended = { method: 'event/tool_end', params: { session_id: 's1', call_id: 'c1' }, __at_ms: 62000 }
+  assert.equal(hasInFlightTool([begin, waiting], 's1', 1000), true)
+  assert.equal(hasInFlightTool([begin, waiting, ended], 's1', 1000, 62000), true)
+  assert.equal(hasInFlightTool([begin, waiting, ended], 's1', 62000), false)
 })
 
 test('layout evaluator catches overlap, clipping and composer coverage', () => {

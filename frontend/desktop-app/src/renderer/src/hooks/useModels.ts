@@ -92,7 +92,7 @@ export function useModels({
   refreshKey
 }: UseModelsOptions): UseModelsResult {
   const [supported, setSupported] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(() => client !== null)
   const [error, setError] = useState<string | null>(null)
   const [snapshot, setSnapshot] = useState<ModelsSnapshot | null>(null)
 

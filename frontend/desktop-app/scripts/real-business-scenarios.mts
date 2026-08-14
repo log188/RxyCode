@@ -22,7 +22,7 @@ const BUDGET = {
 
 const commonRules = `
 Windows guidance: use PowerShell or cmd-compatible commands. Do not use Unix-only timeout, find, grep, chmod, or shell syntax. Pass time limits through the tool timeout field, inspect stderr after a failed command, and repair the root cause instead of repeating the same failed command. Do not run validation against half-written files.
-This is a real GUI Agent acceptance test, not a code-snippet generation task. Save every source file as UTF-8, record sources, dates, limits, missing data, commands, and unavailable capabilities honestly. Inspect the workspace, current time, and environment first. Report important progress, tool calls, recovery, and the final conclusion through visible GUI events. Complete PLAN, implementation, and static checks before opening a browser or desktop window. All artifacts must stay inside the requested Txx directory; never write to another Txx directory, the user home directory, or repository configuration. Deliver README.md, exact verification commands, actual interaction results, unresolved risks, and token/performance information. Never claim an action that was not actually performed.`
+This is a real GUI Agent acceptance test, not a code-snippet generation task. Save every source file as UTF-8, record sources, dates, limits, missing data, commands, and unavailable capabilities honestly. Inspect the workspace, current time, and environment first. Report important progress, tool calls, recovery, and the final conclusion through visible GUI events. Complete PLAN, implementation, and static checks before opening a browser or desktop window. All artifacts must stay inside the requested Txx directory; never write to another Txx directory, the user home directory, or repository configuration. Deliver README.md and TEST-REPORT.md by actually calling the write tool for each file before the Final Answer; listing a filename in a table does not create it. If those documents are still missing, write them immediately and do not re-read game or page source. Before the Final Answer, list the Txx directory and confirm every required file exists on disk. Never claim an action that was not actually performed.`
 
 export const realBusinessScenarios: RealBusinessScenario[] = [
   {
@@ -45,7 +45,7 @@ export const realBusinessScenarios: RealBusinessScenario[] = [
     visualCheckpoints: ['platform/player collision', 'enemies, coins, lives, checkpoint', 'win, respawn, pause, restart, level transition'],
     interactionProbe: 'Start level one in a real browser, move and jump, collect a coin, hit an enemy or fall, verify checkpoint respawn, pause/resume/restart, and enter level two.',
     ...BUDGET,
-    prompt: `Create T02-platformer in the current workspace. Build an original horizontal platform-jumping game. The genre may evoke classic platform games, but do not use Nintendo names, characters, art, audio, or copied game code. Use native HTML, CSS, JavaScript, and local original SVG/Canvas graphics. Provide at least two different levels. Implement left/right movement, jump, gravity, platform collision, enemies, coins, lives, checkpoint, goal, level transition, start, pause, resume, restart, mute, help, level/score/life display, continuous-key handling, jump cooldown, landing, enemy collision, checkpoint respawn, and narrow touch controls. Write PLAN.md, run static checks and a minimal test, then launch the real game and complete at least level one. Verify failure, respawn, pause, restart, and level-two entry. ${commonRules}`
+    prompt: `Create T02-platformer in the current workspace. Build an original horizontal platform-jumping game. The genre may evoke classic platform games, but do not use Nintendo names, characters, art, audio, or copied game code. Use native HTML, CSS, JavaScript, and local original SVG/Canvas graphics. Provide at least two different levels. Implement left/right movement, jump, gravity, platform collision, enemies, coins, lives, checkpoint, goal, level transition, start, pause, resume, restart, mute, help, level/score/life display, continuous-key handling, jump cooldown, landing, enemy collision, checkpoint respawn, and narrow touch controls. Write PLAN.md, README.md, TEST-REPORT.md, index.html, and the game sources with the write tool before launching the game. Run static checks and a minimal test, then launch the real game and complete at least level one. Verify failure, respawn, pause, restart, and level-two entry. ${commonRules}`
   },
   {
     id: 'T03',
@@ -135,4 +135,23 @@ export interface BatchPrompt {
 export function buildBatchPrompts(): { independent: BatchPrompt[]; sequential: BatchPrompt[] } {
   const prompts = realBusinessScenarios.map(({ id, prompt, outputDir }) => ({ id, prompt, outputDir }))
   return { independent: prompts, sequential: prompts }
+}
+
+export function parseMissingFilenames(error: string): string[] {
+  const match = error.match(/missing\s+(.+?)\s*$/i)
+  if (match === null) return []
+  return match[1]
+    .split(/,| and /i)
+    .map((name) => name.trim().replace(/[.;]+$/g, ''))
+    .filter((name) => name.length > 0)
+}
+
+export function buildMissingFileRepairPrompt(outputDir: string, files: string[]): string {
+  const paths = files.map((file) => `- ${outputDir}/${file}`).join('\n')
+  return [
+    `Missing-file repair for ${outputDir}. These required files are absent: ${files.join(', ')}.`,
+    'Call the write tool once for each path below, immediately. Do not read existing game, HTML, CSS, or Java source. Do not dump files with cat, Get-Content, type, or bash. Do not run node --check or javac. Do not plan. Do not browse.',
+    paths,
+    'Each write must contain a real UTF-8 document, not a filename table. After the writes succeed, call ls on that directory, confirm every named file exists, then give a short Final Answer listing only the files written.'
+  ].join('\n\n')
 }

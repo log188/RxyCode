@@ -473,6 +473,12 @@ class AppServer:
             async with self._session_lock(session_id):
                 host = await self._host_for_session(session_id)
             await host.ensure_bootstrapped(timeout=_DEFAULT_WARM_TIMEOUT_SECONDS)
+            await self._emit_model(
+                ProgressUpdate(
+                    session_id=session_id,
+                    text="Agent worker ready",
+                )
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -552,6 +558,12 @@ class AppServer:
                 async def _execute_prompt() -> dict[str, Any]:
                     host._emit = emit_message
                     await host.ensure_bootstrapped(timeout=wall_timeout)
+                    await self._emit_model(
+                        ProgressUpdate(
+                            session_id=session_id,
+                            text="Waiting for model response…",
+                        )
+                    )
                     # Bootstrap is a separate cold-start phase. It has the
                     # outer prompt timeout, but must not be judged as a
                     # stalled *running* job before the worker can emit its
@@ -1036,7 +1048,7 @@ class AppServer:
                 # at ``Starting Agent worker…`` until the appserver watchdog
                 # reports a misleading 120s stall.
                 if not getattr(host, "bootstrapped", False):
-                    await host.ensure_bootstrapped(timeout=30.0)
+                    await host.ensure_bootstrapped(timeout=_DEFAULT_WARM_TIMEOUT_SECONDS)
                 switched = await host.set_model(model_id, timeout=30.0)
                 if isinstance(switched, dict):
                     result.update(switched)
