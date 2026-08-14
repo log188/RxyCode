@@ -102,6 +102,44 @@ async def test_server_session_set_model_updates_task_record(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_server_session_set_model_joins_inflight_bootstrap(monkeypatch, tmp_path):
+    """Task model selection must not race the background worker warm-up."""
+    monkeypatch.setattr(
+        "appserver.model_routes.set_active",
+        lambda params: {"ok": True, "id": params.get("id")},
+    )
+    server = AppServer(stub=True)
+    server._initialized = True
+    record = server._sessions.create(tmp_path)
+    host = SimpleNamespace(
+        alive=lambda: True,
+        bootstrapped=False,
+        ensure_bootstrapped=AsyncMock(),
+        set_model=AsyncMock(return_value={
+            "ok": True,
+            "model_id": "deepseek/deepseek-v4-flash",
+            "provider_id": "deepseek",
+        }),
+    )
+    server._session_hosts[record.session_id] = host
+    responses = []
+    monkeypatch.setattr(
+        server,
+        "_respond",
+        AsyncMock(side_effect=lambda _request_id, payload: responses.append(payload)),
+    )
+
+    await server._handle_session_set_model(
+        {"session_id": record.session_id, "model_id": "deepseek/deepseek-v4-flash"},
+        13,
+    )
+
+    host.ensure_bootstrapped.assert_awaited_once_with(timeout=30.0)
+    host.set_model.assert_awaited_once()
+    assert responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_session_set_model_persists_without_starting_worker(monkeypatch, tmp_path):
     persisted: list[str] = []
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -76,6 +77,8 @@ class ProtocolTui:
         self._emit = emit
         self._expand_thinking = False
         self._thinking_acc = ""
+        self._reasoning_chunks = 0
+        self._reasoning_last_liveness_at = 0.0
         self._mode = "build"
         self._model_name = ""
         self._coalescer: Any = None
@@ -281,12 +284,33 @@ class ProtocolTui:
         chunk = str(text)
         started = not self._thinking_acc
         self._thinking_acc += chunk
+        self._reasoning_chunks += 1
         if self._expand_thinking:
             self._push_async("reasoning", chunk)
         elif started and chunk.strip():
             # Collapsed Thought still needs a liveness event. Otherwise the
             # appserver watchdog treats silent thinking as a dead job.
             self.write_progress("思考中...")
+
+        self._emit_reasoning_liveness(chunk, started)
+
+    def _emit_reasoning_liveness(self, chunk: str, started: bool) -> None:
+        """Emit sparse liveness without exposing collapsed reasoning text."""
+        if self._expand_thinking or not chunk.strip():
+            return
+        now = time.monotonic()
+        if started:
+            self._reasoning_last_liveness_at = now
+            return
+        if (
+            self._reasoning_chunks % 64 == 0
+            or now - self._reasoning_last_liveness_at >= 2.0
+        ):
+            self.write_progress(
+                "Thinking... (model reasoning active; "
+                f"{self._reasoning_chunks} chunks)"
+            )
+            self._reasoning_last_liveness_at = now
 
     def stream_token(self, token: str) -> None:
         self._push_async("token", token)

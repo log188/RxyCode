@@ -2,6 +2,7 @@
 import html
 import os
 import re
+import threading
 import time
 import httpx
 from langchain_core.tools import StructuredTool
@@ -228,19 +229,29 @@ def _search_ddgs(query: str, numResults: int = 5) -> list[str]:
         from ddgs import DDGS
     except ImportError:
         return []
-    results = []
-    try:
-        with DDGS(timeout=8) as ddgs:
-            for item in ddgs.text(query, max_results=numResults):
-                title = _clean_text(item.get("title") or "")
-                href = _clean_url(item.get("href") or "")
-                body = _clean_text(item.get("body") or "")
-                if not title or not href:
-                    continue
-                results.append(f"{title}\n  {href}\n  {body}")
-    except Exception:
+    result_box: list[list[str]] = []
+    completed = threading.Event()
+
+    def collect() -> None:
+        results: list[str] = []
+        try:
+            with DDGS(timeout=8) as ddgs:
+                for item in ddgs.text(query, max_results=numResults):
+                    title = _clean_text(item.get("title") or "")
+                    href = _clean_url(item.get("href") or "")
+                    body = _clean_text(item.get("body") or "")
+                    if not title or not href:
+                        continue
+                    results.append(f"{title}\n  {href}\n  {body}")
+        except Exception:
+            results = []
+        result_box.append(results)
+        completed.set()
+
+    threading.Thread(target=collect, name="rxycode-ddgs-search", daemon=True).start()
+    if not completed.wait(timeout=max(0.01, float(DDGS_TOTAL_BUDGET))):
         return []
-    return results
+    return result_box[0] if result_box else []
 
 
 def _is_github_query(query: str) -> bool:
@@ -254,6 +265,7 @@ def _is_github_query(query: str) -> bool:
 # old sequential 6-engines × 2-attempts × 15s scan that could take ~190s on a
 # hard-to-find query and looked like a hang/timeout.
 TOTAL_BUDGET = 25.0
+DDGS_TOTAL_BUDGET = 8.0
 
 
 def _engine_list(query: str):
@@ -307,15 +319,19 @@ def search_web(query: str, numResults: int = 5) -> str:
     fut_map = {ex.submit(fn, query, numResults): name for name, fn in engines}
     collected: list[tuple[str, list[str]]] = []
     try:
-        for fut in concurrent.futures.as_completed(fut_map):
-            if time.time() > deadline:
-                break
+        remaining = max(0.0, deadline - time.time())
+        for fut in concurrent.futures.as_completed(fut_map, timeout=remaining):
             try:
                 res = fut.result(timeout=0)
             except Exception:
                 res = None
             if res:
                 collected.append((fut_map[fut], res))
+    except concurrent.futures.TimeoutError:
+        # A provider thread may ignore its socket timeout. The caller must
+        # still receive a bounded result; executor shutdown below is
+        # non-blocking and the worker threads are allowed to finish silently.
+        pass
     finally:
         # Don't block on still-running engine threads; let them finish silently.
         try:

@@ -54,11 +54,8 @@ async function main(): Promise<void> {
       })()`)
       if (emptyLayout.borderStyle === 'dashed') throw new Error('empty task still uses a boxed placeholder')
       if (Math.abs(emptyLayout.center - emptyLayout.viewportCenter) > 48) throw new Error(`empty task is not centered: ${JSON.stringify(emptyLayout)}`)
-      await harness.waitForSelector('[data-testid="task-startup-status"]', 2_000)
-      const startupStatus = await harness.evaluate<string>(`document.querySelector('[data-testid="task-startup-status"]')?.textContent ?? ''`)
-      if (!startupStatus.includes('Preparing') && !startupStatus.includes('worker')) {
-        throw new Error(`new task startup feedback missing: ${startupStatus}`)
-      }
+      const startupStatus = await harness.evaluate<string | null>(`document.querySelector('[data-testid="task-startup-status"]')?.textContent ?? null`)
+      if (startupStatus !== null) throw new Error(`idle task retained a stale startup banner: ${startupStatus}`)
       await harness.screenshot('layout-empty.png')
     })
     await check('UX-01b first turn exposes startup progress', async () => {

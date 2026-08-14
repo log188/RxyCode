@@ -3102,3 +3102,28 @@ details[open] .activity-chevron {
     padding-inline: 12px;
   }
 }
+
+/* Geometry contract: the transcript must shrink inside the task column and
+ * the Composer must remain a non-overlapping sibling at the bottom. The
+ * explicit min-height is required for flex items with long streamed content;
+ * relying on the automatic minimum lets the transcript paint underneath the
+ * Composer at smaller viewports. */
+.task-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-area {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.composer {
+  flex: 0 0 auto;
+  min-height: 0;
+  position: relative;
+  z-index: 1;
+}

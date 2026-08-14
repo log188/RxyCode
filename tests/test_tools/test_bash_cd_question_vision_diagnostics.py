@@ -70,6 +70,14 @@ class TestRunBash:
         result = run_bash("exit 1")
         assert isinstance(result, str)
 
+    def test_failed_command_is_machine_detectable_as_error(self):
+        from RxyCode.RxyCode1_1_0.tools.bash import run_bash
+
+        result = run_bash("exit 1")
+
+        assert result.startswith("[error")
+        assert "exit code" in result
+
 
 class TestBashOutputTruncation:
     """Output longer than 30000 chars is middle-truncated, keeping head+tail."""

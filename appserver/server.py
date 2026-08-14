@@ -148,6 +148,7 @@ class AppServer:
         host = AgentHost(
             session_id=session_id,
             workspace_root=record.workspace_root,
+            model_id=record.model_id,
             stub=self._stub,
             project_root=project_root,
             forward_server_request=self._send_server_request,
@@ -435,8 +436,8 @@ class AppServer:
         # the ``+`` button look frozen before the session response was sent.
         # The renderer already has the shared model snapshot; callers that
         # need a task-specific model may pass ``model`` explicitly.  The
-        # background worker still resolves the configured active model when it
-        # bootstraps.
+        # The background worker receives the task-scoped model when one was
+        # selected, and falls back to the configured active model otherwise.
         record = self._sessions.create(
             Path(workspace), model_id=model_id, provider_id=provider_id
         )
@@ -1026,8 +1027,16 @@ class AppServer:
             if (
                 host is not None
                 and host.alive()
-                and getattr(host, "bootstrapped", False)
             ):
+                # ``session/new`` warms the worker in the background.  The
+                # Desktop model picker can immediately send ``session/set_model``
+                # while that single-flight bootstrap is still running.  Join
+                # it before switching the task-local model; otherwise the
+                # following prompt can race the same worker bootstrap and sit
+                # at ``Starting Agent worker…`` until the appserver watchdog
+                # reports a misleading 120s stall.
+                if not getattr(host, "bootstrapped", False):
+                    await host.ensure_bootstrapped(timeout=30.0)
                 switched = await host.set_model(model_id, timeout=30.0)
                 if isinstance(switched, dict):
                     result.update(switched)

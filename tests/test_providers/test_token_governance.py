@@ -81,6 +81,71 @@ def test_agent_get_core_tools_subset_small_pool():
     assert len(agent._get_core_tools()) == 4
 
 
+def test_agent_turn_tools_use_local_build_subset_for_creation_tasks():
+    """创建型任务不应每轮携带所有与当前任务无关的工具 schema。"""
+    agent = _new_agent(DEFAULT_CAPABILITIES, [
+        SimpleNamespace(name=name)
+        for name in (
+            "agent", "bash", "datetime", "diagnostics", "download_file",
+            "download_mcp", "download_skill", "edit", "file_download", "format",
+            "git", "glob", "grep", "history", "ls", "memory", "open_file",
+            "patch", "question", "read", "skill", "task", "view", "webfetch",
+            "websearch", "write",
+        )
+    ])
+
+    selected = agent._select_turn_tools(
+        agent._get_core_tools(),
+        "Create a Java Swing number bomb game in the current workspace.",
+        requires_web=False,
+        allowed_tool_names=None,
+    )
+
+    assert {tool.name for tool in selected} == {
+        "bash", "datetime", "edit", "format", "git", "glob", "grep", "ls",
+        "open_file", "patch", "read", "skill", "write",
+    }
+    assert "websearch" not in {tool.name for tool in selected}
+    assert "diagnostics" not in {tool.name for tool in selected}
+
+
+def test_agent_turn_tools_keep_research_tools_for_web_tasks():
+    """研究任务保留 websearch/webfetch，同时继续使用本地产物工具。"""
+    agent = _new_agent(DEFAULT_CAPABILITIES, [
+        SimpleNamespace(name=name)
+        for name in (
+            "bash", "datetime", "edit", "ls", "read", "skill", "webfetch",
+            "websearch", "write", "question",
+        )
+    ])
+
+    selected = agent._select_turn_tools(
+        agent._get_core_tools(),
+        "Search the web and build a market BI report.",
+        requires_web=True,
+        allowed_tool_names=None,
+    )
+
+    assert {tool.name for tool in selected} == {
+        "bash", "datetime", "edit", "ls", "read", "skill", "webfetch", "websearch", "write",
+    }
+
+
+def test_agent_turn_tools_respect_explicit_allowlist():
+    """计划/社交等显式 allowlist 不能被任务裁剪策略扩大。"""
+    agent = _new_agent(DEFAULT_CAPABILITIES, [
+        SimpleNamespace(name=name) for name in ("datetime", "read", "write", "websearch")
+    ])
+    selected = agent._select_turn_tools(
+        agent._get_core_tools(),
+        "Create a website",
+        requires_web=True,
+        allowed_tool_names=frozenset({"read", "datetime"}),
+    )
+
+    assert [tool.name for tool in selected] == ["datetime", "read"]
+
+
 def test_agent_include_few_shot_none_true():
     """few_shot_policy=None（现状）→ include_few_shot=True。"""
     agent = _new_agent(DEFAULT_CAPABILITIES, [])

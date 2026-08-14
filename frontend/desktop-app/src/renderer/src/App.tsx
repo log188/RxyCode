@@ -229,6 +229,7 @@ function App(): React.JSX.Element {
             onClick={() => setSettingsOpen(true)}
             aria-label="Settings"
             title="Settings"
+            data-testid="open-settings"
           >
             <Settings aria-hidden="true" size={17} />
           </button>
@@ -247,7 +248,7 @@ function App(): React.JSX.Element {
               activeSessionId={activeSessionId}
               runStateBySession={conversation.state.runStateBySession}
               childCountBySession={childCountBySession}
-              disabled={status !== 'running'}
+              disabled={status !== 'running' || conversation.protocolClient === null}
               onCreate={() => void handleCreate()}
               onSelect={(sessionId) => {
                 conversation.selectSession(sessionId)
@@ -267,7 +268,7 @@ function App(): React.JSX.Element {
           activeSessionId={activeSessionId}
           runStateBySession={conversation.state.runStateBySession}
           childCountBySession={childCountBySession}
-          disabled={status !== 'running'}
+          disabled={status !== 'running' || conversation.protocolClient === null}
           onCreate={() => void handleCreate()}
           onSelect={conversation.selectSession}
           onRename={(sessionId, title) => void conversation.renameSession(sessionId, title)}

@@ -54,6 +54,34 @@ def test_bare_algorithm_search_does_not_force_web_research():
     assert get_research_policy("Convert one to two fields").requires_web is False
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "请检查当前工作区和当前时间，然后创建一个离线 HTML 游戏。",
+        "查询当前时间并使用 Java Swing 编写数字游戏。",
+        "Check the current time, then build the local offline demo.",
+    ],
+)
+def test_clock_or_workspace_context_does_not_force_web_research(query):
+    """A time check is not an external-facts research request.
+
+    The Desktop real-business harness adds a generic current-time check to
+    every prompt. Treating that boilerplate as web research sends offline
+    tasks through synchronous search/fetch and can starve the appserver.
+    """
+    assert get_research_policy(query).requires_web is False
+
+
+def test_local_runtime_state_words_do_not_force_web_research():
+    """Game/program state such as the current range is local, not web data."""
+    query = (
+        "\u8bf7\u8c03\u7528 datetime \u67e5\u8be2\u5f53\u524d\u65f6\u95f4\uff0c"
+        "\u68c0\u67e5\u5f53\u524d\u5de5\u4f5c\u533a\u548c\u5f53\u524d\u8303\u56f4\uff0c"
+        "\u7136\u540e\u8fd0\u884c\u672c\u5730 Java \u7a0b\u5e8f\u3002"
+    )
+    assert get_research_policy(query).requires_web is False
+
+
 def test_current_workspace_audit_with_local_tools_does_not_force_web_research():
     """A local audit must not be misrouted merely because it says "current".
 
@@ -64,6 +92,78 @@ def test_current_workspace_audit_with_local_tools_does_not_force_web_research():
     query = (
         "Audit the current workspace. Call glob, grep, and read only; "
         "do not use web search."
+    )
+
+    assert get_research_policy(query).requires_web is False
+
+
+def test_current_local_time_and_workspace_do_not_force_web_research():
+    query = "Inspect the current workspace and current time before building the local offline demo."
+    assert get_research_policy(query).requires_web is False
+
+
+def test_local_runtime_state_phrases_do_not_force_web_research():
+    query = "Build a Java game and verify the current range, current score, and current level."
+    assert get_research_policy(query).requires_web is False
+
+
+def test_local_artifact_repair_prompt_does_not_force_web_research():
+    """A generated-artifact repair turn must stay local.
+
+    The repair validator includes words such as ``currently``, ``source`` and
+    ``status``. Before this guard, those words routed the repair turn through
+    synchronous multi-engine search even though it only needed local files.
+    """
+    query = (
+        "Artifact repair pass for T05. The previous turn was incomplete. "
+        "Inspect every file currently present and fix the Java source. "
+        "Do not call or use websearch, webfetch, browsing, internet, or "
+        "external research. Use only the existing workspace and local tools. "
+        "Report the current status after running javac."
+    )
+    assert get_research_policy(query).requires_web is False
+
+
+def test_current_price_still_requires_web_research():
+    assert get_research_policy("Check the current price of gold before advising me.").requires_web is True
+
+
+def test_explicit_web_tool_request_requires_web_research():
+    assert get_research_policy(
+        "First call websearch at least three times and webfetch at least twice."
+    ).requires_web is True
+
+
+def test_explicit_web_request_wins_over_workspace_boilerplate():
+    """A build prompt may mention the local workspace and opening a page,
+    while still explicitly requiring external research.
+
+    The old local-tool heuristic saw ``current workspace`` plus a generic
+    ``open``/``read`` word in the acceptance checklist and disabled web tools
+    before the fast path could prefetch them.
+    """
+    query = (
+        "Create T04-travel in the current workspace. First call datetime and "
+        "record the current date. Use websearch and webfetch for transport, "
+        "lodging, tickets, food, styling, and contingency costs. Deliver an "
+        "interactive webpage, then open it and verify the budget filters."
+    )
+    policy = get_research_policy(query)
+    assert policy.requires_web is True
+    assert policy.cache_read_allowed is False
+
+
+def test_local_offline_task_status_does_not_force_web_research():
+    """Local delivery/status language is not a request for external facts.
+
+    The real-business harness appends common completion rules mentioning task
+    status.  A standalone ``status`` keyword must not send an offline game
+    through synchronous websearch/webfetch before local tools can run.
+    """
+    query = (
+        "Create an original offline HTML game with keyboard controls, score, "
+        "collision and restart. Verify the local runtime status and write a "
+        "README and TEST-REPORT. Do not use websearch or external assets."
     )
 
     assert get_research_policy(query).requires_web is False
@@ -160,4 +260,21 @@ def test_extract_research_query_empty_and_fallback():
     # No explicit search marker: falls back to the input, stripping prefixes.
     query = extract_research_query("今天 Python 最新版本是什么？")
     assert query  # non-empty
+
+
+def test_extract_research_query_does_not_use_webfetch_as_english_topic():
+    prompt = (
+        "Create T04-travel in the current workspace. First call datetime and record the current date. "
+        "Plan a five-day four-night Suzhou plus Hangzhou trip from and back to Guangzhou with a hard "
+        "total budget of no more than CNY 3000 and one makeup styling session. "
+        "Use websearch and webfetch for transport, lodging, tickets, food, local transport, styling, "
+        "and contingency costs; record source URL and access date. Deliver an interactive webpage."
+    )
+
+    query = extract_research_query(prompt)
+
+    assert "webfetch" not in query.lower()
+    assert "transport" in query.lower() or "suzhou" in query.lower()
+    assert "websearch" not in query.lower()
+    assert len(query) <= 120
     assert "今天 Python 最新版本是什么" in query or query

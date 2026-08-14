@@ -2,20 +2,26 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const desktopAppDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const repositoryDir = resolve(process.env.RXYCODE_REPO_DIR ?? resolve(desktopAppDir, '..', '..'))
 const vite = join(desktopAppDir, 'node_modules', 'electron-vite', 'bin', 'electron-vite.js')
+
+export function screenshotPath(artifactDir: string, requestedPath: string): string {
+  return isAbsolute(requestedPath) ? requestedPath : join(artifactDir, requestedPath)
+}
 
 const delay = (ms: number): Promise<void> => new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
 
@@ -76,6 +82,22 @@ function sourceConfigurationUnchanged(hashes: Record<string, string | null>): bo
   return Object.entries(hashes).every(([path, before]) => sha256(path) === before)
 }
 
+function directoryFingerprint(root: string): string | null {
+  if (!existsSync(root)) return null
+  const files: string[] = []
+  const walk = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else files.push(path)
+    }
+  }
+  walk(root)
+  const hash = createHash('sha256')
+  for (const path of files.sort()) hash.update(path).update(readFileSync(path))
+  return hash.digest('hex')
+}
+
 async function portClosed(port: number): Promise<boolean> {
   try {
     await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(300) })
@@ -113,6 +135,7 @@ export interface CleanupProof {
   debug_port_closed: boolean
   temp_root_removed: boolean
   source_config_unchanged: boolean
+  source_skills_unchanged: boolean
   lease_count: number | null
   pending_rpc_count: number | null
   passed: boolean
@@ -121,6 +144,8 @@ export interface CleanupProof {
 export interface HarnessOptions {
   artifactDir: string
   fakeAppserver: boolean
+  /** Real artifact tests need an empty workspace; repo audits need a worktree. */
+  workspaceMode?: 'git-worktree' | 'empty'
   width?: number
   height?: number
   extraEnv?: NodeJS.ProcessEnv
@@ -132,11 +157,15 @@ export class DesktopCdpHarness {
   readonly profileDir: string
   readonly dataDir: string
   readonly workspaceDir: string
+  readonly skillDir: string
   readonly stdout: Array<{ at_ms: number; line: string }> = []
   readonly stderr: Array<{ at_ms: number; line: string }> = []
   readonly startedAt = Date.now()
   private readonly sourceHashes: Record<string, string | null>
+  private readonly sourceSkillRoot: string
+  private readonly sourceSkillHash: string | null
   private readonly options: HarnessOptions
+  private readonly workspaceIsGitWorktree: boolean
   private child: ChildProcess | null = null
   private socket: WebSocket | null = null
   private sequence = 0
@@ -145,24 +174,42 @@ export class DesktopCdpHarness {
 
   constructor(options: HarnessOptions) {
     this.options = options
+    this.workspaceIsGitWorktree = options.workspaceMode !== 'empty'
     this.artifactDir = resolve(options.artifactDir)
     mkdirSync(this.artifactDir, { recursive: true })
     this.tempRoot = mkdtempSync(join(tmpdir(), 'rxycode-desktop-cd-'))
     this.profileDir = join(this.tempRoot, 'electron-profile')
     this.dataDir = join(this.tempRoot, 'rxycode-data')
     this.workspaceDir = join(this.tempRoot, 'workspace')
+    this.skillDir = join(this.tempRoot, 'skills')
     for (const path of [this.profileDir, this.dataDir]) {
       mkdirSync(path, { recursive: true })
     }
-    const worktree = spawnSync(
-      'git',
-      ['worktree', 'add', '--detach', this.workspaceDir, 'HEAD'],
-      { cwd: repositoryDir, windowsHide: true, encoding: 'utf8' }
-    )
-    if (worktree.status !== 0) {
-      throw new Error(`failed to create isolated test worktree: ${worktree.stderr}`)
+    mkdirSync(this.skillDir, { recursive: true })
+    if (this.workspaceIsGitWorktree) {
+      const worktree = spawnSync(
+        'git',
+        ['worktree', 'add', '--detach', this.workspaceDir, 'HEAD'],
+        { cwd: repositoryDir, windowsHide: true, encoding: 'utf8' }
+      )
+      if (worktree.status !== 0) {
+        throw new Error(`failed to create isolated test worktree: ${worktree.stderr}`)
+      }
+    } else {
+      // A generated app must not receive RxyCode's own source tree as its
+      // initial project.  Exposing that tree makes the model spend turns
+      // indexing unrelated files and bloats the first tool result/context.
+      mkdirSync(this.workspaceDir, { recursive: true })
     }
     this.sourceHashes = copyIsolatedConfiguration(this.dataDir)
+    this.sourceSkillRoot = resolve(
+      process.env.RXYCODE_TEST_SKILL_SOURCE ??
+        join(homedir(), '.codex', 'skills', 'ui-ux-pro-max')
+    )
+    this.sourceSkillHash = directoryFingerprint(this.sourceSkillRoot)
+    if (this.sourceSkillHash !== null) {
+      cpSync(this.sourceSkillRoot, join(this.skillDir, 'ui-ux-pro-max'), { recursive: true })
+    }
   }
 
   async start(): Promise<void> {
@@ -180,6 +227,8 @@ export class DesktopCdpHarness {
           RXYCODE_DESKTOP_USER_DATA: this.profileDir,
           RXYCODE_DESKTOP_WIDTH: String(this.options.width ?? 1280),
           RXYCODE_DESKTOP_HEIGHT: String(this.options.height ?? 800),
+          RXYCODE_SKILLS_DIR: this.skillDir,
+          RXYCODE_SKILLS_DIRS: this.skillDir,
           ...(this.options.fakeAppserver ? { RXYCODE_DESKTOP_FAKE_APPSERVER: '1' } : {})
         },
         windowsHide: true,
@@ -251,14 +300,33 @@ export class DesktopCdpHarness {
     await this.waitForSelector('[data-testid="task-command-center"]', 30_000)
   }
 
-  send(method: string, params: unknown = {}): Promise<any> {
+  send(method: string, params: unknown = {}, timeoutMs = 30_000): Promise<any> {
     if (this.socket === null || this.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('CDP websocket is not open'))
     }
     return new Promise((resolveSend, rejectSend) => {
       const id = ++this.sequence
-      this.pending.set(id, { resolve: resolveSend, reject: rejectSend })
-      this.socket!.send(JSON.stringify({ id, method, params }))
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        rejectSend(new Error(`CDP request timed out after ${timeoutMs}ms: ${method}`))
+      }, timeoutMs)
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer)
+          resolveSend(value)
+        },
+        reject: (error) => {
+          clearTimeout(timer)
+          rejectSend(error)
+        }
+      })
+      try {
+        this.socket!.send(JSON.stringify({ id, method, params }))
+      } catch (error) {
+        clearTimeout(timer)
+        this.pending.delete(id)
+        rejectSend(error instanceof Error ? error : new Error(String(error)))
+      }
     })
   }
 
@@ -308,9 +376,17 @@ export class DesktopCdpHarness {
   }
 
   async screenshot(relativePath: string): Promise<string> {
-    const path = join(this.artifactDir, relativePath)
+    const path = screenshotPath(this.artifactDir, relativePath)
     mkdirSync(dirname(path), { recursive: true })
-    const image = await this.send('Page.captureScreenshot', { format: 'png' })
+    // A real Electron window may be behind another window during a long
+    // scenario. Bring the page forward before capture, but keep both calls
+    // bounded by `send()` so a blocked renderer cannot stall cleanup.
+    try {
+      await this.send('Page.bringToFront', {}, 5_000)
+    } catch {
+      // Screenshot itself is still useful when bringToFront is unsupported.
+    }
+    const image = await this.send('Page.captureScreenshot', { format: 'png' }, 10_000)
     writeFileSync(path, Buffer.from(image.data, 'base64'))
     return path
   }
@@ -322,6 +398,14 @@ export class DesktopCdpHarness {
       deviceScaleFactor: 1,
       mobile: false
     })
+    await delay(100)
+  }
+
+  async setZoom(factor: number): Promise<void> {
+    if (!Number.isFinite(factor) || factor < 1 || factor > 3) {
+      throw new Error(`zoom factor must be between 1 and 3, received ${factor}`)
+    }
+    await this.send('Emulation.setPageScaleFactor', { pageScaleFactor: factor })
     await delay(100)
   }
 
@@ -407,12 +491,15 @@ export class DesktopCdpHarness {
     const appserverProcessGone = await waitUntilGone(appserverPid)
     const debugClosed = this.debugPort <= 0 || await portClosed(this.debugPort)
     let tempRemoved = false
-    const worktreeRemoval = spawnSync(
-      'git',
-      ['worktree', 'remove', '--force', this.workspaceDir],
-      { cwd: repositoryDir, windowsHide: true, encoding: 'utf8' }
-    )
-    const workspaceWorktreeRemoved = worktreeRemoval.status === 0 && !existsSync(this.workspaceDir)
+    let workspaceWorktreeRemoved = !this.workspaceIsGitWorktree
+    if (this.workspaceIsGitWorktree) {
+      const worktreeRemoval = spawnSync(
+        'git',
+        ['worktree', 'remove', '--force', this.workspaceDir],
+        { cwd: repositoryDir, windowsHide: true, encoding: 'utf8' }
+      )
+      workspaceWorktreeRemoved = worktreeRemoval.status === 0 && !existsSync(this.workspaceDir)
+    }
     try {
       rmSync(this.tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
       tempRemoved = !existsSync(this.tempRoot)
@@ -431,6 +518,7 @@ export class DesktopCdpHarness {
       debug_port_closed: debugClosed,
       temp_root_removed: tempRemoved,
       source_config_unchanged: sourceConfigurationUnchanged(this.sourceHashes),
+      source_skills_unchanged: directoryFingerprint(this.sourceSkillRoot) === this.sourceSkillHash,
       lease_count: leaseCount,
       pending_rpc_count: pendingRpcCount,
       passed: false
@@ -444,6 +532,7 @@ export class DesktopCdpHarness {
       proof.debug_port_closed &&
       proof.temp_root_removed &&
       proof.source_config_unchanged &&
+      proof.source_skills_unchanged &&
       proof.lease_count === 0 &&
       proof.pending_rpc_count === 0
     writeFileSync(

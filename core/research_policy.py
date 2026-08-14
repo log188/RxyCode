@@ -17,11 +17,23 @@ class ResearchPolicy:
 
 _FRESH_ZH = (
     "最新", "当前", "现在", "今天", "今日", "实时", "近期", "最近",
-    "现价", "价格", "新闻", "状态", "版本", "发布", "更新",
+    "现价", "价格", "新闻",
 )
 _FRESH_EN = re.compile(
     r"\b(latest|current|currently|today|tonight|real[- ]?time|recent|recently|"
-    r"price|pricing|news|status|version|release|updated?)\b",
+    r"price|pricing|news)\b",
+    re.IGNORECASE,
+)
+
+# ``status``, ``version``, ``release`` and ``updated`` are common local
+# delivery words.  A task that asks the agent to build an offline artifact and
+# report its runtime status must not be sent to the web path just because one
+# of those words occurs in the acceptance checklist.  External freshness is
+# still detected by explicit ``current/latest/today`` wording, price/news
+# subjects, volatile domains, or explicit web intent below.
+_FRESH_RELEASE_EN = re.compile(
+    r"\b(?:status|version|release|updated?)\b[^.\n]{0,80}\b"
+    r"(?:of|for|from|about|available|released|published)\b",
     re.IGNORECASE,
 )
 
@@ -38,7 +50,9 @@ _EXPLICIT_WEB_EN = re.compile(
     r"(?:browse|search|look\s+up)\b|"
     r"\b(?:browse|search|check|verify|look\s+up)\s+"
     r"(?:the\s+)?(?:web|internet|online|github)\b|"
-    r"\b(?:web|internet|online|github)\s+(?:search|lookup)\b",
+    r"\b(?:web|internet|online|github)\s+(?:search|lookup)\b|"
+    r"\b(?:call|use|invoke)\s+(?:the\s+)?(?:websearch|webfetch)\b|"
+    r"\bwebsearch\s+and\s+webfetch\b",
     re.IGNORECASE,
 )
 _EXPLICIT_WEB_ZH_COMMAND = re.compile(
@@ -81,6 +95,21 @@ _LOCAL_WORKSPACE_EN = re.compile(
 )
 _LOCAL_WORKSPACE_ZH = (
     "当前工作区", "本地工作区", "当前目录", "本地目录", "项目目录", "代码库", "仓库",
+)
+_NON_WEB_CURRENT_ZH = (
+    "当前时间", "当前日期", "今天日期", "现在时间", "现在几点", "当前时刻",
+    "当前工作区", "本地工作区", "当前目录", "本地目录", "当前项目", "本地项目",
+    # Local application state is not a request for an externally verified
+    # current fact.  Without these bounded phrases, a game prompt such as
+    # "检查当前范围" leaves the bare word "当前" behind and is routed into
+    # the synchronous web-research path before local tools can run.
+    "当前范围", "当前状态", "当前环境", "当前任务", "当前窗口", "当前输出",
+)
+_NON_WEB_CURRENT_EN = re.compile(
+    r"\b(?:current|local)\s+(?:time|date|workspace|worktree|repository|repo|"
+    r"codebase|project|directory|folder|range|state|environment|task|"
+    r"window|output|score|level|attempts?)\b",
+    re.IGNORECASE,
 )
 _LOCAL_TOOL_CALL = re.compile(
     r"\b(?:glob|grep|read|ls|cat|open)\b|调用\s*(?:glob|grep|read|ls|cat|open)",
@@ -179,7 +208,24 @@ def get_research_policy(query: str) -> ResearchPolicy:
     constrained_local_inspection = bool(_LOCAL_TOOL_CALL.search(text)) and bool(
         _NEGATED_WEB_TOOL_CONSTRAINT.search(text)
     )
-    if local_workspace_task or constrained_local_inspection:
+    explicit_no_web = bool(_NEGATED_WEB_TOOL_CONSTRAINT.search(text))
+    explicit_web_request = (
+        not explicit_no_web
+        and (
+            any(term in text for term in _EXPLICIT_WEB_ZH)
+            or bool(_EXPLICIT_WEB_ZH_COMMAND.search(text))
+            or bool(_EXPLICIT_WEB_EN.search(text))
+        )
+    )
+    # Explicit websearch/webfetch instructions must win over generic local
+    # acceptance boilerplate such as "current workspace", "open the page",
+    # or "read the generated files". The old ordering silently removed the
+    # network tools from real research builds before the fast path started.
+    if (
+        (local_workspace_task and not explicit_web_request)
+        or (constrained_local_inspection and not explicit_web_request)
+        or (explicit_no_web and not explicit_web_request)
+    ):
         return ResearchPolicy(
             requires_web=False,
             cache_read_allowed=True,
@@ -187,14 +233,21 @@ def get_research_policy(query: str) -> ResearchPolicy:
             citations_required=False,
         )
 
+    # "当前工作区/当前时间" are local inspection instructions, not requests
+    # for externally verified facts. Remove only those bounded phrases before
+    # applying freshness detection, so "current price" and "current release"
+    # still require web research.
+    freshness_text = text
+    for term in _NON_WEB_CURRENT_ZH:
+        freshness_text = freshness_text.replace(term, " ")
+    freshness_text = _NON_WEB_CURRENT_EN.sub(" ", freshness_text)
     requires_web = (
-        any(term in text for term in _FRESH_ZH)
-        or bool(_FRESH_EN.search(text))
-        or any(term in text for term in _EXPLICIT_WEB_ZH)
-        or bool(_EXPLICIT_WEB_ZH_COMMAND.search(text))
-        or bool(_EXPLICIT_WEB_EN.search(text))
-        or any(term in text for term in _VOLATILE_ZH)
-        or bool(_VOLATILE_EN.search(text))
+        any(term in freshness_text for term in _FRESH_ZH)
+        or bool(_FRESH_EN.search(freshness_text))
+        or bool(_FRESH_RELEASE_EN.search(freshness_text))
+        or explicit_web_request
+        or any(term in freshness_text for term in _VOLATILE_ZH)
+        or bool(_VOLATILE_EN.search(freshness_text))
         or bool(_CURRENCY_PAIR_EN.search(text))
     )
     return ResearchPolicy(
@@ -253,6 +306,70 @@ _ZH_TASK_SUFFIXES = (
 )
 
 
+_EN_RESEARCH_TOPIC_TERMS = re.compile(
+    r"\b(?:travel|trip|tour|budget|transport|lodging|hotel|ticket|styling|"
+    r"website|company|dashboard|market|data|gold|silver|stock|index|"
+    r"vehicle|car|rental|rent|commute|coffee|inventory|order|spring|mysql|"
+    r"game|application|project|research|price|pricing|cost|investment)\b",
+    re.IGNORECASE,
+)
+_EN_RESEARCH_TOOL_WORDS = re.compile(
+    r"\b(?:websearch|webfetch|datetime|bash|powershell|python|node|npm|"
+    r"read|write|edit|open|browser|workspace|directory|folder|README|"
+    r"test-report)\b",
+    re.IGNORECASE,
+)
+
+
+def _english_research_topic(text: str) -> str:
+    """Choose a topic sentence without treating tool names as search terms."""
+    sentences = [
+        part.strip(" \t\r\n-:;,.!?()[]{}")
+        for part in re.split(r"(?:\r?\n+|(?<=[.!?])\s+)", text)
+        if part.strip()
+    ]
+    scored: list[tuple[int, int, str]] = []
+    for index, sentence in enumerate(sentences):
+        if len(sentence) < 12:
+            continue
+        topic_hits = len(_EN_RESEARCH_TOPIC_TERMS.findall(sentence))
+        tool_hits = len(_EN_RESEARCH_TOOL_WORDS.findall(sentence))
+        if topic_hits == 0:
+            continue
+        score = topic_hits * 10 - tool_hits * 4
+        if re.search(r"\bweb(?:search|fetch)\b", sentence, re.IGNORECASE):
+            # Tool names describe how to research, not what to research.
+            score -= 40
+        if re.search(
+            r"\b(?:plan|collect|research|create|build|develop|analy[sz]e)\b",
+            sentence,
+            re.IGNORECASE,
+        ):
+            score += 3
+        scored.append((score, -index, sentence))
+    if not scored:
+        return ""
+    candidate = max(scored)[2]
+    # Keep search requests topical and compact.  Long acceptance prose lowers
+    # recall in public engines and makes the prefetch path wait for fallbacks.
+    candidate = re.sub(
+        r"^\s*(?:plan|collect|research|create|build|develop|analy[sz]e)\b[:,]?\s*",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(r"\bfrom and back to\b", "from", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(
+        r"\bwith a hard total budget of no more than\b",
+        "budget",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    if len(candidate) > 120:
+        candidate = candidate[:120].rsplit(" ", 1)[0]
+    return candidate.strip()
+
+
 def extract_research_query(user_input: str) -> str:
     """Derive a concise search query from free-form task language.
 
@@ -281,7 +398,14 @@ def extract_research_query(user_input: str) -> str:
     # 2. Take the clause after an explicit search verb.
     lowered = candidate.lower()
     for marker in ("搜索", "search", "查一下", "查找", "浏览"):
-        idx = lowered.find(marker)
+        idx = (
+            lowered.find(marker)
+            if marker != "search"
+            else next(
+                (match.start() for match in re.finditer(r"\bsearch\b", lowered)),
+                -1,
+            )
+        )
         if idx == -1:
             continue
         after = candidate[idx + len(marker):].lstrip("（( ：:，,。")
@@ -309,6 +433,14 @@ def extract_research_query(user_input: str) -> str:
     #    a searchable query and we leave it untouched (preserving punctuation
     #    such as the trailing "？" on "今天最新 Python 版本是什么？").
     if not prefix_stripped:
+        # Long English acceptance prompts commonly contain ``websearch`` and
+        # ``webfetch`` several times.  If no standalone search verb matched,
+        # choose the domain sentence instead of sending a tool-name fragment
+        # such as "and webfetch for transport" to the search engine.
+        if len(text) > 120 and re.search(r"\bweb(?:search|fetch)\b", text, re.I):
+            topic = _english_research_topic(text)
+            if topic:
+                return topic
         return text
     for suffix in _ZH_TASK_SUFFIXES:
         if candidate.endswith(suffix):

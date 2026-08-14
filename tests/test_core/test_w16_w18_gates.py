@@ -11,8 +11,9 @@ def test_git_force_regex_and_allowlist():
     names = agent._resolve_fast_reply_tool_allowlist(msg, None)
     assert names == GIT_ONLY_TOOL_NAMES
     assert "websearch" not in names
-    # status token would otherwise force web research
-    assert get_research_policy(msg).requires_web is True
+    # A local git status request must stay on the git-only path.  The generic
+    # ``status`` token is not external freshness evidence by itself.
+    assert get_research_policy(msg).requires_web is False
 
 
 def test_evidence_failed_is_user_facing_chinese():

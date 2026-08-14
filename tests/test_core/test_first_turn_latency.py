@@ -93,6 +93,31 @@ def test_small_game_is_creation_not_full_project():
     assert has_creation_product_intent("帮我写一个跑酷小游戏") is True
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Create T04-travel as an interactive webpage with a budget CSV.",
+        "Create T06-market-bi as an interactive BI dashboard with source data.",
+        "Create T07-ev as a five-year decision system with sliders and tables.",
+        "Create T09-coffee as a Java Spring full-stack project with MySQL.",
+    ],
+)
+def test_real_artifact_requests_use_creation_product_routing(prompt: str):
+    """Artifact prompts must not idle in planner+decomposer before tools."""
+    assert has_creation_product_intent(prompt) is True
+
+
+def test_long_research_artifact_prompt_stays_on_creation_routing():
+    prompt = (
+        "Create T04-travel in the current workspace. First call datetime and "
+        "record the date. Plan transport, lodging, tickets, food and styling; "
+        "use websearch and webfetch, record sources and uncertainty, and keep "
+        "the budget within the hard limit. Deliver all documentation and an "
+        "interactive webpage with filters, a timetable, and a budget view."
+    )
+    assert has_creation_product_intent(prompt) is True
+
+
 @pytest.mark.asyncio
 async def test_no_tool_itinerary_uses_cacheable_fast_reply():
     agent = _run_agent()
@@ -120,7 +145,8 @@ def test_run_does_not_schedule_competing_prewarm():
 
 def test_run_does_not_await_in_flight_mcp_refresh():
     src = inspect.getsource(AgentV2.run)
-    assert "is_alive" in src or "_mcp_refresh_thread" in src
+    assert "is_alive" in src and "_mcp_refresh_thread" in src
+    assert "_mcp_refresh_needed_now" in src
 
 
 def test_declines_tools_skips_mcp_refresh_on_turn():

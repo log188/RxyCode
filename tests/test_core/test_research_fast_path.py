@@ -98,13 +98,16 @@ def make_agent(
     agent._execute_tool = AsyncMock(side_effect=execute_tool)
     agent._get_core_tools = MagicMock(return_value=[])
     captured_messages = []
+    captured_tools = []
 
-    async def raw_stream(messages, _tools=None):
+    async def raw_stream(messages, _tools=None, **_kwargs):
         captured_messages.extend(messages)
+        captured_tools.extend(_tools or [])
         yield Chunk(answer)
 
     agent._raw_stream = raw_stream
     agent._maybe_compress_context = AsyncMock()
+    agent._captured_tools = captured_tools
     return agent, captured_messages
 
 
@@ -130,6 +133,18 @@ async def test_fresh_query_ignores_cached_answer_and_stops_when_search_unverifie
     )
     assert captured == []
     assert "will not guess" in result
+
+
+@pytest.mark.asyncio
+async def test_local_task_hides_network_tools_from_model():
+    agent, _captured = make_agent("unused", answer="local build complete")
+    agent._get_core_tools = MagicMock(
+        return_value=[SimpleNamespace(name=name) for name in ("datetime", "websearch", "webfetch", "write")]
+    )
+
+    await agent._fast_reply_with_tools("Build the local offline demo and check the current time.")
+
+    assert [getattr(tool, "name", "") for tool in agent._captured_tools] == ["datetime", "write"]
 
 
 @pytest.mark.asyncio
@@ -187,6 +202,36 @@ async def test_verified_fresh_query_injects_sources_and_does_not_cache(monkeypat
     )
     precise_put.assert_not_called()
     semantic_put.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_research_prefetch_continues_after_first_source_without_waiting_for_slow_siblings(monkeypatch):
+    """A slow or broken candidate must not hold first model output hostage."""
+    from RxyCode.RxyCode1_1_0.core import agent_v2 as agent_module
+
+    monkeypatch.setattr(agent_module, "RESEARCH_PREFETCH_FETCH_TIMEOUT_SECONDS", 0.02)
+    search = (
+        "First\n  https://fast.example/source\n"
+        "Second\n  https://slow.example/source\n"
+        "Third\n  https://fallback.example/source"
+    )
+    agent, captured = make_agent(
+        search,
+        answer="Verified answer https://fast.example/source",
+        fetch_results={
+            "https://fast.example/source": "Verified fast source",
+            "https://slow.example/source": "[error fetching source: timeout]",
+            "https://fallback.example/source": "[error fetching source: timeout]",
+        },
+    )
+
+    result = await agent._fast_reply_with_tools("What is the current travel price?")
+
+    assert "Verified answer" in result
+    assert any(
+        "Verified fast source" in str(getattr(message, "content", ""))
+        for message in captured
+    )
 
 
 @pytest.mark.asyncio

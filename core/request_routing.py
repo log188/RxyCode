@@ -142,7 +142,16 @@ def has_creation_product_intent(text: str) -> bool:
     ):
         return True
     if re.search(
-        r"\b(build|create|implement|write|make)\b.*\b(game|app|website|code|script|bot)\b",
+        r"\b(build|create|implement|write|make|develop|design)\b"
+        # Long real-business prompts put the artifact noun after workspace,
+        # research, and acceptance instructions. Keep a finite bound so a
+        # distant quoted example cannot rewrite routing, but do not require
+        # the noun to appear in the first sentence.
+        r"[\s\S]{0,2000}\b("
+        r"game|app|application|website|web\s+page|webpage|code|script|bot|"
+        r"dashboard|project|system|service|portal|program|tool|"
+        r"full[- ]stack|front[- ]end|back[- ]end|api"
+        r")\b",
         text_lower,
     ):
         return True

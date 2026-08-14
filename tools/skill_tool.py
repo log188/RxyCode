@@ -8,15 +8,20 @@ class SkillInput(BaseModel):
     name: str = Field(description="Name of the skill to load")
 
 
-def load_skill(name: str) -> str:
-    search_dirs = [
+def _skill_dirs() -> list[Path]:
+    configured = os.environ.get("RXYCODE_SKILLS_DIRS", "").strip()
+    if configured:
+        return [Path(item) for item in configured.split(os.pathsep) if item]
+    return [
         Path(os.path.expanduser("~")) / ".rxycode" / "skills",
         Path(os.path.expanduser("~")) / ".claude" / "skills",
         Path(os.path.expanduser("~")) / ".codex" / "skills",
         Path(os.path.expanduser("~")) / ".mimocode" / "skills",
     ]
 
-    for base in search_dirs:
+
+def load_skill(name: str) -> str:
+    for base in _skill_dirs():
         if not base.exists():
             continue
         for d in base.rglob(name):

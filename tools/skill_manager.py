@@ -173,7 +173,8 @@ def _safe_extract_zip(payload: bytes, target_dir: Path) -> None:
 
 def get_skills_dir() -> Path:
     """Get the user skills directory."""
-    d = Path.home() / ".rxycode" / "skills"
+    configured = os.environ.get("RXYCODE_SKILLS_DIR", "").strip()
+    d = Path(configured) if configured else Path.home() / ".rxycode" / "skills"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

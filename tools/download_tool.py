@@ -1,6 +1,8 @@
 """Safety-gated skill and MCP configuration tools."""
 from __future__ import annotations
 
+import asyncio
+
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
@@ -25,6 +27,9 @@ class DownloadMCPInput(BaseModel):
     operation: str = Field(default="add", description="Operation: add or remove")
     command: str = Field(default="", description="Executable for a custom MCP server")
     args: list[str] = Field(default_factory=list, description="Arguments for a custom MCP server")
+
+
+SKILL_INSTALL_DEADLINE_SECONDS = 20.0
 
 
 def download_skill(
@@ -101,7 +106,19 @@ async def download_skill_async(
     for skill in list_installed_skills():
         if skill["name"].lower() == name.lower():
             return f"Skill '{name}' is already installed at {skill['path']}"
-    ok, message = await find_and_download_skill_async(name)
+    try:
+        # A search may perform a GitHub repository lookup followed by one or
+        # more candidate downloads. Per-request HTTP deadlines do not bound
+        # that whole chain, so enforce a user-visible task budget here.
+        ok, message = await asyncio.wait_for(
+            find_and_download_skill_async(name),
+            timeout=SKILL_INSTALL_DEADLINE_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        return (
+            f"Failed to install skill '{name}': skill search/download exceeded "
+            f"the {SKILL_INSTALL_DEADLINE_SECONDS:.0f}s deadline"
+        )
     if ok:
         return f"Successfully installed skill '{name}': {message}"
     return f"Failed to install skill '{name}': {message}"

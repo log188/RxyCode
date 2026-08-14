@@ -84,11 +84,7 @@ class TestClassifyBashCommand:
         assert classify_bash_command(cmd) == RiskLevel.DANGER, cmd
 
     @pytest.mark.parametrize("cmd", [
-        "ls -la",
-        "echo hello",
         "python -m pytest tests -q",
-        "git status",
-        "git log --oneline",
         "cat README.md",
         "grep -r foo .",
         "npm install",
@@ -100,6 +96,17 @@ class TestClassifyBashCommand:
     ])
     def test_normal_commands_are_write(self, cmd):
         assert classify_bash_command(cmd) == RiskLevel.WRITE, cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "pwd; echo \"---\"; ls -la",
+        "Get-Location; Get-ChildItem -Force",
+        "node --version; python --version; where cmd",
+        "git status --short",
+        "git log --oneline -5",
+    ])
+    def test_known_read_only_probe_commands_do_not_require_write_approval(self, cmd):
+        """Environment probes are READ; unknown shell remains fail-closed WRITE."""
+        assert classify_bash_command(cmd) == RiskLevel.READ, cmd
 
     def test_pattern_table_is_extensible_list(self):
         assert isinstance(DANGEROUS_COMMAND_PATTERNS, list)
@@ -187,7 +194,8 @@ class TestArgumentAwareToolRisk:
         assert classify_tool_risk(name, args) == RiskLevel.WRITE
 
     def test_bash_still_uses_dynamic_escalation(self):
-        assert classify_tool_risk("bash", {"command": "echo ok"}) == RiskLevel.WRITE
+        assert classify_tool_risk("bash", {"command": "echo ok"}) == RiskLevel.READ
+        assert classify_tool_risk("bash", {"command": "npm install"}) == RiskLevel.WRITE
         assert classify_tool_risk("bash", {"command": "shutdown now"}) == RiskLevel.DANGER
 
 

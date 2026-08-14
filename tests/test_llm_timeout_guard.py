@@ -2,13 +2,14 @@
 Tests for LLM call timeout guard (2026-08-13 fix).
 
 Root cause fixed: LLM streaming establishment (`first = await ait.__anext__()`)
-and the raw OpenAI client had no effective total timeout (default 600s),
-so an upstream hang produced 0-token stalls that appserver's watchdog
-(120s) killed first -- surfacing as "job stalled" instead of a real
-model-request timeout. Now:
-  - UsageTrackingLLM gains `llm_timeout` (default 90s, config-overridable)
+and the raw OpenAI client had no effective first-response deadline, so an
+upstream hang produced 0-token stalls that appserver's watchdog killed first.
+Now the total request timeout remains configurable, while the first response
+deadline is independently bounded to 30 seconds (or a shorter model setting):
+  - UsageTrackingLLM gains `llm_timeout` and a bounded first-token timeout
   - `_open_stream` / `_open_stream_with_retry` wrap first-chunk wait
-  - `AgentV2._openai_client` AsyncOpenAI(timeout=...) defaults to 90s
+  - `AgentV2._raw_stream` uses the same bounded deadline
+  - a first-token timeout is not retried as a blind transport retry
 """
 import asyncio
 import pytest
@@ -19,6 +20,7 @@ def _make_usage_llm(timeout=90.0):
     from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
     llm = object.__new__(UsageTrackingLLM)
     llm._llm_timeout = max(1.0, float(timeout))
+    llm._first_token_timeout = min(llm._llm_timeout, 30.0)
     return llm
 
 
@@ -62,6 +64,22 @@ class TestLlmCallTimeout:
         llm = _make_usage_llm(timeout=0)
         assert llm._llm_call_timeout() == 1.0
 
+    def test_first_token_timeout_is_bounded_and_can_only_be_shorter(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import _resolve_first_token_timeout
+
+        assert _resolve_first_token_timeout(90) == 30.0
+        assert _resolve_first_token_timeout(90, 12) == 12.0
+        assert _resolve_first_token_timeout(90, 45) == 30.0
+        assert _resolve_first_token_timeout(10) == 10.0
+
+    def test_stream_idle_timeout_is_bounded_and_can_only_be_shorter(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import _resolve_stream_idle_timeout
+
+        assert _resolve_stream_idle_timeout(90) == 15.0
+        assert _resolve_stream_idle_timeout(90, 12) == 12.0
+        assert _resolve_stream_idle_timeout(90, 45) == 30.0
+        assert _resolve_stream_idle_timeout(10) == 10.0
+
 
 class TestOpenStreamFirstChunkTimeout:
     async def test_hanging_first_chunk_raises_timeout(self):
@@ -87,18 +105,27 @@ class TestOpenStreamFirstChunkTimeout:
 
 
 class TestOpenStreamWithRetryTimeout:
-    async def test_hang_retries_then_raises(self):
+    async def test_first_token_hang_does_not_repeat_the_same_stall(self):
         llm = _make_usage_llm(timeout=2)
         llm._transport_retries = 1  # total 2 attempts
         llm._llm = MagicMock()
         llm._llm.astream.return_value = FakeHangingStream()
+        calls = {"n": 0}
+        original = llm._llm.astream
+
+        def counted(*args, **kwargs):
+            calls["n"] += 1
+            return original(*args, **kwargs)
+
+        llm._llm.astream = counted
         start = asyncio.get_event_loop().time()
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
             await llm._open_stream_with_retry([], {})
         elapsed = asyncio.get_event_loop().time() - start
-        assert elapsed < 12.0  # 2 attempts x 2s timeout + backoff, bounded
+        assert elapsed < 6.0
+        assert calls["n"] == 1
 
-    async def test_retry_recovers_on_second_attempt(self):
+    async def test_transport_reset_still_recovers_on_second_attempt(self):
         llm = _make_usage_llm(timeout=2)
         llm._transport_retries = 1
         first = object()
@@ -111,7 +138,7 @@ class TestOpenStreamWithRetryTimeout:
             async def __anext__(self):
                 calls["n"] += 1
                 if calls["n"] <= 1:
-                    await asyncio.Event().wait()  # first attempt hangs
+                    raise ConnectionError("stream reset")
                 return first
 
         llm._llm = MagicMock()
@@ -195,6 +222,68 @@ class TestRawStreamFirstChunkTimeout:
                 )
         elapsed = asyncio.get_event_loop().time() - start
         assert elapsed < 6.0
+
+    async def test_partial_stream_cannot_wait_forever_for_next_chunk(self, monkeypatch):
+        """A response that starts and then goes silent has its own deadline."""
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2, StreamIdleTimeoutError
+        from langchain_core.messages import HumanMessage
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+
+        first = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="partial", reasoning_content="")
+                )
+            ]
+        )
+
+        class PartialHangingStream:
+            def __init__(self):
+                self._first = True
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._first:
+                    self._first = False
+                    return first
+                await asyncio.Event().wait()
+
+        class Completions:
+            async def create(self, **_kwargs):
+                return PartialHangingStream()
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {
+            "timeout": 5.0,
+            "stream_idle_timeout": 1.0,
+            "model_name": "x",
+            "temperature": 0,
+        }
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = None
+        agent._capabilities = None
+        agent._openai_client = lambda: Completions()
+
+        async def drain() -> None:
+            async for _chunk in agent._raw_stream(
+                [HumanMessage(content="hi")], max_tokens=1
+            ):
+                pass
+
+        start = asyncio.get_event_loop().time()
+        with pytest.raises(StreamIdleTimeoutError):
+            await drain()
+        elapsed = asyncio.get_event_loop().time() - start
+        assert elapsed < 4.0
 
 
 class TestFastReplyDisablesThinking:

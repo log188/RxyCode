@@ -218,6 +218,26 @@ async def test_cancelled_direct_url_install_removes_staging(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_skill_search_has_a_total_deadline(monkeypatch):
+    from RxyCode.RxyCode1_1_0.tools import download_tool
+
+    async def hanging_search(_name):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        download_tool,
+        "SKILL_INSTALL_DEADLINE_SECONDS",
+        0.01,
+    )
+    import RxyCode.RxyCode1_1_0.tools.skill_manager as skill_manager
+
+    monkeypatch.setattr(skill_manager, "find_and_download_skill_async", hanging_search)
+    result = await download_tool.download_skill_async("directory")
+
+    assert "exceeded the 0s deadline" in result
+
+
+@pytest.mark.asyncio
 async def test_downloaders_reject_public_redirect_to_loopback(tmp_path, monkeypatch):
     from RxyCode.RxyCode1_1_0.tools import file_download, skill_manager
     from RxyCode.RxyCode1_1_0.utils import safe_http
