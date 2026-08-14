@@ -11,6 +11,8 @@ Covers the decision table rows with payload / serialized-message assertions:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -261,3 +263,65 @@ def test_glm_echoes_reasoning_across_turns():
     out = _convert(msgs, reasoning_contract="mandatory_echo", provider_id="glm")
     assistant = next(m for m in out if m["role"] == "assistant")
     assert assistant.get("reasoning_content") == "thinking"
+
+
+# ---------------------------------------------------------------------------
+# FXC5 audit R2: GLM / DeepSeek payload / MiniMax / MiMo / Doubao rows
+# ---------------------------------------------------------------------------
+
+
+def test_glm_sends_clear_thinking_false_and_thinking_object():
+    from RxyCode.RxyCode1_1_0.core.providers.glm import GLMProvider
+
+    kwargs = _provider_llm_kwargs(GLMProvider, "glm-5.2")
+    body = kwargs.get("extra_body") or {}
+    assert body.get("thinking") == {"type": "enabled"}
+    assert body.get("clear_thinking") is False
+
+
+def test_glm_51_sends_no_reasoning_effort():
+    from RxyCode.RxyCode1_1_0.core.providers.glm import GLMProvider
+
+    kwargs = _provider_llm_kwargs(GLMProvider, "glm-5.1")
+    assert "reasoning_effort" not in kwargs
+
+
+def test_deepseek_thinking_payload_kept_no_cache_control():
+    from RxyCode.RxyCode1_1_0.core.providers.deepseek import DeepSeekProvider
+
+    kwargs = _provider_llm_kwargs(DeepSeekProvider, "deepseek-v4-flash")
+    assert json.dumps(kwargs).count("cache_control") == 0
+    # DeepSeek keeps its current thinking (no {type} object needed in kwargs)
+
+
+def test_minimax_m3_no_cache_control_and_adaptive():
+    from RxyCode.RxyCode1_1_0.core.providers.minimax import MiniMaxProvider
+
+    kwargs = _provider_llm_kwargs(MiniMaxProvider, "minimax-m3")
+    assert "cache_control" not in json.dumps(kwargs)
+    body = kwargs.get("extra_body") or {}
+    assert body.get("thinking") == {"type": "adaptive"}
+
+
+def test_mimo_no_effort_no_cache_control():
+    from RxyCode.RxyCode1_1_0.core.providers.mimo import MIMOProvider
+
+    kwargs = _provider_llm_kwargs(MIMOProvider, "mimo-v2.5-pro")
+    assert "reasoning_effort" not in kwargs
+    assert "cache_control" not in json.dumps(kwargs)
+    body = kwargs.get("extra_body") or {}
+    assert body.get("thinking") == {"type": "enabled"}
+
+
+def test_doubao_no_reasoning_echo_and_no_cache_control():
+    from RxyCode.RxyCode1_1_0.core.providers.doubao import DoubaoProvider
+
+    kwargs = _provider_llm_kwargs(DoubaoProvider, "doubao-seed-2.1-turbo")
+    assert "cache_control" not in json.dumps(kwargs)
+    msgs = [
+        SystemMessage(content="SYS"),
+        AIMessage(content="ok", reasoning_content="chain"),
+        HumanMessage(content="ok"),
+    ]
+    out = _convert(msgs, reasoning_contract="none", provider_id="doubao")
+    assert all("reasoning_content" not in m for m in out)
