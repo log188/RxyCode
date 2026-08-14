@@ -876,6 +876,7 @@ class UsageTrackingLLM:
                     messages,
                     provider=self._provider,
                     capabilities=self._capabilities,
+            llm_timeout=float(self.model_config.get('timeout', 90.0) or 90.0),
                 )
                 usage = (
                     reported[0] or self._input_token_cost(messages),

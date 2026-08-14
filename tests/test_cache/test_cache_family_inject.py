@@ -192,3 +192,62 @@ def test_dispatch_uses_injects_cache_control_not_anthropic_heuristic():
 def test_no_cache_family_module():
     root = Path(__file__).resolve().parents[2]
     assert not (root / "core" / "cache_family.py").exists()
+
+
+def _apply_wrapper(provider: str, model_name: str, breakpoints=()):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
+
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        provider=provider,
+        cache_breakpoints=breakpoints,
+        supports_prompt_cache=True,
+    )
+    wrapper = object.__new__(UsageTrackingLLM)
+    wrapper._cache_enabled = True
+    wrapper._provider = SimpleNamespace(
+        name=provider,
+        supports_prompt_cache=lambda _c: True,
+    )
+    wrapper._capabilities = caps
+    wrapper._cfg = {}
+    wrapper.model_config = {"model_name": model_name}
+    return wrapper
+
+
+def test_explicit_apply_then_serialize_promotes_blocks():
+    """Production path: _apply_cache_control then _to_openai_messages → block arrays."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    wrapper = _apply_wrapper(
+        "anthropic",
+        "claude-sonnet-4.5",
+        breakpoints=("system", "tail"),
+    )
+    out = wrapper._apply_cache_control(
+        [SystemMessage(content="sys"), HumanMessage(content="hi")]
+    )
+    serialized = AgentV2._to_openai_messages(out)
+    assert isinstance(serialized[0]["content"], list)
+    assert serialized[0]["content"][0]["type"] == "text"
+    assert serialized[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert serialized[0]["cache_control"] == {"type": "ephemeral"}
+    assert isinstance(serialized[1]["content"], list)
+    assert serialized[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_implicit_apply_then_serialize_keeps_string():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    wrapper = _apply_wrapper("deepseek", "deepseek-v4-flash")
+    msgs = [SystemMessage(content="sys"), HumanMessage(content="hi")]
+    out = wrapper._apply_cache_control(msgs)
+    serialized = AgentV2._to_openai_messages(out)
+    assert serialized[0]["content"] == "sys"
+    assert serialized[1]["content"] == "hi"
+    assert "cache_control" not in json.dumps(serialized)
+
