@@ -467,7 +467,6 @@ def _capture_raw_stream(model_name, provider, tools):
     caps = replace(
         DEFAULT_CAPABILITIES,
         provider=provider,
-        cache_breakpoints=(),
         supports_function_calling=True,
     )
     agent = object.__new__(AgentV2)
@@ -545,3 +544,83 @@ def test_minimax_m3_thinking_echo_boundary():
     assistant = next(m for m in out if m["role"] == "assistant")
     assert assistant.get("reasoning_content") == "m3 thinking step"
     assert "signature" not in json.dumps(out)  # no invented signature on this path
+
+
+# ---------------------------------------------------------------------------
+# FXC5 audit R10: integrated echo rows (real _raw_stream + catalog)
+# ---------------------------------------------------------------------------
+
+
+def _integrated_reasoning(model_name, provider, reasoning_text):
+    """Drive the real _raw_stream with an assistant carrying captured
+    reasoning; return the serialized assistant message dict."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from dataclasses import replace
+
+    captured: dict = {}
+
+    class FakeClient:
+        def create(self, **payload):
+            captured["payload"] = payload
+            raise RuntimeError("stop-after-capture")
+
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        provider=provider,
+        supports_function_calling=True,
+    )
+    agent = object.__new__(AgentV2)
+    agent._session_id = "sess-fxc5"
+    agent._llm = SimpleNamespace()
+    agent._rate_limiter = None
+    agent.model_config = {"model_name": model_name, "timeout": 5.0}
+    agent._capabilities = caps
+    agent._provider = None
+    agent._resolve_request_max_tokens = lambda _n: 2048
+    agent._openai_client = lambda: FakeClient()
+    sys_msg = SimpleNamespace(type="system", content="SYS", additional_kwargs={})
+    asst = SimpleNamespace(
+        type="ai", content="answer", reasoning_content=reasoning_text,
+        tool_calls=None, additional_kwargs={},
+    )
+    try:
+        asyncio.run(agent._raw_stream([sys_msg, asst], tools=None).__anext__())
+    except RuntimeError as exc:
+        if "stop-after-capture" not in str(exc):
+            raise
+    for m in captured["payload"].get("messages", []):
+        if m.get("role") == "assistant":
+            return m
+    raise AssertionError("no assistant message")
+
+
+def test_integrated_deepseek_plain_turn_no_reasoning():
+    """DeepSeek (mandatory_echo): a plain-text assistant turn with reasoning
+    must NOT echo it on the wire (echo only on tool-bearing turns)."""
+    asst = _integrated_reasoning("deepseek-v4-flash", "deepseek", "captured thinking")
+    assert "reasoning_content" not in asst
+
+
+def test_integrated_glm_echoes_reasoning_across_turns():
+    asst = _integrated_reasoning("glm-5.2", "glm", "glm captured")
+    assert asst.get("reasoning_content") == "glm captured"
+
+
+def test_integrated_mimo_echoes_reasoning_across_turns():
+    asst = _integrated_reasoning("mimo-v2.5-pro", "mimo", "mimo captured")
+    assert asst.get("reasoning_content") == "mimo captured"
+
+
+def test_integrated_kimi_echoes_reasoning_across_turns():
+    asst = _integrated_reasoning("kimi-k3", "kimi", "kimi captured")
+    assert asst.get("reasoning_content") == "kimi captured"
+
+
+def test_integrated_unknown_model_keeps_legacy_echo():
+    """Unknown model: legacy fallback keeps echoing captured reasoning."""
+    asst = _integrated_reasoning("totally-mystery", "unknown", "legacy chain")
+    assert asst.get("reasoning_content") == "legacy chain"
