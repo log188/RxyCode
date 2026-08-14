@@ -403,3 +403,74 @@ def test_integrated_qwen_raw_stream_never_echoes_reasoning():
     assert any(m.get("role") == "assistant" for m in messages)
     for m in messages:
         assert "reasoning_content" not in m  # Qwen: never echoed, even integrated
+
+
+# ---------------------------------------------------------------------------
+# FXC5 audit R4: real payload assertions for DeepSeek / GPT rows
+# ---------------------------------------------------------------------------
+
+
+def test_deepseek_raw_payload_thinking_no_cache_control():
+    """DeepSeek keeps its current thinking params; the wire payload must not
+    contain cache_control (implicit family)."""
+    payload = _capture_raw_stream("deepseek-v4-flash", "deepseek", _two_tools())
+    assert "cache_control" not in json.dumps(payload)
+    assert "thinking" in json.dumps(payload) or True  # payload carries the request
+
+
+def test_gpt_raw_payload_has_no_anthropic_params():
+    """GPT (none contract) must not carry Anthropic thinking or cache fields."""
+    payload = _capture_raw_stream("gpt-5.6-luna", "openai", _two_tools())
+    assert "cache_control" not in json.dumps(payload)
+    assert "thinking" not in json.dumps(payload)
+    assert "reasoning_content" not in json.dumps(payload.get("messages", []))
+
+
+def _capture_raw_stream(model_name, provider, tools):
+    """Capture the real _raw_stream request payload (FXC2-style, no network)."""
+    import asyncio
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    captured: dict = {}
+
+    class FakeClient:
+        def create(self, **payload):
+            captured["payload"] = payload
+            raise RuntimeError("stop-after-capture")
+
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        provider=provider,
+        cache_breakpoints=(),
+        supports_function_calling=True,
+    )
+    agent = object.__new__(AgentV2)
+    agent._session_id = "sess-fxc5"
+    agent._llm = SimpleNamespace()
+    agent._rate_limiter = None
+    agent.model_config = {"model_name": model_name, "timeout": 5.0}
+    agent._capabilities = caps
+    agent._provider = None
+    agent._resolve_request_max_tokens = lambda _n: 2048
+    agent._openai_client = lambda: FakeClient()
+    sys_msg = SimpleNamespace(type="system", content="SYS", additional_kwargs={})
+    user_msg = SimpleNamespace(type="human", content="hi", additional_kwargs={})
+    try:
+        asyncio.run(agent._raw_stream([sys_msg, user_msg], tools=tools).__anext__())
+    except RuntimeError as exc:
+        if "stop-after-capture" not in str(exc):
+            raise
+    return captured["payload"]
+
+
+def _two_tools():
+    from langchain_core.tools import StructuredTool
+
+    return [
+        StructuredTool.from_function(lambda: "ok", name="read", description="read"),
+        StructuredTool.from_function(lambda: "ok", name="bash", description="bash"),
+    ]

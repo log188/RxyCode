@@ -259,12 +259,25 @@ def test_cache_write_nested_mapping():
 
 
 def test_llm_kwargs_enable_thinking():
-    """§7.7 问 5：3.7 混合思考经 extra_body enable_thinking=True。"""
+    """§7.7 问 5：3.7 混合思考经 extra_body enable_thinking=True（FXC5 后严格
+    catalog 驱动；qwen3.7-max 有 catalog record）。qwen3.7-plus 无 record 时
+    按 FXC6 未知变体保守处理，不注入。"""
+    p = providers.resolve({"model_name": "qwen3.7-max"})
+    caps = p.capabilities({"model_name": "qwen3.7-max"})
+    kwargs = p.llm_kwargs({"model_name": "qwen3.7-max", "resolved_max_tokens": 8192}, caps)
+    body = kwargs.get("extra_body") or {}
+    assert body.get("enable_thinking") is True
+
+
+def test_llm_kwargs_no_record_variant_is_conservative():
+    """FXC5/FX-CB11: a qwen variant without a catalog record must NOT get
+    enable_thinking invented from capabilities (unknown-model fallback)."""
     p = providers.resolve({"model_name": "qwen3.7-plus"})
     caps = p.capabilities({"model_name": "qwen3.7-plus"})
     kwargs = p.llm_kwargs({"model_name": "qwen3.7-plus", "resolved_max_tokens": 8192}, caps)
     body = kwargs.get("extra_body") or {}
-    assert body.get("enable_thinking") is True
+    assert "enable_thinking" not in body
+    assert "thinking" not in body
 
 
 # ---- DC1：未知变体保守 ----
