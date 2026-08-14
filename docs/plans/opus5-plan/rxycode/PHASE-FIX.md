@@ -847,10 +847,19 @@ ruff（Python 白名单）: All checks passed
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] 每行上表有断言（payload 或序列化消息）
-- [ ] Qwen 路径 messages 无 `reasoning_content` 回灌
-- [ ] DeepSeek 纯文本 assistant 无强制 reasoning 字段
-- [ ] GPT-5.6 审计 PASS
+- [x] 每行上表有断言（payload 或序列化消息）
+- [x] Qwen 路径 messages 无 `reasoning_content` 回灌
+- [x] DeepSeek 纯文本 assistant 无强制 reasoning 字段
+- [x] GPT-5.6 审计 PASS
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1-R10：FAIL（决策表逐行、集成链路、未知模型保守、payload 断言、catalog-only、白名单等逐一修复）
+R11：PASS。官网调研（platform.minimaxi.com text-chat-openai）确认 M3 走 OpenAI 兼容端点（api.minimaxi.com/v1/chat/completions），thinking adaptive 默认、响应 reasoning_content/reasoning_details，官方 API 无 Anthropic signature；RxyCode minimax.py 与官网一致。echo 按 reasoning_contract 分流（Qwen 禁回灌/DeepSeek 纯文本不回灌/GPT 不回灌/Kimi-MiMo-GLM 恒 echo/M3 回灌 thinking）；未知模型保守；DeepSeek/M3/未知无 cache_control；无模型名启发式、无协议升级、无第二注入器。
+可以勾选 FXC5 完成判据。
+```
 
 **Commit**
 
