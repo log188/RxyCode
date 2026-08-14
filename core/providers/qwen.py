@@ -251,6 +251,10 @@ class QwenProvider(BaseProvider):
         sample = str(((contract or {}).get("thinking_param") or {}).get("sample") or "")
         body = kwargs.setdefault("extra_body", {})
         body.pop("thinking", None)  # DashScope uses enable_thinking, not {type}
-        if "enable_thinking" in sample and caps.supports_reasoning and caps.thinking_default_on:
+        # catalog sample is "enable_thinking: true|false" for every qwen
+        # family; unknown variants (no record) fall back to capability-driven
+        # enable_thinking so legacy models keep working.
+        wants_enable = "enable_thinking" in sample if contract else True
+        if wants_enable and caps.supports_reasoning and caps.thinking_default_on:
             body.setdefault("enable_thinking", True)
         return kwargs
