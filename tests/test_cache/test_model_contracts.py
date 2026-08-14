@@ -1,9 +1,9 @@
-"""B9: per-model 缓存契约层 —— 9 家 cache_contract / 唯一入口 / usage 归一化 / 限制性规范。
+"""B9 + FXC1: per-model 缓存契约层 —— 10 家 cache_contract / 唯一入口 / usage 归一化。
 
 完成判据对应：
-1. 9 家 cache_contract 齐全且过 schema 校验
+1. 原 9 家 + Doubao cache_contract 齐全且过 schema 校验
 2. 契约读取唯一入口（无散落 if-elif）
-3. usage 归一化覆盖各家差异（≥5 家测试）
+3. usage 归一化覆盖各家差异（≥5 家测试）；OpenAI 双路径 max
 4. 模型限制性规范 9 条全部有测试
 5. 未识别模型走现状路径（CB8）
 """
@@ -33,13 +33,14 @@ NINE_PROVIDERS = {
     "deepseek", "mimo", "kimi", "minimax", "glm",
     "qwen", "grok", "anthropic", "openai",
 }
+CONTRACT_PROVIDERS = NINE_PROVIDERS | {"doubao"}
 
 
 def test_catalog_has_nine_provider_contracts():
-    """9 家厂商 cache_contract 齐全。"""
+    """原 9 家 + Doubao 厂商 cache_contract 齐全（FXC1：9→10）。"""
     data = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
     providers = {r["provider_id"] for r in data["records"] if "cache_contract" in r}
-    assert NINE_PROVIDERS <= providers
+    assert CONTRACT_PROVIDERS <= providers
 
 
 def test_catalog_schema_validates_contracts():
@@ -129,7 +130,7 @@ def test_usage_normalization_claude():
 
 
 def test_usage_normalization_openai():
-    """OpenAI: cached_input_tokens。"""
+    """OpenAI Luna：平铺 cached_input_tokens 或 nested cached_tokens，取 max（FXC1）。"""
     usage = {"cached_input_tokens": 800}
     assert read_cached_tokens("openai", "gpt-5.6-luna", usage) == 800
 

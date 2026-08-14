@@ -74,20 +74,19 @@ def _read_path(usage: dict, path: str | None) -> int:
 
 
 def read_cached_tokens(provider_id: str, model_id: str, usage: dict) -> int:
-    """按契约 usage_fields.cached 路径读取缓存命中 token 数。
+    """按契约 usage_fields.cached / cached_alt 读取缓存命中 token 数。
 
-    各家路径差异在此归一化：
-    - DeepSeek/MiMo/GLM: prompt_tokens_details.cached_tokens
-    - Kimi: cached_tokens（usage 顶层）
-    - Claude/MiniMax: cache_read_input_tokens
-    - OpenAI: cached_input_tokens
-    - Grok: cached_prompt_text_tokens
-    未识别模型 / 字段缺失 → 0（不把缺失当命中，常见坑 2/3）。
+    双路径取 max：Chat Completions 可能回平铺或 nested。cached_alt 缺省为 0。
+    禁止按厂商名 if。未识别模型 / 字段缺失 → 0。
     """
     contract = get_contract(provider_id, model_id)
     if contract is None:
         return 0
-    return _read_path(usage, contract.get("usage_fields", {}).get("cached"))
+    fields = contract.get("usage_fields") or {}
+    return max(
+        _read_path(usage, fields.get("cached")),
+        _read_path(usage, fields.get("cached_alt")),
+    )
 
 
 def read_reasoning_tokens(provider_id: str, model_id: str, usage: dict) -> int:
