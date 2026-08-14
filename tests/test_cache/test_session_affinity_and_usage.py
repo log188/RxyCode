@@ -57,6 +57,15 @@ def test_empty_session_id_still_shapes_headers():
     assert headers["X-Session-Id"] == ""
 
 
+def test_vendor_path_containing_go_or_zen_never_fakes_opencode_headers():
+    # a path segment saying /go or /zen on a vendor host is NOT the gateway
+    assert _headers("https://api.deepseek.com/v1/go") == {"X-Session-Id": "ses_test123"}
+    assert _headers("https://api.openai.com/v1/zen") == {"X-Session-Id": "ses_test123"}
+    assert _headers("https://api.anthropic.com/v1/go/chat") == {"X-Session-Id": "ses_test123"}
+    assert "x-opencode-session" not in _headers("https://api.deepseek.com/v1/go")
+    assert "x-session-affinity" not in _headers("https://api.deepseek.com/v1/go")
+
+
 def test_build_llm_injects_session_headers_into_chatopenai(monkeypatch):
     """The ChatOpenAI constructor receives default_headers from the gateway
     decision (captured via a fake provider, no network)."""
@@ -157,6 +166,57 @@ def test_v4_compaction_threshold_is_later_than_old_90pct():
         {"model_name": "deepseek-v4-flash", "base_url": "https://api.deepseek.com/v1"}
     )
     assert caps.compaction_threshold == _COMPACTION_THRESHOLD
+
+
+def test_v4_compaction_behaviour_old_90pct_no_longer_triggers(monkeypatch):
+    """Old ~90% point (943_718 window) must not fire compaction; the
+    0.97x threshold decides."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = AgentV2.__new__(AgentV2)
+    caps = type("Caps", (), {"compaction_threshold": int(1_048_576 * 0.97)})()
+    agent._capabilities = caps
+    agent._estimate_tokens = lambda messages: 950_000  # between 90% and 97%
+    agent._context_window = lambda: 1_048_576
+    called = {"n": 0}
+
+    def fake_compact(messages, tail_turns=2, return_telemetry=True):  # sync like the real one
+        called["n"] += 1
+        return messages, {"compacted": False}
+
+    monkeypatch.setattr("RxyCode.RxyCode1_1_0.core.compaction.compact_messages", fake_compact)
+
+    import asyncio
+
+    asyncio.get_event_loop().run_until_complete(agent._maybe_compress_context([]))
+    assert called["n"] == 0  # old 90% point does NOT trigger anymore
+
+
+def test_v4_compaction_behaviour_triggers_near_97pct(monkeypatch):
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = AgentV2.__new__(AgentV2)
+    caps = type("Caps", (), {"compaction_threshold": int(1_048_576 * 0.97)})()
+    agent._capabilities = caps
+    agent._estimate_tokens = lambda messages: 1_050_000  # above the 0.97x budget
+    agent._context_window = lambda: 1_048_576
+    called = {"n": 0}
+
+    def fake_compact(messages, tail_turns=2, return_telemetry=True):  # sync like the real one
+        called["n"] += 1
+        return messages, {
+            "compacted": True,
+            "tokens_before": 1_050_000,
+            "tokens_after": 800_000,
+            "tail_turns": 2,
+        }
+
+    monkeypatch.setattr("RxyCode.RxyCode1_1_0.core.compaction.compact_messages", fake_compact)
+
+    import asyncio
+
+    asyncio.get_event_loop().run_until_complete(agent._maybe_compress_context([]))
+    assert called["n"] == 1  # 0.97x budget reached -> compaction fires
 
 
 def test_v4_cache_min_block_tokens_v4_caliber():
