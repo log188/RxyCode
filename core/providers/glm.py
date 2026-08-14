@@ -122,12 +122,12 @@ class GLMProvider(BaseProvider):
 
     def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
         kwargs = super().llm_kwargs(model_config, caps)
-        # FXC5: GLM keeps thinking on and clears it per turn; 5.1 sends no
-        # reasoning_effort (handled by capabilities: only glm-5.2+ sets
-        # effort_options).
+        # FXC5: GLM's live contract is clear_thinking:false; it does not take
+        # a thinking object (drop base's default {type:enabled}). 5.1 sends
+        # no reasoning_effort (capabilities: only glm-5.2+ sets effort_options).
         if caps.supports_reasoning and caps.thinking_default_on:
             body = kwargs.setdefault("extra_body", {})
-            body.setdefault("thinking", {"type": "enabled"})
+            body.pop("thinking", None)
             body.setdefault("clear_thinking", False)
         return kwargs
 

@@ -270,13 +270,13 @@ def test_glm_echoes_reasoning_across_turns():
 # ---------------------------------------------------------------------------
 
 
-def test_glm_sends_clear_thinking_false_and_thinking_object():
+def test_glm_sends_clear_thinking_false_and_no_thinking_object():
     from RxyCode.RxyCode1_1_0.core.providers.glm import GLMProvider
 
     kwargs = _provider_llm_kwargs(GLMProvider, "glm-5.2")
     body = kwargs.get("extra_body") or {}
-    assert body.get("thinking") == {"type": "enabled"}
     assert body.get("clear_thinking") is False
+    assert "thinking" not in body  # GLM's live contract uses clear_thinking only
 
 
 def test_glm_51_sends_no_reasoning_effort():
@@ -325,3 +325,60 @@ def test_doubao_no_reasoning_echo_and_no_cache_control():
     ]
     out = _convert(msgs, reasoning_contract="none", provider_id="doubao")
     assert all("reasoning_content" not in m for m in out)
+
+
+# ---------------------------------------------------------------------------
+# FXC5 audit R2: integrated _raw_stream path (catalog -> contract -> echo)
+# ---------------------------------------------------------------------------
+
+
+def test_integrated_qwen_raw_stream_never_echoes_reasoning():
+    """The real _raw_stream path reads reasoning_contract from the catalog,
+    so a Qwen turn with captured reasoning must not carry reasoning_content
+    on the wire."""
+    import asyncio
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    captured: dict = {}
+
+    class FakeClient:
+        def create(self, **payload):
+            captured["payload"] = payload
+            raise RuntimeError("stop-after-capture")
+
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        provider="qwen",
+        cache_breakpoints=(),
+        supports_function_calling=True,
+    )
+    agent = object.__new__(AgentV2)
+    agent._session_id = "sess-fxc5"
+    agent._llm = SimpleNamespace()
+    agent._rate_limiter = None
+    agent.model_config = {"model_name": "qwen3.7-max", "timeout": 5.0}
+    agent._capabilities = caps
+    agent._provider = None
+    agent._resolve_request_max_tokens = lambda _n: 2048
+    agent._openai_client = lambda: FakeClient()
+    sys_msg = SimpleNamespace(type="system", content="SYS", additional_kwargs={})
+    asst = SimpleNamespace(
+        type="ai",
+        content="answer",
+        reasoning_content="captured chain",
+        tool_calls=None,
+        additional_kwargs={},
+    )
+    try:
+        asyncio.run(agent._raw_stream([sys_msg, asst], tools=None).__anext__())
+    except RuntimeError as exc:
+        if "stop-after-capture" not in str(exc):
+            raise
+    messages = captured["payload"].get("messages") or []
+    assert any(m.get("role") == "assistant" for m in messages)
+    for m in messages:
+        assert "reasoning_content" not in m  # Qwen: never echoed, even integrated
