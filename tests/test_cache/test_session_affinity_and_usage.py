@@ -652,3 +652,82 @@ def test_explicit_family_marks_only_last_tool_breakpoint():
     assert "tools" in allocated  # the explicit family did allocate a tool breakpoint
     # and it applies exactly once (a single breakpoint covers the last tool)
     assert allocated.count("tools") == 1
+
+
+# ---------------------------------------------------------------------------
+# FXC4 audit R5: real _raw_stream payload capture (explicit last-tool, implicit none)
+# ---------------------------------------------------------------------------
+
+
+def _capture_raw_stream(model_name, provider, tools):
+    """Capture the real _raw_stream request payload (FXC2-style, no network)."""
+    import asyncio
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    captured: dict = {}
+
+    class FakeClient:
+        def create(self, **payload):
+            captured["payload"] = payload
+            raise RuntimeError("stop-after-capture")
+
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        provider=provider,
+        cache_breakpoints=("tools", "system", "tail"),
+        supports_function_calling=True,
+    )
+    agent = object.__new__(AgentV2)
+    agent._session_id = "sess-fxc4"
+    agent._llm = SimpleNamespace()
+    agent._rate_limiter = None
+    agent.model_config = {"model_name": model_name, "timeout": 5.0}
+    agent._capabilities = caps
+    agent._provider = None
+    agent._resolve_request_max_tokens = lambda _n: 2048
+    agent._openai_client = lambda: FakeClient()
+    sys_msg = SimpleNamespace(type="system", content="SYS", additional_kwargs={})
+    user_msg = SimpleNamespace(type="human", content="hi", additional_kwargs={})
+    try:
+        asyncio.run(agent._raw_stream([sys_msg, user_msg], tools=tools).__anext__())
+    except RuntimeError as exc:
+        if "stop-after-capture" not in str(exc):
+            raise
+    return captured["payload"]
+
+
+def _two_tools():
+    from langchain_core.tools import StructuredTool
+
+    return [
+        StructuredTool.from_function(lambda: "ok", name="read", description="read"),
+        StructuredTool.from_function(lambda: "ok", name="bash", description="bash"),
+    ]
+
+
+def test_explicit_raw_stream_marks_only_last_tool():
+    payload = _capture_raw_stream("claude-sonnet-4.5", "anthropic", _two_tools())
+    tools = payload.get("tools") or []
+    assert len(tools) == 2
+    assert "cache_control" not in tools[0]
+    assert tools[-1]["cache_control"] == {"type": "ephemeral"}
+    assert json.dumps(payload["tools"]).count("cache_control") == 1
+
+
+def test_deepseek_raw_stream_has_no_cache_control():
+    payload = _capture_raw_stream("deepseek-v4-flash", "deepseek", _two_tools())
+    assert "cache_control" not in json.dumps(payload)
+
+
+def test_minimax_m3_raw_stream_has_no_cache_control():
+    payload = _capture_raw_stream("minimax-m3", "minimax", _two_tools())
+    assert "cache_control" not in json.dumps(payload)
+
+
+def test_unknown_raw_stream_has_no_cache_control():
+    payload = _capture_raw_stream("totally-unknown", "unknown", _two_tools())
+    assert "cache_control" not in json.dumps(payload)
