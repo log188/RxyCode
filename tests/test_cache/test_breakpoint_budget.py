@@ -94,22 +94,13 @@ class TestApplyCacheControlDispatch:
 
         from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
 
-        models = {
-            "anthropic": "claude-sonnet-4.5",
-            "openai": "gpt-5.6-luna",
-            "deepseek": "deepseek-v4-flash",
-        }
         agent = object.__new__(UsageTrackingLLM)
         agent._cache_enabled = True
         agent._provider = SimpleNamespace(
-            name=provider_name,
-            supports_prompt_cache=lambda c: getattr(c, "supports_prompt_cache", False),
+            supports_prompt_cache=lambda c: getattr(c, "supports_prompt_cache", False)
         )
         agent._capabilities = caps
         agent._cfg = {}
-        agent.model_config = {
-            "model_name": models.get(provider_name, "unknown-model")
-        }
         return agent
 
     def _msgs(self, n_sys: int = 1, n_user: int = 1, n_tool: int = 0):
@@ -336,7 +327,7 @@ class TestApplyCacheControlDispatch:
         agent._session_id = "sess-t"
         agent._llm = SimpleNamespace()
         agent._rate_limiter = None
-        agent.model_config = {"model_name": "claude-sonnet-4.5"}
+        agent.model_config = {"model_name": "claude-sonnet-5"}
         agent._capabilities = caps
         agent._provider = None
         agent._resolve_request_max_tokens = lambda _n: 2048
@@ -355,9 +346,8 @@ class TestApplyCacheControlDispatch:
         payload = captured["payload"]
         tools = payload.get("tools") or []
         assert tools, "tools missing from payload"
-        assert tools[-1].get("cache_control") == {"type": "ephemeral"}
-        for tool_def in tools[:-1]:
-            assert tool_def.get("cache_control") is None
+        for tool_def in tools:
+            assert tool_def.get("cache_control") == {"type": "ephemeral"}
 
     def test_openai_tools_no_breakpoint(self):
         """luna 阻断项 1：OpenAI 系 tools 不注入 cache_control（CB3）。"""
