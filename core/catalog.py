@@ -149,6 +149,28 @@ def injects_prompt_cache_key(contract: dict | None) -> bool:
     return bool(contract.get("prompt_cache_key_required"))
 
 
+def unknown_fallback_contract() -> dict:
+    """Documented contract for models without a catalog record (FXC6/§15.3).
+
+    Five-point fallback:
+      1. Prompt -> default variant (``default``), never a guess by id
+      2. Protocol -> openai-compatible
+      3. NEVER inject ``cache_control`` (implicit prefix only; never treat
+         an unknown model as Claude or invent breakpoints)
+      4. still sort tools by name and send session affinity headers
+      5. ``prompt_cache_key`` is NOT sent by default
+
+    Callers that receive ``get_contract() -> None`` must behave exactly as
+    if this contract were in effect — ``injects_cache_control`` /
+    ``injects_prompt_cache_key`` already return False for ``None``.
+    """
+    return {
+        "cache_mode": "auto",
+        "breakpoints_max": 0,
+        "prompt_cache_key_required": False,
+    }
+
+
 def requires_prompt_cache_key(provider_id: str, model_id: str) -> bool:
     """是否要求请求级 prompt_cache_key（Kimi 必填，规范 5）。"""
     return injects_prompt_cache_key(get_contract(provider_id, model_id))

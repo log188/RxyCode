@@ -2601,9 +2601,19 @@ class AgentV2:
                     "capabilities.supports_function_calling is False"
                 )
             payload["tools"] = [self._tool_to_openai(t) for t in tools]
-            # FXC2: 显式族只给最后一个 tool 打点；隐式/未知绝不打 cache_control。
-            from .catalog import injects_cache_control
+            # FXC2/FXC6: 显式族只给最后一个 tool 打点；隐式/未知绝不打 cache_control。
+            # 未知模型（contract is None）按 unknown_fallback_contract() 五条
+            # 处理：不发 cache_control、不发 prompt_cache_key、tools 排序 + session
+            # 头照旧（FXC4）、default variant + openai-compatible。
+            from .catalog import injects_cache_control, unknown_fallback_contract
 
+            if contract is None:
+                # FXC6: 显式确认未知模型走五条 fallback（隐式前缀，零注入）
+                fb = unknown_fallback_contract()
+                if fb.get("cache_mode") != "auto":
+                    raise AssertionError(
+                        "unknown fallback must stay implicit (cache_mode=auto)"
+                    )
             if injects_cache_control(contract) and payload["tools"]:
                 last_tool = payload["tools"][-1]
                 if isinstance(last_tool, dict):
