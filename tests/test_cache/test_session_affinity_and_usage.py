@@ -261,6 +261,25 @@ def test_deepseek_catalog_and_provider_keep_alive_default_off():
     assert keep_alive_enabled({}) is False
 
 
+def test_deepseek_catalog_declares_both_usage_paths():
+    """FXC4: every DeepSeek record declares BOTH cached paths explicitly
+    (nested prompt_tokens_details.cached_tokens + flat prompt_cache_hit_tokens),
+    so the FXC1 max() has a real second field — not a silent fallback."""
+    import json as _json
+    from pathlib import Path
+
+    catalog = _json.loads(
+        (Path(__file__).resolve().parents[2] / "config" / "model_catalog.json")
+        .read_text(encoding="utf-8")
+    )
+    deepseek = [r for r in catalog["records"] if r.get("provider_id") == "deepseek"]
+    assert deepseek, "deepseek records present"
+    for record in deepseek:
+        uf = (record.get("cache_contract") or {}).get("usage_fields") or {}
+        assert uf.get("cached") == "prompt_tokens_details.cached_tokens", record["model_id"]
+        assert uf.get("cached_alt") == "prompt_cache_hit_tokens", record["model_id"]
+
+
 def test_deepseek_keep_alive_defaults_off():
     from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_enabled
 
