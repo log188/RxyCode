@@ -107,3 +107,141 @@ def test_unknown_model_wire_payload_has_no_cache_control_or_key():
     # point 4a: tools sorted by name (read before bash would be wrong)
     tool_names = [t.get("function", {}).get("name", "") for t in (payload.get("tools") or [])]
     assert tool_names == sorted(tool_names)
+
+
+# ---------------------------------------------------------------------------
+# FXC6 audit R1: five-point fallback fully exercised at the wire level
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_fallback_contract_carries_variant_and_protocol():
+    fb = unknown_fallback_contract()
+    assert fb["prompt_variant"] == "default"
+    assert fb["protocol"] == "openai-compatible"
+    assert fb["cache_mode"] == "auto"
+    assert fb["prompt_cache_key_required"] is False
+
+
+def test_unknown_model_request_sends_session_affinity_header(monkeypatch):
+    """The real production build path (AgentV2._build_llm_from_config) sends
+    X-Session-Id for an unknown model via the chat client."""
+    import asyncio
+
+    import httpx
+
+    import RxyCode.RxyCode1_1_0.core.agent_v2 as av2
+
+    captured: dict = {}
+
+    def handler(request):
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(
+            200,
+            json={
+                "id": "x", "object": "chat.completion",
+                "choices": [{"message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop", "index": 0}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    class _FakeProvider:
+        name = "openai"
+
+        def capabilities(self, model_config):
+            from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+                DEFAULT_CAPABILITIES,
+            )
+
+            return DEFAULT_CAPABILITIES
+
+        def supports_prompt_cache(self, caps):
+            return True
+
+        def extract_cache_read(self, usage, caps):
+            return 0
+
+        def extract_reasoning(self, payload, caps):
+            return ""
+
+        def llm_kwargs(self, model_config, caps):
+            return {
+                "model": "mystery",
+                "api_key": "sk-test",
+                "http_async_client": httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler)
+                ),
+            }
+
+    def fake_resolve(model_config):
+        return _FakeProvider()
+
+    monkeypatch.setattr(av2.providers, "resolve", fake_resolve)
+
+    agent = av2.AgentV2.__new__(av2.AgentV2)
+    agent._session_id = "sess_fxc6_unknown"
+    agent._rate_limiter = None
+    agent._rate_limit_timeout = None
+    agent._rate_provider = None
+    agent._rate_model = None
+    agent._rate_reserved_output_tokens = 0
+
+    llm = agent._build_llm_from_config(
+        {"base_url": "https://api.unknown-vendor.example/v1", "api_key": "sk-test",
+         "model_name": "totally-mystery"}
+    )
+    asyncio.run(llm.ainvoke("hi"))
+    h = captured["headers"]
+    assert any(k.casefold() == "x-session-id" for k in h)  # point 4: session header
+    assert not any("x-opencode-session" in k.casefold() for k in h)
+
+
+def test_unknown_model_full_wire_has_no_key_or_control():
+    """The whole serialized payload (not just extra_body) must be free of
+    cache_control and prompt_cache_key."""
+    import asyncio
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from langchain_core.tools import StructuredTool
+
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    captured: dict = {}
+
+    class FakeClient:
+        def create(self, **payload):
+            captured["payload"] = payload
+            raise RuntimeError("stop-after-capture")
+
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        provider="unknown",
+        supports_function_calling=True,
+    )
+    agent = object.__new__(AgentV2)
+    agent._session_id = "sess-fxc6"
+    agent._llm = SimpleNamespace()
+    agent._rate_limiter = None
+    agent.model_config = {"model_name": "totally-mystery", "timeout": 5.0}
+    agent._capabilities = caps
+    agent._provider = None
+    agent._resolve_request_max_tokens = lambda _n: 2048
+    agent._openai_client = lambda: FakeClient()
+
+    tools = [
+        StructuredTool.from_function(lambda: "ok", name="bash", description="bash"),
+        StructuredTool.from_function(lambda: "ok", name="read", description="read"),
+    ]
+    sys_msg = SimpleNamespace(type="system", content="SYS", additional_kwargs={})
+    user_msg = SimpleNamespace(type="human", content="hi", additional_kwargs={})
+    try:
+        asyncio.run(agent._raw_stream([sys_msg, user_msg], tools=tools).__anext__())
+    except RuntimeError as exc:
+        if "stop-after-capture" not in str(exc):
+            raise
+
+    wire = json.dumps(captured["payload"])
+    assert "cache_control" not in wire
+    assert "prompt_cache_key" not in wire

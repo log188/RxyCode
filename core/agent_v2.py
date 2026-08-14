@@ -2608,11 +2608,24 @@ class AgentV2:
             from .catalog import injects_cache_control, unknown_fallback_contract
 
             if contract is None:
-                # FXC6: 显式确认未知模型走五条 fallback（隐式前缀，零注入）
+                # FXC6: 显式应用五条 fallback（隐式前缀，零注入）——校验当前
+                # caps/provider 与 unknown_fallback_contract() 一致：default
+                # variant + openai-compatible 协议。
                 fb = unknown_fallback_contract()
                 if fb.get("cache_mode") != "auto":
                     raise AssertionError(
                         "unknown fallback must stay implicit (cache_mode=auto)"
+                    )
+                fb_variant = str(fb.get("prompt_variant") or "default")
+                caps_variant = str(getattr(caps, "prompt_variant", "") or "")
+                if caps_variant and caps_variant != fb_variant:
+                    raise AssertionError(
+                        f"unknown model must use default variant, got "
+                        f"{caps_variant!r} (fallback={fb_variant!r})"
+                    )
+                if str(fb.get("protocol") or "") != "openai-compatible":
+                    raise AssertionError(
+                        "unknown fallback protocol must stay openai-compatible"
                     )
             if injects_cache_control(contract) and payload["tools"]:
                 last_tool = payload["tools"][-1]

@@ -153,8 +153,9 @@ def unknown_fallback_contract() -> dict:
     """Documented contract for models without a catalog record (FXC6/§15.3).
 
     Five-point fallback:
-      1. Prompt -> default variant (``default``), never a guess by id
-      2. Protocol -> openai-compatible
+      1. Prompt -> default variant (``prompt_variant: "default"``), never a
+         guess by id
+      2. Protocol -> openai-compatible (``protocol: "openai-compatible"``)
       3. NEVER inject ``cache_control`` (implicit prefix only; never treat
          an unknown model as Claude or invent breakpoints)
       4. still sort tools by name and send session affinity headers
@@ -168,6 +169,8 @@ def unknown_fallback_contract() -> dict:
         "cache_mode": "auto",
         "breakpoints_max": 0,
         "prompt_cache_key_required": False,
+        "prompt_variant": "default",
+        "protocol": "openai-compatible",
     }
 
 
