@@ -1461,6 +1461,17 @@ python -m pytest tests/test_core/test_turn_router.py tests/test_core/test_chat_s
 python -m ruff check core/turn_router.py core/agent_v2.py tests/test_core/test_chat_skip_await.py
 ```
 
+**实施记录**（Grok 填写）
+
+```
+commits: perf(agent): skip memory and session awaits on ChatPrefix turns（fix 分支）
+pytest: test_turn_router 10 + test_chat_skip_await 2 + test_first_turn_latency + test_request_routing 全绿（46 passed）；test_agent_tool_contracts 38 passed
+ruff: All checks passed
+实现：chat 路径 skip_await={memory.initialize, session.load, mcp.refresh}；_run_impl 先 route 再按 skip 决定 await（route 在任意 await 前，纯函数）；_turn_decision 传给 _fast_reply，skip 时跳过 _ensure_session_loaded；chat 回复后补 load_session（_session_loaded=False 时）不挡本回合 LLM；非 chat 路径仍 load
+白名单扩展：test_agent_tool_contracts.py（plan 契约断言从 detector 级升级为 handler 级——FX2 R3 审计要求检测在 route 前，检测是纯查询，契约不执行保持）
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
 - [ ] `route("你好").skip_await` 含 `memory.initialize` 与 `session.load`
