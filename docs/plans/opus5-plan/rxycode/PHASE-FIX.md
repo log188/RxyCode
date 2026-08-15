@@ -1746,11 +1746,20 @@ bun test src/transport/ 33 passed（+1 FX7：失败路径证明 thinking 占位�
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] `_fast_reply` 仍关 thinking；`_fast_reply_with_tools` 源码路径 **不会** 设 `_thinking_disabled_this_turn = True`
-- [ ] stdio `sendChatMessage` 在 `ensureReady` 调用之前就把 thinking 消息推进 `onMessages`
-- [ ] `python -m pytest tests/test_core/test_first_turn_latency.py -q` 绿
-- [ ] `cd frontend\opentui-app; bun test` 与占位相关测试绿（若环境无 bun：停下来报告，不要假装绿）
-- [ ] GPT-5.6 审计 PASS
+- [x] `_fast_reply` 仍关 thinking；`_fast_reply_with_tools` 源码路径 **不会** 设 `_thinking_disabled_this_turn = True`
+- [x] stdio `sendChatMessage` 在 `ensureReady` 调用之前就把 thinking 消息推进 `onMessages`
+- [x] `python -m pytest tests/test_core/test_first_turn_latency.py -q` 绿
+- [x] `cd frontend\opentui-app; bun test` 与占位相关测试绿（若环境无 bun：停下来报告，不要假装绿）
+- [x] GPT-5.6 审计 PASS
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1：FAIL（占位测试须断言 live→settled 状态迁移而非仅存在性）
+R2：PASS。_fast_reply 保持关 thinking；_fast_reply_with_tools 无 True 赋值（源码扫描）；stdio 占位在 ensureReady 前推送（失败路径证明）+ 失败时 settle；pytest 14 / bun 33 全绿；白名单内。
+可以勾选 FX7 完成判据。
+```
 
 **Commit**
 
