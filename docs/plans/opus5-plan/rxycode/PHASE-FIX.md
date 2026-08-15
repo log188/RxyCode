@@ -1557,11 +1557,20 @@ ruff: All checks passed
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] 预热签名含 kind/thinking/tools_digest
-- [ ] chat 预热与 chat 真实请求 `profiles_compatible`
-- [ ] agent 预热与 agent 真实请求 `profiles_compatible`
-- [ ] `_run_impl` / `run` 源码仍不含 `_schedule_prewarm`（LAT-1 保持）
-- [ ] GPT-5.6 审计 PASS
+- [x] 预热签名含 kind/thinking/tools_digest
+- [x] chat 预热与 chat 真实请求 `profiles_compatible`
+- [x] agent 预热与 agent 真实请求 `profiles_compatible`
+- [x] `_run_impl` / `run` 源码仍不含 `_schedule_prewarm`（LAT-1 保持）
+- [x] GPT-5.6 审计 PASS
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1-R2：FAIL（thinking 显式同构——改用真实路径的 _thinking_disabled_this_turn 开关并加锁串行；测试去手工 profile、签名须与真实请求签名相等、空 mcp 渲染为 ''）
+R3：PASS。签名含 kind/thinking_enabled/tools_digest；chat 槽（无 tools/thinking off/system tools=False）与 agent 槽（核心 tools/thinking on/system tools=True）与真实回合参数兼容；双槽 _prewarm_chat/_prewarm 均确认；LAT-1 保持（run/_run_impl 无 _schedule_prewarm）；keep-alive 未改；44+ 测试绿。
+可以勾选 FX4 完成判据。
+```
 
 **Commit**
 
