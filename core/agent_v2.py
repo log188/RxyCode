@@ -253,6 +253,7 @@ from RxyCode.RxyCode1_1_0.core.request_routing import (
     resolve_fast_reply_tool_allowlist,
     should_use_subagents,
 )
+from RxyCode.RxyCode1_1_0.core.turn_router import route
 CODE_MUTATING_TOOL_NAMES = frozenset({
     "write",
     "edit",
@@ -2006,7 +2007,7 @@ class AgentV2:
         from .catalog import unknown_fallback_contract
 
         contract = _owner_cache_contract(self)
-        if contract is None:
+        if contract is None and getattr(self, "_provider", None) is not None:
             return str(unknown_fallback_contract().get("prompt_variant") or "default")
         caps = getattr(self, "_capabilities", None)
         return (caps or DEFAULT_CAPABILITIES).prompt_variant
@@ -5193,16 +5194,57 @@ class AgentV2:
                     return side_effect_failure_notice(str(exc))
                 _logger.warning("download path failed: %s", exc)
 
-        # Fast path for simple queries (build AND plan modes) - tool-aware
-        # Social chat must not fall through into LangGraph on tool-path errors.
-        social = self._is_social_chat(user_input)
-        if (
-            mode in ("build", "plan")
-            and not force_full
-            and declines_tools(user_input)
-        ):
+        decision = route(
+            user_input,
+            mode,
+            routing_directive,
+            file_op=file_op,
+            download=download_intent,
+        )
+
+        if decision.path == "file_op":
             try:
-                _logger.info("route=declines_tools mode=%s -> fast_reply", mode)
+                result = await self._handle_file_operation(file_op, mode=mode)
+                self._memory.add_interaction(user_input, result)
+                self._memory.save_session()
+                return result
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self._side_effecting_tool_attempted:
+                    return side_effect_failure_notice(str(exc))
+                _logger.warning("direct file operation failed: %s", exc)
+                if download_intent:
+                    try:
+                        result = await self._handle_download_intent(download_intent)
+                        self._memory.add_interaction(user_input, result)
+                        self._memory.save_session()
+                        return result
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc2:
+                        if self._side_effecting_tool_attempted:
+                            return side_effect_failure_notice(str(exc2))
+                        _logger.warning("download path failed: %s", exc2)
+                decision = route(user_input, mode, routing_directive)
+
+        if decision.path == "download":
+            try:
+                result = await self._handle_download_intent(download_intent)
+                self._memory.add_interaction(user_input, result)
+                self._memory.save_session()
+                return result
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self._side_effecting_tool_attempted:
+                    return side_effect_failure_notice(str(exc))
+                _logger.warning("download path failed: %s", exc)
+            decision = route(user_input, mode, routing_directive)
+
+        if decision.path == "chat":
+            try:
+                _logger.info("route=chat mode=%s -> fast_reply", mode)
                 return await self._fast_reply(user_input)
             except asyncio.CancelledError:
                 raise
@@ -5212,59 +5254,14 @@ class AgentV2:
                     "刚才没能完整回复你，我在这儿听着呢。"
                     "你可以再说一次，或者换个说法。"
                 )
-        if (
-            mode in ("build", "plan")
-            and not force_full
-            and social
-            and _PURE_SOCIAL_GREETING_RE.match(user_input.strip())
-        ):
-            try:
-                _logger.info("route=pure_greeting mode=%s -> fast_reply", mode)
-                return await self._fast_reply(user_input)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                _logger.warning("pure greeting fast path failed: %s", exc)
-                return (
-                    "刚才没能完整回复你，我在这儿听着呢。"
-                    "你可以再说一次，或者换个说法。"
-                )
-        if mode == "compose" and social:
-            try:
-                _logger.info("route=social_chat mode=compose -> fast_tools")
-                return await self._fast_reply_with_tools(user_input)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                _logger.warning("social chat compose path failed: %s", exc)
-                return (
-                    "刚才没能完整回复你，我在这儿听着呢。"
-                    "你可以再说一次，或者换个说法。"
-                )
 
-        if (
-            mode in ("build", "plan")
-            and not force_full
-        ):
+        if decision.path == "agent":
             try:
-                if social:
-                    _logger.info("route=social_chat mode=%s -> fast_tools", mode)
-                else:
-                    _logger.info(
-                        "route=stream_default mode=%s force_fast=%s -> fast_tools",
-                        mode,
-                        force_fast,
-                    )
+                _logger.info("route=agent mode=%s -> fast_tools", mode)
                 return await self._fast_reply_with_tools(user_input)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if social:
-                    _logger.warning("social chat fast path failed (no graph): %s", exc)
-                    return (
-                        "刚才没能完整回复你，我在这儿听着呢。"
-                        "你可以再说一次，或者换个说法。"
-                    )
                 if research_policy.requires_web:
                     return research_failure_message(str(exc))
                 if self._side_effecting_tool_attempted:
@@ -5275,8 +5272,7 @@ class AgentV2:
                 )
                 return f"[error] {type(exc).__name__}: {str(exc)[:200]}"
 
-        # Compose 模式: Plan + Build 结合
-        if mode == "compose":
+        if decision.path == "compose":
             try:
                 return await self._run_compose(user_input)
             except asyncio.CancelledError:
