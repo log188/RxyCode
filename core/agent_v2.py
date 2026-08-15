@@ -3118,51 +3118,44 @@ class AgentV2:
             self._memory.load_session(append_only=True)
             self._session_loaded = True
 
-    def _prewarm_state(self):
-        """B5: 惰性初始化预热状态（PrewarmState）。"""
-        if self._prewarm is None:
-            from .cache_policy import PrewarmState
+    def _prewarm_state(self, kind: str = "agent"):  # noqa: ANN201
+        """B5: 惰性初始化预热状态（PrewarmState）。
 
+        FX4：每 session_id 两槽（chat/agent）。agent 槽默认落在 self._prewarm
+        （兼容旧注入形态），chat 槽独立为 self._prewarm_chat。
+        """
+        from .cache_policy import PrewarmState
+
+        if kind == "chat":
+            if getattr(self, "_prewarm_chat", None) is None:
+                self._prewarm_chat = PrewarmState()
+            return self._prewarm_chat
+        if self._prewarm is None:
             self._prewarm = PrewarmState()
         return self._prewarm
 
-    def _prewarm_signature(self) -> str:
-        """B5: 当前会话配置签名（模型/cwd/MCP；Cherry Studio 语义）。
+    def _prewarm_signature(self, kind: str = "agent") -> str:
+        """B5: 当前会话配置签名（FX4：模型/cwd/MCP/kind/thinking/tools）。"""
+        from .prewarm import prewarm_signature
 
-        luna 审计 R4：MCP 签名纳入完整配置（URL/参数等），不仅是 server 名。
-        """
-        from .cache_policy import build_prewarm_signature
+        return prewarm_signature(self, kind)
 
-        model = str(self.model_config.get("model_name") or "")
-        cwd = str(getattr(self, "_workspace_root", "") or "")
-        mcp = ""
-        try:
-            mcp = json.dumps(
-                self._cfg.get("mcpServers") or {},
-                sort_keys=True,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        except Exception:  # pragma: no cover
-            mcp = ""
-        return build_prewarm_signature(model=model, cwd=cwd, mcp=mcp)
-
-    def _maybe_rebuild_prewarm(self) -> bool:
+    def _maybe_rebuild_prewarm(self, kind: str = "agent") -> bool:
         """B5: 需不需要预热/重建（审计：True = 应发预热请求）。
 
         luna 审计 R7：未确认成功（warmed_at None）或签名不匹配 → 持续返回
         True（可重试）；只有 _confirm_prewarm 成功后才不再需要。
         """
-        state = self._prewarm_state()
-        sig = self._prewarm_signature()
+        state = self._prewarm_state(kind)
+        sig = self._prewarm_signature(kind)
         if state.signature is None or state.warmed_at is None:
             return True  # 从未预热/未确认成功 → 需要（可重试）
         return state.signature != sig
 
-    def _confirm_prewarm(self) -> None:
+    def _confirm_prewarm(self, kind: str = "agent") -> None:
         """B5: 预热请求成功后确认（提交 warmed 状态与时间戳）。"""
-        state = self._prewarm_state()
-        state.warm(self._prewarm_signature())
+        state = self._prewarm_state(kind)
+        state.warm(self._prewarm_signature(kind))
 
     def _schedule_prewarm(self) -> None:
         """B5: 预热非阻塞化（2026-08-13 修复）——后台调度，绝不让用户请求
@@ -3184,22 +3177,15 @@ class AgentV2:
             pass  # 无事件循环（同步上下文）——跳过预热，不阻塞
 
     async def _prewarm_async(self) -> None:
-        """B5: 后台预热——发一次最小请求写新前缀；成功 confirm，失败进冷却。
+        """B5: 后台预热——FX4 双槽（chat/agent）并行写新前缀；成功 confirm。
 
         完整消费流且成功后确认 warmed（失败不标记，冷却后重试）。
         """
+        from .prewarm import prewarm_all
+
         _logger.info("B5 prewarm scheduled (background)")
         try:
-            prewarm_msgs = self._session_prewarm_messages()
-            async for _chunk in self._raw_stream(
-                prewarm_msgs,
-                tools=self._get_core_tools()
-                if hasattr(self, "_get_core_tools")
-                else None,
-                max_tokens=1,
-            ):
-                pass  # 完整消费流（不提前 break）
-            self._confirm_prewarm()
+            await prewarm_all(self)
             _logger.info("B5 prewarm confirmed (background)")
         except asyncio.CancelledError:
             raise
@@ -3225,25 +3211,15 @@ class AgentV2:
         except Exception as exc:  # pragma: no cover - 保活失败不影响请求
             _logger.warning("B5 background keep-alive failed: %s", exc)
 
-    def _session_prewarm_messages(self) -> list:
-        """B5: 构造预热请求消息（复用真实会话前缀，Cherry Studio 同签名语义）。
+    def _session_prewarm_messages(self, kind: str = "agent") -> list:
+        """B5: 构造预热请求消息（FX4：按槽位 Profile 造消息——chat 无 tools、
+        agent 带核心 tools；system 与真实回合同构）。
 
         luna 审计 R8：预热必须包含 system prompt——否则预热的是另一种前缀。
         """
-        from langchain_core.messages import HumanMessage, SystemMessage
+        from .prewarm import session_prewarm_messages
 
-        system = ""
-        try:
-            from .prompts.registry import get_system_prompt
-
-            system = get_system_prompt(variant=getattr(self, "_prompt_variant", lambda: "default")())
-        except Exception:  # pragma: no cover
-            system = ""
-        msgs: list = []
-        if system:
-            msgs.append(SystemMessage(content=system))
-        msgs.append(HumanMessage(content="warm"))
-        return msgs
+        return session_prewarm_messages(self, kind)
 
     def _maybe_keep_alive(self, last_call_at: float) -> bool:
         """B5: 保活调度判定（默认关闭；启用 + ≥5m + 预算未耗尽）。

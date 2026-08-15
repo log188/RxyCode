@@ -303,6 +303,9 @@ def build_prewarm_signature(
     model: str,
     cwd: str,
     mcp: str = "",
+    kind: str = "agent",
+    thinking_enabled: bool = True,
+    tools_digest: str = "",
 ) -> str:
     """预热签名（Cherry Studio agentSessionWarmup.ts:246-253 语义）。
 
@@ -313,7 +316,14 @@ def build_prewarm_signature(
     import json
 
     norm = json.dumps(
-        {"model": model, "cwd": cwd, "mcp": mcp},
+        {
+            "model": model,
+            "cwd": cwd,
+            "mcp": mcp,
+            "kind": kind,
+            "thinking_enabled": thinking_enabled,
+            "tools_digest": tools_digest,
+        },
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),
@@ -327,12 +337,18 @@ def prewarm_valid(
     model: str,
     cwd: str,
     mcp: str = "",
+    kind: str = "agent",
+    thinking_enabled: bool = True,
+    tools_digest: str = "",
 ) -> bool:
     """预热请求与真实请求同签名校验：签名一致才有效。
 
     任一配置变化 → 当前签名 ≠ 预热签名 → 预热失效（需重建）。
     """
-    current = build_prewarm_signature(model=model, cwd=cwd, mcp=mcp)
+    current = build_prewarm_signature(
+        model=model, cwd=cwd, mcp=mcp,
+        kind=kind, thinking_enabled=thinking_enabled, tools_digest=tools_digest,
+    )
     return current == signature
 
 
