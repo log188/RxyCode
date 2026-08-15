@@ -16,6 +16,10 @@ from RxyCode.RxyCode1_1_0.core.prefix_profile import digest_tools
 
 PrewarmKind = str  # "chat" | "agent"
 
+#: Serializes the temporary _capabilities swap so the chat slot (thinking
+#: off) and the agent slot (thinking on) never race on the shared agent.
+_PREWARM_CAPS_LOCK = asyncio.Lock()
+
 
 def _mcp_signature(agent: Any) -> str:
     import json
@@ -86,17 +90,31 @@ def session_prewarm_messages(agent: Any, kind: PrewarmKind = "agent") -> list:
 
 async def prewarm_archive(agent: Any, kind: PrewarmKind) -> None:
     """Send one max_tokens=1 prewarm request for one slot and consume the
-    stream fully (provider writes the prefix); confirm via the agent."""
+    stream fully (provider writes the prefix); confirm via the agent.
+
+    Thinking is applied exactly like the real turn: the chat slot sets
+    ``_thinking_disabled_this_turn`` (the same switch the greeting path
+    uses, so extended thinking is turned off at the payload layer), the
+    agent slot leaves it on. Both slots share one agent, so the swap is
+    serialized by a lock.
+    """
     raw_stream = getattr(agent, "_raw_stream", None)
     if raw_stream is None:
         return
     msgs = session_prewarm_messages(agent, kind)
-    async for _chunk in raw_stream(
-        msgs,
-        tools=core_tools_for(agent, kind),
-        max_tokens=1,
-    ):
-        pass  # full consumption (do not break early)
+    tools = core_tools_for(agent, kind)
+    was_disabled = bool(getattr(agent, "_thinking_disabled_this_turn", False))
+    async with _PREWARM_CAPS_LOCK:
+        agent._thinking_disabled_this_turn = kind != "agent"
+        try:
+            async for _chunk in raw_stream(
+                msgs,
+                tools=tools,
+                max_tokens=1,
+            ):
+                pass  # full consumption (do not break early)
+        finally:
+            agent._thinking_disabled_this_turn = was_disabled
     confirm = getattr(agent, "_confirm_prewarm", None)
     if confirm is not None:
         confirm(kind)
