@@ -3474,17 +3474,11 @@ class AgentV2:
                     tool_call_id=fetch_call["id"],
                 ))
 
-        # Get core tools for binding. FX6: the agent path NEVER resolves
-        # per-turn allowlists from user text — the schema is the frozen full
-        # core set. An EXPLICIT allowlist (e.g. plan-only readonly) is an
-        # execution-layer contract passed by the caller and still applies.
+        # FX6: the tools schema is the frozen FULL core set — never cropped,
+        # not even by explicit allowlists. Per-turn schema mutation shatters
+        # the prefix archive; execution-layer denials (e.g. plan readonly)
+        # happen in _execute_tool / orchestrator permissions.
         core_tools = self._get_core_tools()
-        if allowed_tool_names is not None:
-            core_tools = [
-                tool for tool in core_tools
-                if str(getattr(tool, "name", "")).lower()
-                in allowed_tool_names
-            ]
 
         # API runs inject a request-correlated tracer; direct CLI usage creates
         # one lazily so tool spans still remain observable.
@@ -3935,10 +3929,19 @@ class AgentV2:
     ) -> str:
         """Execute a single tool by name with the given arguments.
 
-        Routes through the safety gate (阶段二): policy classification,
+        Routes through the safety gate (首段阶): policy classification,
         The Agent-local ToolOrchestrator remains the only execution entry;
         no direct-invocation fallback bypasses its policy or audit controls.
+
+        FX6: plan mode is globally read-only at the execution layer — the
+        tool schema is frozen full (never cropped per turn), so denials
+        live HERE, not in the API schema.
         """
+        if mode == "plan" and name not in PLAN_READONLY_TOOL_NAMES:
+            return (
+                f"[blocked: plan mode is read-only; "
+                f"{name} was not executed]"
+            )
         orchestrator = getattr(self, "_tool_orchestrator", None)
         if orchestrator is None or not callable(
             getattr(orchestrator, "execute_tool", None)

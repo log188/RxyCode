@@ -175,7 +175,12 @@ async def test_plan_only_exposes_readonly_tools_and_executes_read(monkeypatch):
 
     assert result.startswith("plan complete")
     assert "切换到 **Build**" in result or "switch to **Build**" in result
-    assert bound_names == [["read", "ls"], ["read", "ls"]]
+    # FX6: schema is frozen FULL core set (no per-turn cropping); read-only
+    # enforcement happens at the execution layer (_execute_tool).
+    assert bound_names == [
+        ["read", "ls", "bash", "download_file"],
+        ["read", "ls", "bash", "download_file"],
+    ]
     orchestrated.assert_awaited_once_with(
         "read",
         {"filePath": "notes.txt"},
@@ -196,7 +201,13 @@ async def test_plan_only_rejects_unexposed_tool_calls(tool_name, monkeypatch):
     )
     tools = [SimpleNamespace(name="read"), SimpleNamespace(name=tool_name)]
     agent._get_core_tools = MagicMock(return_value=tools)
-    agent._execute_tool = AsyncMock(return_value="must not run")
+    agent._execute_tool = AsyncMock(
+        wraps=AgentV2._execute_tool.__get__(agent, AgentV2)
+    )
+    agent._tool_orchestrator = SimpleNamespace(
+        execute_tool=AsyncMock(return_value="must not run")
+    )
+    agent._tool_tracer = MagicMock()
     agent._llm = SimpleNamespace(
         ainvoke=AsyncMock(return_value=SimpleNamespace(content="tool-free"))
     )
@@ -235,13 +246,16 @@ async def test_plan_only_rejects_unexposed_tool_calls(tool_name, monkeypatch):
 
     assert result.startswith("plan complete")
     assert "切换到 **Build**" in result or "switch to **Build**" in result
-    assert all(tool_name not in names for names in bound_names)
+    # FX6: the schema binds the FULL core set (frozen); the execution layer
+    # denies the unexposed write-class tool (orchestrator never runs).
+    assert all(tool_name in names for names in bound_names)
     agent._execute_tool.assert_awaited_once_with(
         tool_name,
         {},
         mode="plan",
         call_id="blocked-1",
     )
+    agent._tool_orchestrator.execute_tool.assert_not_awaited()
 
 
 def _tool_agent(monkeypatch, execute_tool, config):
