@@ -1606,6 +1606,17 @@ each archive so a greeting no longer misses a tools-on warmup prefix.
 - 默认开关仍关闭（`keep_alive_enabled`）。
 - `max_tokens=1` 保持。
 
+**实施记录**（Grok 填写）
+
+```
+commits: fix(cache): send keep-alive with the frozen AgentPrefix（fix 分支）
+pytest: test_prewarm_isomorphic 12（+3 FX5）+ test_session_reuse 36 全绿；全量 7771 passed（基线 8 不变）
+ruff: All checks passed
+实现：prewarm.keepalive_messages()（agent 槽同构：system + 核心 tools + keep-alive）；
+  _keep_alive_async 改走 keepalive_messages + core_tools_for(self, "agent")，max_tokens=1 保持
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
 - [ ] Grep `_keep_alive_async`：不再 `_raw_stream([HumanMessage(...)], tools=None)` 这种无 system 调用
