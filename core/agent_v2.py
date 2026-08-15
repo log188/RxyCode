@@ -1997,7 +1997,17 @@ class AgentV2:
         return False
 
     def _prompt_variant(self) -> str:
-        """A9: variant selector from current model capabilities."""
+        """A9: variant selector from current model capabilities.
+
+        FXC6: unknown models (no catalog contract) force the fallback
+        ``default`` variant at the prompt-assembly layer — the variant is
+        resolved here, BEFORE get_system_prompt builds the system message.
+        """
+        from .catalog import unknown_fallback_contract
+
+        contract = _owner_cache_contract(self)
+        if contract is None:
+            return str(unknown_fallback_contract().get("prompt_variant") or "default")
         caps = getattr(self, "_capabilities", None)
         return (caps or DEFAULT_CAPABILITIES).prompt_variant
 

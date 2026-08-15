@@ -373,3 +373,47 @@ def test_unknown_model_full_wire_has_no_key_or_control():
     assert "model" in captured["payload"]
     assert "stream" in captured["payload"]
     assert "system" not in captured["payload"]  # no Anthropic top-level system
+
+
+# ---------------------------------------------------------------------------
+# FXC6 audit R6: fallback variant applies BEFORE prompt assembly
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_model_prompt_variant_resolves_default_before_assembly():
+    """_prompt_variant() (used by get_system_prompt) must resolve to the
+    fallback default for an unknown model — the real catalog returns None."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.catalog import reset_contract_cache
+
+    reset_contract_cache()
+    agent = AgentV2.__new__(AgentV2)
+    agent._capabilities = replace(
+        DEFAULT_CAPABILITIES, provider="unknown", prompt_variant="guessed"
+    )
+    agent._provider = SimpleNamespace(name="unknown")
+    agent.model_config = {"model_name": "totally-mystery"}
+    assert agent._prompt_variant() == "default"
+
+
+def test_known_model_prompt_variant_unchanged():
+    """A model WITH a catalog record keeps its catalog variant."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.catalog import reset_contract_cache
+
+    reset_contract_cache()
+    agent = AgentV2.__new__(AgentV2)
+    agent._capabilities = replace(
+        DEFAULT_CAPABILITIES, provider="deepseek", prompt_variant="deepseek"
+    )
+    agent._provider = SimpleNamespace(name="deepseek")
+    agent.model_config = {"model_name": "deepseek-v4-flash"}
+    assert agent._prompt_variant() == "deepseek"
