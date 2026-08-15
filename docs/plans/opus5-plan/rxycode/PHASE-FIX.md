@@ -1682,10 +1682,19 @@ ruff: All checks passed
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] `route("你好啊").path == "chat"`
-- [ ] agent 路径 `_fast_reply_with_tools` 绑定的 tools 集合不因 user 文本变化（测试：两句不同编码任务 digest 相同）
-- [ ] 现有 first_turn / request_routing 按新语义改测试并绿（允许改断言，禁止改回裁剪 schema）
-- [ ] GPT-5.6 审计 PASS
+- [x] `route("你好啊").path == "chat"`
+- [x] agent 路径 `_fast_reply_with_tools` 绑定的 tools 集合不因 user 文本变化（测试：两句不同编码任务 digest 相同）
+- [x] 现有 first_turn / request_routing 按新语义改测试并绿（允许改断言，禁止改回裁剪 schema）
+- [x] GPT-5.6 审计 PASS
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1-R2：FAIL（分组测试证据、彻底移除 schema 裁剪——plan 只读改执行层拒绝）
+R3：PASS。route(你好啊)=chat（宽社交 ChatPrefix）；_fast_reply_with_tools 绑定全量核心工具（无任何按轮裁剪，digest 冻结测试从捕获请求计算）；plan 只读在 _execute_tool 执行层拒绝（orchestrator 不执行）；resolver 保留并标注执行层遗留；分组 10+14+22+38 全绿、ruff 通过。
+可以勾选 FX6 完成判据。
+```
 
 **Commit**
 
