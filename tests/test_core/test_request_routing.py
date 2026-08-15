@@ -174,6 +174,22 @@ async def test_social_tools_failure_returns_comfort_message():
 
 
 @pytest.mark.asyncio
+async def test_plan_mode_never_handles_file_op_or_download():
+    """FX2 R3: plan mode returns _run_plan_only before any file/download
+    handler runs, even when the detectors would fire."""
+    agent = _routed_agent()
+    agent._detect_file_operation = MagicMock(return_value={"action": "create"})
+    agent._detect_download_intent = MagicMock(return_value=("http://x/f", "f.xlsx"))
+    agent._handle_file_operation = MagicMock()
+    agent._handle_download_intent = MagicMock()
+    result = await agent._run_impl(REFACTOR, mode="plan")
+    assert result == "plan only"
+    agent._run_plan_only.assert_awaited_once_with(REFACTOR)
+    agent._handle_file_operation.assert_not_called()
+    agent._handle_download_intent.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_compose_social_tools_failure_returns_comfort_message():
     agent = _routed_agent()
     agent._fast_reply_with_tools = AsyncMock(side_effect=RuntimeError("boom"))

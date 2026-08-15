@@ -5154,35 +5154,11 @@ class AgentV2:
 
         research_policy = get_research_policy(user_input)
 
-        # Fast tool path for simple file operations (check BEFORE download intent)
+        # Detect (but do NOT handle) file ops / download intents: plan mode
+        # must return _run_plan_only first, so handlers run only after route()
+        # has decided (single route() table owns the waterfall order).
         file_op = self._detect_file_operation(user_input)
-        if file_op:
-            try:
-                result = await self._handle_file_operation(file_op, mode=mode)
-                self._memory.add_interaction(user_input, result)
-                self._memory.save_session()
-                return result
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if self._side_effecting_tool_attempted:
-                    return side_effect_failure_notice(str(exc))
-                _logger.warning("direct file operation failed: %s", exc)
-
-        # Check for download intent (after file operations)
         download_intent = self._detect_download_intent(user_input)
-        if download_intent:
-            try:
-                result = await self._handle_download_intent(download_intent)
-                self._memory.add_interaction(user_input, result)
-                self._memory.save_session()
-                return result
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if self._side_effecting_tool_attempted:
-                    return side_effect_failure_notice(str(exc))
-                _logger.warning("download path failed: %s", exc)
 
         decision = route(
             user_input,
