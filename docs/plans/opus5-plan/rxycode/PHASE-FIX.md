@@ -1731,6 +1731,19 @@ ChatPrefix 关 thinking 是为了 1s 出「你好」，Thought「…」会空转
 - stdio：用户气泡 + thinking 行在 `ensureReady` 前出现；Connecting 可并行。
 - 本卡不做真实网关 TTFT 压测（无 live 预算）；用单元测试锁「哪条路径关 thinking」+ 前端测试锁「占位不晚于 ensureReady」。
 
+**实施记录**（Grok 填写）
+
+```
+commits: fix(ux): disable thinking only on ChatPrefix（fix 分支）
+pytest: test_first_turn_latency 14 passed（test_fast_reply_disables_extended_thinking 收窄为仅 chat 路径 + agent 路径禁设 True）
+bun test src/transport/ 33 passed（+1 FX7：失败路径证明 thinking 占位先于 ensureReady 推送）
+实现：_fast_reply_with_tools 无 _thinking_disabled_this_turn=True（源码验证）；stdioTransport
+  sendChatMessage thinking 占位/state/publish 移到 ensureReady 之前（与 HTTP 对齐），启动失败时
+  settle 占位
+注：bun 需在 PATH（~/.bun/bin）
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
 - [ ] `_fast_reply` 仍关 thinking；`_fast_reply_with_tools` 源码路径 **不会** 设 `_thinking_disabled_this_turn = True`
