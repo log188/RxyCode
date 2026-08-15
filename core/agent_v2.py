@@ -22,7 +22,7 @@ import re
 import tempfile
 import threading
 import time
-from typing import Optional
+from typing import Optional, Sequence
 from urllib.parse import urlsplit
 
 import httpx
@@ -3275,6 +3275,33 @@ class AgentV2:
             return ""
         return self._get_memory_context(user_input, include_long_term=True)
 
+    def append_turn_context(self, blocks: Sequence[dict]) -> None:
+        """FX8: public seam for LinkAgent — EKO-style context can only
+        append to the user suffix after the prefix is frozen.
+
+        ``kind`` must be ``eko`` or ``note``; ``system``/``tools`` raise
+        ValueError (never splice into frozen sections). ChatPrefix turns
+        ignore the blocks entirely.
+        """
+        from .turn_context import validate_blocks
+
+        validate_blocks(blocks)
+        store = getattr(self, "_turn_context_blocks", None)
+        if store is None:
+            store = []
+            self._turn_context_blocks = store
+        store.extend(list(blocks))
+
+    def clear_turn_context(self) -> None:
+        """FX8: remove all appended turn-context blocks."""
+        self._turn_context_blocks = []
+
+    def _turn_context_suffix(self) -> str:
+        """FX8: serialized suffix (empty when no blocks / blank text)."""
+        from .turn_context import serialize_turn_context
+
+        return serialize_turn_context(getattr(self, "_turn_context_blocks", []) or [])
+
     def _application_cache_namespace(self) -> str:
         """Isolate answer caches by provider endpoint, model, and credential."""
         base_url = str(self.model_config.get("base_url") or "").rstrip("/")
@@ -3327,6 +3354,11 @@ class AgentV2:
             role_instruction = SOCIAL_CHAT_ROLE_INSTRUCTION
         # Social chat: skip all sticky memory (short + long + RAG).
         memory_ctx = self._memory_ctx_for_turn(user_input)
+        # FX8: appended turn context rides AFTER the base memory, BEFORE the
+        # user content — never merged into S1 / tool sections.
+        suffix = self._turn_context_suffix()
+        if suffix:
+            memory_ctx = f"{memory_ctx}\n{suffix}" if memory_ctx else suffix
         system = get_system_prompt(variant=self._prompt_variant())
         user_msg = build_user_message(role_instruction, user_input, memory_ctx)
         research_policy = get_research_policy(user_input)
