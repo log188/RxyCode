@@ -52,8 +52,11 @@ below are explicitly out of scope or blocked by backend protocol gaps.
    Phase 3 limit summary when the backend provides it), switches the active
    model, tests connections, deletes models, and stores/clears API keys.
    Keys are stored by the backend credential_store (Windows DPAPI) and never
-   echoed to the renderer. Servers without the new methods fall back to the
-   BLOCKED panel automatically (method-not-found detection).
+   echoed to the renderer. Until `models/list` returns, the task header shows
+   `Connecting model…` and the composer shows `Loading models…` instead of
+   flashing `Model not connected` / `No configured models`. Servers without
+   the new methods fall back to the BLOCKED panel automatically
+   (method-not-found detection).
 2. **No subagent UI yet**: the desktop shell does not consume Phase B
    subagent events (`child_session/*`), `@agent` mention, `/children`,
    `/child`, `/parent` or `agent/invoke`. The OpenTUI frontend has those;

@@ -71,4 +71,4 @@ test('visibleRunProgress drops leftover startup text once the timeline has real 
     progress: '正在处理 write',
     timelineLength: 5
   }), '正在处理 write')
-}))
+})

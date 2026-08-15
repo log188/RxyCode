@@ -15,18 +15,79 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DesktopCdpHarness, desktopAppDir, repositoryDir, selectRendererTarget, waitFor, type CleanupProof } from './cdp-harness.mts'
-import { buildBatchPrompts, buildMissingFileRepairPrompt, parseMissingFilenames, realBusinessScenarios, type RealBusinessScenario } from './real-business-scenarios.mts'
+import { buildBatchPrompts, buildMissingFileRepairPrompt, buildSpringMysqlRepairInstructions, selectMissingFileRepair, realBusinessScenarios, type RealBusinessScenario } from './real-business-scenarios.mts'
 import {
   aggregateUsage,
   evaluateLayoutSnapshot,
-  gameEnteredPlayableState,
+  gameMenuStillBlockingPlay,
   isMeaningfulProtocolEvent,
   missingWebDeliverables,
+  parseDotEnv,
+  mysqlPartsFromJdbc,
+  companyLoginProbeIssue,
+  companyWebsiteArtifactIssue,
+  travelWebsiteArtifactIssue,
+  marketBiArtifactIssue,
+  evTcoArtifactIssue,
+  rentalDecisionArtifactIssue,
+  springMysqlArtifactIssue,
+  findProjectLocalMaven,
+  mavenTestCountsIssue,
+  missingOutputDirIssue,
+  webServeRoot,
   terminalOutcomeIssue,
   hasInFlightTool,
+  hasInFlightRecovery,
+  selectJavaSwingMain,
+  firstTokenHardFail,
+  approvalStormIssue,
+  taskWallClockIssue,
   type UsageSample,
   type UsageSummary
 } from './real-business-metrics.mts'
+
+const PROTOCOL_CAPTURE_BOOTSTRAP = `(() => {
+  window.__rxyRealProtocol = [];
+  window.__rxyCdAppserverLogs = [];
+  window.__rxyWatchdog = {
+    firstActivityAt: null,
+    lastVisibleAt: Date.now(),
+    inFlightTools: 0,
+    recoveryOpen: false
+  };
+  const waiting = /waiting for model response|build in progress|\\u6b63\\u5728\\u7b49\\u5f85\\u6a21\\u578b\\u54cd\\u5e94/i;
+  const activity = new Set(['event/message_delta', 'event/tool_begin', 'event/tool_end', 'event/progress', 'event/plan', 'event/step', 'event/recovery_started', 'event/recovery_attempt']);
+  const visible = new Set(['event/message_delta', 'event/tool_begin', 'event/tool_end', 'event/progress', 'event/plan', 'event/step', 'event/error', 'event/final', 'event/recovery_started', 'event/recovery_attempt', 'event/recovery_resolved', 'event/recovery_exhausted']);
+  window.api.appserver.onLog((line) => window.__rxyCdAppserverLogs.push(String(line)));
+  window.api.appserver.onLine((line) => {
+    try {
+      const message = JSON.parse(line);
+      message.__at_ms = Date.now();
+      const method = String(message.method || '');
+      const callId = String(message.params?.call_id || '');
+      const text = String(message.params?.text || '');
+      const watchdog = window.__rxyWatchdog;
+      if (method === 'event/tool_begin' && callId) watchdog.inFlightTools += 1;
+      if (method === 'event/tool_end' && callId && watchdog.inFlightTools > 0) watchdog.inFlightTools -= 1;
+      if (method === 'event/recovery_started' || method === 'event/recovery_attempt') watchdog.recoveryOpen = true;
+      if (method === 'event/recovery_resolved' || method === 'event/recovery_exhausted') watchdog.recoveryOpen = false;
+      const waitingProgress = method === 'event/progress' && waiting.test(text);
+      if (activity.has(method) && !waitingProgress && watchdog.firstActivityAt == null) watchdog.firstActivityAt = message.__at_ms;
+      if ((visible.has(method) && !waitingProgress) || method === 'approval/request' || method === 'approval/decision') {
+        watchdog.lastVisibleAt = message.__at_ms;
+      }
+      const stored = message.params ? { ...message, params: { ...message.params } } : message;
+      if (stored.params && stored.params.summary && String(stored.params.summary).length > 4000) {
+        stored.params.summary = String(stored.params.summary).slice(0, 4000) + '\u2026';
+      }
+      if (stored.params && stored.params.arguments != null) {
+        const raw = JSON.stringify(stored.params.arguments);
+        if (raw.length > 4000) stored.params.arguments = { truncated: true, preview: raw.slice(0, 4000) };
+      }
+      window.__rxyRealProtocol.push(JSON.stringify(stored));
+    } catch {}
+  });
+})()`
 
 type Batch = 'A' | 'B'
 type ProtocolMessage = Record<string, any> & { __at_ms?: number }
@@ -90,7 +151,7 @@ function failureResult(
     title: scenario.title,
     prompt,
     model,
-    provider: 'deepseek',
+    provider: REAL_BUSINESS_PROVIDER,
     gateway,
     session_id: sessionId,
     status: 'failed',
@@ -142,6 +203,47 @@ const batchArg = (process.argv.find((arg) => arg.startsWith('--batch='))?.slice(
 const batches: Batch[] = batchArg === 'A' || batchArg === 'B' ? [batchArg as Batch] : ['A', 'B']
 const selected = realBusinessScenarios.filter((scenario) => only.size === 0 || only.has(scenario.id))
 const prompts = buildBatchPrompts()
+const REAL_BUSINESS_MODEL_ID = 'opencode-go/deepseek-v4-flash'
+const REAL_BUSINESS_PROVIDER = 'opencode-go'
+const REAL_BUSINESS_GATEWAY = 'https://opencode.ai/zen/go/v1'
+
+function mysqlTestEnv(): Record<string, string> {
+  const envPath = join(repositoryDir, '.env.t09-mysql')
+  if (!existsSync(envPath)) return {}
+  const parsed = parseDotEnv(readFileSync(envPath, 'utf8'))
+  const allowed = [
+    'MYSQL_URL',
+    'MYSQL_USER',
+    'MYSQL_PASSWORD',
+    'MYSQL_ADMIN_PASSWORD',
+    'SPRING_DATASOURCE_URL',
+    'SPRING_DATASOURCE_USERNAME',
+    'SPRING_DATASOURCE_PASSWORD',
+    'APP_ADMIN_USERNAME',
+    'APP_ADMIN_PASSWORD',
+    'T09_ADMIN_PASSWORD'
+  ]
+  const out: Record<string, string> = {}
+  for (const key of allowed) {
+    const value = parsed[key]
+    if (typeof value === 'string' && value.length > 0) out[key] = value
+  }
+  Object.assign(out, mysqlPartsFromJdbc(out.MYSQL_URL ?? out.SPRING_DATASOURCE_URL ?? ''))
+  if (!out.APP_ADMIN_USERNAME) out.APP_ADMIN_USERNAME = 'admin'
+  if (!out.APP_ADMIN_PASSWORD) out.APP_ADMIN_PASSWORD = out.T09_ADMIN_PASSWORD || 't09-demo-login'
+  if (!out.T09_ADMIN_PASSWORD) out.T09_ADMIN_PASSWORD = out.APP_ADMIN_PASSWORD
+  return out
+}
+
+function desktopSuiteEnv(): Record<string, string> {
+  return {
+    RXYCODE_SUBAGENTS: '1',
+    RXYCODE_SUBAGENTS_TASK: '1',
+    RXYCODE_SUBAGENTS_MENTION: '1',
+    RXYCODE_SUBAGENTS_CHILD_TASKS: '1',
+    ...mysqlTestEnv()
+  }
+}
 
 function parseProtocol(lines: string[]): ProtocolMessage[] {
   return lines.flatMap((line) => {
@@ -182,13 +284,13 @@ function getGateway(messages: ProtocolMessage[]): string {
   // catalog response by its result shape rather than looking for a missing
   // `method` field.
   const model = messages.findLast((message) => Array.isArray(message.result?.models))?.result
-  const entry = model?.models?.find((item: any) => item.id === 'deepseek/deepseek-v4-flash')
+  const entry = model?.models?.find((item: any) => item.id === REAL_BUSINESS_MODEL_ID)
   return typeof entry?.base_url === 'string' ? entry.base_url.replace(/\/$/, '') : ''
 }
 
-function getOfficialModelEntry(messages: ProtocolMessage[]): Record<string, any> | null {
+function getSuiteModelEntry(messages: ProtocolMessage[]): Record<string, any> | null {
   const model = messages.findLast((message) => Array.isArray(message.result?.models))?.result
-  const entry = model?.models?.find((item: any) => item.id === 'deepseek/deepseek-v4-flash')
+  const entry = model?.models?.find((item: any) => item.id === REAL_BUSINESS_MODEL_ID)
   return entry !== null && typeof entry === 'object' ? entry as Record<string, any> : null
 }
 
@@ -214,7 +316,7 @@ function eventTiming(messages: ProtocolMessage[], startedAt: number, sessionId: 
   for (let index = 1; index < eventTimes.length; index += 1) {
     const gap = eventTimes[index]! - eventTimes[index - 1]!
     const previousAt = Number(events[index - 1]!.__at_ms)
-    if (gap > 10_000 && !hasInFlightTool(messages, sessionId, previousAt, Number(events[index]!.__at_ms))) gaps.push(gap)
+    if (gap > 10_000 && !hasInFlightTool(messages, sessionId, previousAt, Number(events[index]!.__at_ms)) && !hasInFlightRecovery(messages, sessionId, previousAt, Number(events[index]!.__at_ms))) gaps.push(gap)
   }
   const timing: RealBusinessResult['timing'] = {
     wall_ms: Math.max(0, Date.now() - startedAt),
@@ -227,7 +329,7 @@ function eventTiming(messages: ProtocolMessage[], startedAt: number, sessionId: 
   return timing
 }
 
-function copyTree(source: string, target: string): string[] {
+function copyTree(source: string, target: string, relativeRoot = target): string[] {
   const files: string[] = []
   if (!existsSync(source)) return files
   mkdirSync(target, { recursive: true })
@@ -235,10 +337,10 @@ function copyTree(source: string, target: string): string[] {
     if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'target') continue
     const from = join(source, entry.name)
     const to = join(target, entry.name)
-    if (entry.isDirectory()) files.push(...copyTree(from, to))
+    if (entry.isDirectory()) files.push(...copyTree(from, to, relativeRoot))
     else {
       cpSync(from, to)
-      files.push(relative(target, to))
+      files.push(relative(relativeRoot, to))
     }
   }
   return files
@@ -269,8 +371,8 @@ function listFiles(root: string): string[] {
   return output.sort()
 }
 
-async function selectOfficialModelInSettings(harness: DesktopCdpHarness): Promise<void> {
-  const modelId = 'deepseek/deepseek-v4-flash'
+async function selectOpenCodeGoModelInSettings(harness: DesktopCdpHarness): Promise<void> {
+  const modelId = REAL_BUSINESS_MODEL_ID
   await harness.waitForSelector('[data-testid="open-settings"]', 60_000)
   await harness.evaluate('document.querySelector("[data-testid=\\"open-settings\\"]")?.click()')
   await harness.waitForSelector('[data-testid="settings-dialog"]', 10_000)
@@ -278,7 +380,7 @@ async function selectOfficialModelInSettings(harness: DesktopCdpHarness): Promis
   await waitFor(
     async () => await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="model-row"][data-model-id=${JSON.stringify(modelId)}]'))`) ? true : null,
     60_000,
-    'official DeepSeek model in GUI model center'
+    'OpenCode Go deepseek-v4-flash in GUI model center'
   )
   const alreadyActive = await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="model-row"][data-model-id=${JSON.stringify(modelId)}].active'))`)
   if (!alreadyActive) {
@@ -290,7 +392,7 @@ async function selectOfficialModelInSettings(harness: DesktopCdpHarness): Promis
         return dialog === null || row?.classList.contains('active')
       })()`) ? true : null,
       45_000,
-      'activate official DeepSeek model in GUI'
+      'activate OpenCode Go deepseek-v4-flash in GUI'
     )
   }
   // Selecting the global default closes the settings page when there is no
@@ -331,16 +433,16 @@ async function createSession(harness: DesktopCdpHarness): Promise<string> {
   return harness.evaluate<string>('document.querySelector(".session-item.active .session-id")?.textContent?.trim() ?? ""')
 }
 
-async function assertOfficialModel(harness: DesktopCdpHarness): Promise<{ model: string; gateway: string }> {
-  const modelId = 'deepseek/deepseek-v4-flash'
+async function assertOpenCodeGoModel(harness: DesktopCdpHarness): Promise<{ model: string; gateway: string }> {
+  const modelId = REAL_BUSINESS_MODEL_ID
   await harness.waitForSelector('[data-testid="composer-model"]', 60_000)
-  await waitFor(async () => await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="composer-model"] option[value=${JSON.stringify(modelId)}]'))`) ? true : null, 60_000, 'official DeepSeek model option')
-  await waitFor(async () => await harness.evaluate<boolean>(`document.querySelector('[data-testid="composer-model"]')?.value === ${JSON.stringify(modelId)}`) ? true : null, 45_000, 'apply official DeepSeek model in GUI')
+  await waitFor(async () => await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="composer-model"] option[value=${JSON.stringify(modelId)}]'))`) ? true : null, 60_000, 'OpenCode Go deepseek-v4-flash option')
+  await waitFor(async () => await harness.evaluate<boolean>(`document.querySelector('[data-testid="composer-model"]')?.value === ${JSON.stringify(modelId)}`) ? true : null, 45_000, 'apply OpenCode Go deepseek-v4-flash in GUI')
   const lines = parseProtocol(await harness.evaluate<string[]>('window.__rxyRealProtocol ?? []'))
-  const entry = getOfficialModelEntry(lines)
+  const entry = getSuiteModelEntry(lines)
   const gateway = getGateway(lines)
-  if (entry?.provider_id !== 'deepseek' || gateway !== 'https://api.deepseek.com/v1') {
-    throw new Error(`official DeepSeek selection did not resolve to deepseek/https://api.deepseek.com/v1 (provider=${String(entry?.provider_id ?? 'missing')}, gateway=${gateway || 'missing'})`)
+  if (entry?.provider_id !== REAL_BUSINESS_PROVIDER || gateway !== REAL_BUSINESS_GATEWAY) {
+    throw new Error(`OpenCode Go selection did not resolve to ${REAL_BUSINESS_PROVIDER}/${REAL_BUSINESS_GATEWAY} (provider=${String(entry?.provider_id ?? 'missing')}, gateway=${gateway || 'missing'})`)
   }
   return { model: modelId, gateway }
 }
@@ -400,21 +502,61 @@ async function submitPrompt(
   await waitFor(async () => await harness.evaluate<boolean>('!document.querySelector("[data-testid=\\"composer-input\\"]")?.disabled && !document.querySelector("[data-testid=\\"composer-stop\\"]")') ? true : null, 15_000, 'composer ready')
   const beforeFinalCount = await harness.evaluate<number>('document.querySelectorAll("[data-testid=\\"final-answer\\"]").length')
   const sentAt = Date.now()
+  await harness.evaluate(`(() => {
+    const watchdog = window.__rxyWatchdog || (window.__rxyWatchdog = { firstActivityAt: null, lastVisibleAt: Date.now(), inFlightTools: 0, recoveryOpen: false });
+    watchdog.firstActivityAt = null;
+    watchdog.lastVisibleAt = Date.now();
+    watchdog.inFlightTools = 0;
+    watchdog.recoveryOpen = false;
+  })()`)
+  const beforeToolCount = await harness.evaluate<number>('document.querySelectorAll("[data-testid^=\\"timeline-tool-\\"]").length')
   await harness.typePrompt(prompt)
   await harness.pressKey('Enter')
-  await waitFor(async () => (await harness.has('[data-testid="running-indicator"]') || await harness.has('[data-testid^="timeline-tool-"]')) ? true : null, 5_000, 'visible task feedback')
+  await waitFor(async () => {
+    if (await harness.has('[data-testid="running-indicator"]')) return true
+    const tools = await harness.evaluate<number>('document.querySelectorAll("[data-testid^=\\"timeline-tool-\\"]").length')
+    return tools > beforeToolCount ? true : null
+  }, 5_000, 'visible task feedback')
   const visibleFeedbackMs = Date.now() - sentAt
   let finalCount = await harness.evaluate<number>('document.querySelectorAll("[data-testid=\\"final-answer\\"]").length')
   const deadline = Date.now() + timeoutMs
   let approvalStateStartedAt: number | null = null
   let queuedStateStartedAt: number | null = null
+  let failedStateStartedAt: number | null = null
+  let sawActive = false
   while (Date.now() < deadline) {
-    if (await harness.has('.approval-dialog .approve')) {
+    if (await harness.has('.approval-dialog .approve') || await harness.has('.approval-dialog .always-allow')) {
+      const storm = approvalStormIssue(approvals.length + 1)
+      if (storm !== null) {
+        await stopAndDrain()
+        throw new Error(storm)
+      }
       const path = await harness.screenshot(join(screenshotsDir, `approval-${approvals.length + 1}.png`))
-      approvals.push(`approved via Desktop dialog; screenshot=${path}`)
-      await harness.evaluate('document.querySelector(".approval-dialog .approve")?.click()')
+      const usedAlwaysAllow = await harness.evaluate<boolean>(`(() => {
+        const always = document.querySelector('.approval-dialog .always-allow');
+        if (always instanceof HTMLElement) { always.click(); return true; }
+        document.querySelector('.approval-dialog .approve')?.click();
+        return false;
+      })()`)
+      if (usedAlwaysAllow) {
+        try {
+          await waitFor(async () => (await harness.has('.approval-dialog .save-rule')) ? true : null, 5_000, 'always-allow scope form')
+          await harness.evaluate(`(() => {
+            const any = document.querySelector('.approval-dialog input[value="any"]');
+            if (any instanceof HTMLInputElement) any.click();
+            document.querySelector('.approval-dialog .save-rule')?.click();
+          })()`)
+        } catch (caught) {
+          await stopAndDrain()
+          throw new Error(`always-allow form did not complete: ${caught instanceof Error ? caught.message : String(caught)}`)
+        }
+      }
+      approvals.push(`${usedAlwaysAllow ? 'always-allow workspace WRITE' : 'approved once'} via Desktop dialog; screenshot=${path}`)
       try {
-        await waitFor(async () => !(await harness.has('.approval-dialog .approve')) ? true : null, 5_000, 'approval decision closes dialog')
+        await waitFor(async () => (
+          !(await harness.has('.approval-dialog .approve'))
+          && !(await harness.has('.approval-dialog .save-rule'))
+        ) ? true : null, 5_000, 'approval decision closes dialog')
       } catch (caught) {
         await stopAndDrain()
         throw new Error(`approval decision did not close the dialog: ${caught instanceof Error ? caught.message : String(caught)}`)
@@ -426,7 +568,23 @@ async function submitPrompt(
       const value = node?.className ?? '';
       return value.match(/state-(queued|running|approval|succeeded|failed|cancelled|timed_out)/)?.[1] ?? null;
     })()`)
-    if (state !== null && !['queued', 'running', 'approval'].includes(state)) return { finalCount, beforeFinalCount, visibleFeedbackMs, sentAt }
+    if (state === 'queued' || state === 'running' || state === 'approval') {
+      sawActive = true
+    }
+    if (sawActive && state !== null && !['queued', 'running', 'approval'].includes(state)) {
+      // T04-1: APIConnectionError flipped the session to failed, then recovery
+      // started a new run. Returning here cancelled that recovery and stub-repaired.
+      // A leftover Failed from the previous prompt must not count as this prompt
+      // finishing, and a stuck Stop button must not wait out the 45-minute timeout.
+      const recovering = await harness.evaluate<boolean>('Boolean(window.__rxyWatchdog?.recoveryOpen)')
+      if (state === 'failed' && (recovering || failedStateStartedAt === null || Date.now() - failedStateStartedAt < 15_000)) {
+        failedStateStartedAt ??= Date.now()
+      } else {
+        return { finalCount, beforeFinalCount, visibleFeedbackMs, sentAt }
+      }
+    } else {
+      failedStateStartedAt = null
+    }
     if (state === 'approval') {
       approvalStateStartedAt ??= Date.now()
       if (Date.now() - approvalStateStartedAt > 15_000) {
@@ -436,65 +594,42 @@ async function submitPrompt(
     } else {
       approvalStateStartedAt = null
     }
-    if (state === 'queued') {
-      queuedStateStartedAt ??= Date.now()
-      if (Date.now() - queuedStateStartedAt > 30_000) {
-        await stopAndDrain()
-        throw new Error('task remained queued for more than 30s after submission')
-      }
-    } else {
-      queuedStateStartedAt = null
-    }
-    if (state === 'running') {
-      const firstModelActivityAt = await harness.evaluate<number | null>(`(() => {
-        const lines = Array.isArray(window.__rxyRealProtocol) ? window.__rxyRealProtocol : [];
-        const activity = new Set(['event/message_delta', 'event/tool_begin', 'event/tool_end', 'event/progress', 'event/plan', 'event/step', 'event/recovery_started', 'event/recovery_attempt']);
-        for (const line of lines) {
-          try {
-            const message = JSON.parse(String(line));
-            if (activity.has(String(message.method)) &&
-              String(message.params?.session_id ?? '') === ${JSON.stringify(sessionId)} &&
-              !(String(message.method) === 'event/progress' && /waiting for model response|build in progress|正在等待模型响应/i.test(String(message.params?.text ?? ''))) &&
-              typeof message.__at_ms === 'number' && message.__at_ms >= ${sentAt}) return message.__at_ms;
-          } catch {}
+    if (state === 'queued' || state === 'running') {
+      const firstModelActivityAt = await harness.evaluate<number | null>('window.__rxyWatchdog?.firstActivityAt ?? null')
+      if (state === 'queued') {
+        queuedStateStartedAt ??= Date.now()
+        // T06-1: after bash timeouts the session flickered to queued while the
+        // model was still working. The 30s queued gate is only for a prompt
+        // that never left the queue.
+        if (firstModelActivityAt === null && Date.now() - queuedStateStartedAt > 30_000) {
+          await stopAndDrain()
+          throw new Error('task remained queued for more than 30s after submission')
         }
-        return null;
-      })()`)
-      if (firstModelActivityAt === null && Date.now() - sentAt > 30_000) {
+      } else {
+        queuedStateStartedAt = null
+      }
+      if (state === 'running' && firstModelActivityAt === null && Date.now() - sentAt > 30_000) {
         await stopAndDrain()
         throw new Error(`first model activity exceeded 30s (${Date.now() - sentAt}ms); stopped through GUI`)
       }
-      const lastVisibleEventAt = await harness.evaluate<number>(`(() => {
-        const lines = Array.isArray(window.__rxyRealProtocol) ? window.__rxyRealProtocol : [];
-        const visible = new Set(['event/message_delta', 'event/tool_begin', 'event/tool_end', 'event/progress', 'event/plan', 'event/step', 'event/error', 'event/final', 'event/recovery_started', 'event/recovery_attempt', 'event/recovery_resolved', 'event/recovery_exhausted']);
-        const begun = new Set();
-        const ended = new Set();
-        let last = ${sentAt};
-        for (const line of lines) {
-          try {
-            const message = JSON.parse(String(line));
-            if (String(message.params?.session_id ?? '') !== ${JSON.stringify(sessionId)}) continue;
-            if (typeof message.__at_ms !== 'number' || message.__at_ms < ${sentAt}) continue;
-            const method = String(message.method);
-            const callId = String(message.params?.call_id ?? '');
-            if (method === 'event/tool_begin' && callId) begun.add(callId);
-            if (method === 'event/tool_end' && callId) ended.add(callId);
-            if (visible.has(method) &&
-              !(method === 'event/progress' && /waiting for model response|build in progress|\u6b63\u5728\u7b49\u5f85\u6a21\u578b\u54cd\u5e94/i.test(String(message.params?.text ?? '')))) {
-              last = message.__at_ms;
-            }
-          } catch {}
-        }
-        for (const callId of begun) {
-          if (!ended.has(callId)) return Date.now();
-        }
-        return last;
+      if (state === 'running' || firstModelActivityAt !== null) {
+      const silentForMs = await harness.evaluate<number>(`(() => {
+        const watchdog = window.__rxyWatchdog;
+        if (watchdog != null && watchdog.recoveryOpen) return 0;
+        if (watchdog != null && Number(watchdog.inFlightTools) > 0) return 0;
+        const last = watchdog != null && typeof watchdog.lastVisibleAt === 'number' ? watchdog.lastVisibleAt : Date.now();
+        return Date.now() - last;
       })()`)
-      const silentForMs = Date.now() - lastVisibleEventAt
       if (silentForMs > 30_000) {
         await stopAndDrain()
         throw new Error(`visible task event silent for ${silentForMs}ms; stopped through GUI`)
       }
+      }
+    }
+    const wallIssue = taskWallClockIssue(Date.now() - sentAt)
+    if (wallIssue !== null) {
+      await stopAndDrain()
+      throw new Error(wallIssue)
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 500))
   }
@@ -568,6 +703,15 @@ function chromeBinary(): string {
 
 const gamePlayExpression = `(() => {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const startSelector = '#startBtn, #btn-start, #start-btn, [data-action="start"], [data-action="newgame"], button.big, button.primary, .btn-primary, #screen-start button.btn:not(.alt)';
+  const findStart = () => document.querySelector(startSelector)
+    || Array.from(document.querySelectorAll('button')).find((button) => /开始|start|play|new\\s*game/i.test(button.textContent || '') && !/mute|help|pause|resume|restart|静音|帮助|暂停|继续|重新/.test(button.textContent || ''));
+  const isShown = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const style = getComputedStyle(node);
+    const box = node.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0 && box.width > 1 && box.height > 1;
+  };
   const readScore = () => {
     const el = document.querySelector('#score, #scoreVal, #hud-score, #hud-coins, #stat-score, [data-testid="score"]');
     const n = Number(String((el && el.textContent) || '0').replace(/[^0-9.-]/g, ''));
@@ -576,7 +720,7 @@ const gamePlayExpression = `(() => {
   const overlayHidden = () => {
     const overlay = document.querySelector('#overlay-start, #screen-start, #screen-menu, #menu-screen, #overlay')
       || document.querySelector('#btn-start, [data-action="newgame"]')?.closest('.overlay, .screen');
-    if (!(overlay instanceof HTMLElement)) return false;
+    if (!(overlay instanceof HTMLElement)) return !isShown(findStart());
     if (overlay.classList.contains('hidden')) return true;
     const style = getComputedStyle(overlay);
     return style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0;
@@ -585,19 +729,19 @@ const gamePlayExpression = `(() => {
     score: readScore(),
     state: ((document.querySelector('#stateLabel, #state') || {}).textContent || ''),
     title: document.title,
-    overlayHidden: overlayHidden()
+    overlayHidden: overlayHidden(),
+    startVisible: isShown(findStart())
   });
   const press = (key) => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
     document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
   };
   return (async () => {
-    const start = document.querySelector('#startBtn, #btn-start, #start-btn, [data-action="start"], [data-action="newgame"], button.big, button.primary, .btn-primary, #screen-start button.btn:not(.alt)')
-      || Array.from(document.querySelectorAll('button')).find((button) => /开始|start|play|new\\s*game/i.test(button.textContent || '') && !/mute|help|pause|resume|restart|静音|帮助|暂停|继续|重新/.test(button.textContent || ''));
+    const start = findStart();
     if (start instanceof HTMLElement) {
+      start.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
       start.click();
       press('Enter');
-      press(' ');
     }
     let snapshot = readState();
     const canvas = document.querySelector('canvas');
@@ -613,13 +757,14 @@ const gamePlayExpression = `(() => {
       } catch {}
       return false;
     };
-    for (let i = 0; i < 24 && snapshot.score <= 0 && !/running|playing|run|\\u8fd0\\u884c|\\u8fdb\\u884c|\\u6e38\\u73a9/i.test(snapshot.state) && !snapshot.overlayHidden && !canvasPainted(); i += 1) {
-      press(' '); press('ArrowUp'); press('ArrowRight');
+    for (let i = 0; i < 24 && snapshot.score <= 0 && !/running|playing|run|\\u8fd0\\u884c|\\u8fdb\\u884c|\\u6e38\\u73a9/i.test(snapshot.state) && (!snapshot.overlayHidden || snapshot.startVisible); i += 1) {
+      if (start instanceof HTMLElement) start.click();
+      press('ArrowUp'); press('ArrowRight');
       await sleep(250);
       snapshot = readState();
     }
-    const started = snapshot.score > 0 || /running|playing|run|\\u8fd0\\u884c|\\u8fdb\\u884c|\\u6e38\\u73a9/i.test(snapshot.state) || snapshot.overlayHidden === true || canvasPainted();
-    if (!started) return { ok: false, reason: start instanceof HTMLElement ? 'did not enter a running/playable state' : 'no start control', ...snapshot };
+    const started = snapshot.score > 0 || /running|playing|run|\\u8fd0\\u884c|\\u8fdb\\u884c|\\u6e38\\u73a9/i.test(snapshot.state) || (snapshot.overlayHidden === true && snapshot.startVisible !== true);
+    if (!started) return { ok: false, reason: start instanceof HTMLElement ? 'did not enter a running/playable state' : 'no start control', canvasPainted: canvasPainted(), ...snapshot };
     for (let i = 0; i < 40 && !/over|end|fail|\\u7ed3\\u675f|\\u5931\\u8d25/i.test(snapshot.state); i += 1) {
       press(' '); press('ArrowUp'); press('ArrowRight');
       await sleep(250);
@@ -628,7 +773,7 @@ const gamePlayExpression = `(() => {
     const restart = document.querySelector('#restartBtn, #btn-restart');
     if (restart instanceof HTMLElement) restart.click(); else press('r');
     await sleep(400);
-    return { ok: true, ...snapshot, afterRestart: readState() };
+    return { ok: true, canvasPainted: canvasPainted(), ...snapshot, afterRestart: readState() };
   })();
 })()`
 
@@ -636,14 +781,87 @@ const pagePlayExpression = `(() => {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   return (async () => {
     const text = ((document.body && document.body.innerText) || '').trim();
-    const control = document.querySelector('button, select, input, a[href]');
+    const button = document.querySelector('button, [type="button"], [type="submit"]');
+    const samePage = document.querySelector('a[href^="#"]');
+    const field = document.querySelector('select, input:not([type="hidden"]):not([type="file"])');
+    const control = button || samePage || field;
     if (control instanceof HTMLElement) control.click();
     await sleep(300);
-    return { ok: text.length > 40, reason: text.length > 40 ? undefined : 'page has no usable content', title: document.title, textLength: text.length };
+    const after = ((document.body && document.body.innerText) || '').trim();
+    return {
+      ok: after.length > 40 || text.length > 40,
+      reason: (after.length > 40 || text.length > 40) ? undefined : 'page has no usable content',
+      title: document.title,
+      textLength: Math.max(text.length, after.length)
+    };
   })();
 })()`
 
-async function evaluateInChrome(url: string, expression: string, screenshotFile: string): Promise<Record<string, any>> {
+const companyPagePlayExpression = `(() => {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const countModules = (text) => {
+    const hay = String(text || '');
+    return [
+      /用户管理|用户列表/i,
+      /订单管理|订单列表/i,
+      /内容管理|内容页面/i,
+      /设置|settings/i,
+      /分析|数据看板|统计|dashboard|analytics/i
+    ].filter((pattern) => pattern.test(hay)).length;
+  };
+  return (async () => {
+    const text = ((document.body && document.body.innerText) || '').trim();
+    if (text.length < 40) return { ok: false, reason: 'page has no usable content', textLength: text.length, demoClicked: false, adminModules: 0 };
+    const adminModulesNow = countModules(text);
+    if (adminModulesNow >= 4) {
+      return { ok: true, reason: undefined, title: document.title, textLength: text.length, adminText: text.slice(0, 2000), demoClicked: true, navigated: true, adminModules: adminModulesNow };
+    }
+    if (!document.querySelector('#btn-demo-login, [data-demo-login]')) {
+      const loginLink = document.querySelector('a.btn-login, a[href*="login"], [data-open-login], #btn-login, button#btn-open-login:not([type="submit"])');
+      if (loginLink instanceof HTMLElement) loginLink.click();
+      await sleep(400);
+    }
+    const user = document.querySelector('#login-username, #loginUsername, input[name="username"], input[type="text"]');
+    const pass = document.querySelector('#login-password, #loginPassword, input[name="password"], input[type="password"]');
+    const form = document.querySelector('#login-form, #loginForm, form');
+    if (user instanceof HTMLInputElement && pass instanceof HTMLInputElement && form instanceof HTMLFormElement) {
+      user.value = 'wrong';
+      pass.value = 'wrong';
+      user.dispatchEvent(new Event('input', { bubbles: true }));
+      pass.dispatchEvent(new Event('input', { bubbles: true }));
+      const submitBtn = form.querySelector('[type="submit"]');
+      if (submitBtn instanceof HTMLElement) submitBtn.click();
+      else form.requestSubmit();
+      await sleep(500);
+    }
+    const statusEl = document.querySelector('#login-status, #statusMsg, .form-status, .status-msg, [role="alert"]');
+    const status = ((statusEl && statusEl.textContent) || '').trim();
+    const demo = document.querySelector('#btn-demo-login, [data-demo-login]');
+    if (demo instanceof HTMLElement) demo.click();
+    await sleep(900);
+    const after = ((document.body && document.body.innerText) || '').trim();
+    const adminModules = countModules(after);
+    const demoClicked = demo instanceof HTMLElement;
+    return {
+      ok: demoClicked && adminModules >= 4,
+      reason: demoClicked ? (adminModules >= 4 ? undefined : 'demo login did not open an admin console') : 'company page has no working demo login (#btn-demo-login)',
+      title: document.title,
+      textLength: after.length,
+      adminText: after.slice(0, 2000),
+      loginOpened: Boolean(document.querySelector('#login-modal:not([hidden]), #login-form, #loginForm, dialog[open]')),
+      wrongLoginFeedback: status.length > 0,
+      demoClicked,
+      adminModules
+    };
+  })();
+})()`
+
+async function evaluateInChrome(
+  url: string,
+  expression: string,
+  screenshotFile: string,
+  afterNavigationExpression?: string
+): Promise<Record<string, any>> {
   const profileDir = mkdtempSync(join(tmpdir(), 'rxy-chrome-play-'))
   const child = spawn(chromeBinary(), [
     '--headless=new',
@@ -651,6 +869,8 @@ async function evaluateInChrome(url: string, expression: string, screenshotFile:
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-extensions',
+    '--disable-background-networking',
+    '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
     `--user-data-dir=${profileDir}`,
     '--remote-debugging-port=0',
     url
@@ -678,15 +898,25 @@ async function evaluateInChrome(url: string, expression: string, screenshotFile:
     })
     let sequence = 0
     const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>()
-    socket.onmessage = (event) => {
-      const message = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: unknown }
-      if (message.id === undefined) return
-      const entry = pending.get(message.id)
-      if (entry === undefined) return
-      pending.delete(message.id)
-      if (message.error !== undefined) entry.reject(new Error(JSON.stringify(message.error)))
-      else entry.resolve(message.result)
+    let pageReady = false
+    let pageReadyResolve: (() => void) | undefined
+    const attachSocket = (next: WebSocket): void => {
+      next.onmessage = (event) => {
+        const message = JSON.parse(String(event.data)) as { id?: number; method?: string; params?: { name?: string }; error?: unknown; result?: unknown }
+        if (message.method === 'Page.loadEventFired' || (message.method === 'Page.lifecycleEvent' && (message.params?.name === 'DOMContentLoaded' || message.params?.name === 'load'))) {
+          pageReady = true
+          pageReadyResolve?.()
+          return
+        }
+        if (message.id === undefined) return
+        const entry = pending.get(message.id)
+        if (entry === undefined) return
+        pending.delete(message.id)
+        if (message.error !== undefined) entry.reject(new Error(JSON.stringify(message.error)))
+        else entry.resolve(message.result)
+      }
     }
+    attachSocket(socket)
     const send = (method: string, params: unknown = {}, timeoutMs = 30_000): Promise<any> => new Promise((resolveSend, rejectSend) => {
       const id = ++sequence
       const timer = setTimeout(() => {
@@ -699,24 +929,76 @@ async function evaluateInChrome(url: string, expression: string, screenshotFile:
       })
       socket!.send(JSON.stringify({ id, method, params }))
     })
+    const waitForPageReady = async (): Promise<void> => {
+      if (pageReady) return
+      await Promise.race([
+        new Promise<void>((resolveWait) => { pageReadyResolve = resolveWait }),
+        new Promise<void>((resolveWait) => setTimeout(resolveWait, 2500))
+      ])
+    }
     await send('Runtime.enable')
     await send('Page.enable')
+    await send('Page.setLifecycleEventsEnabled', { enabled: true })
+    pageReady = false
     await send('Page.navigate', { url })
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 800))
-    const evaluated = await send('Runtime.evaluate', {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-      userGesture: true
-    }, 35_000)
-    if (evaluated.exceptionDetails !== undefined) {
-      throw new Error(evaluated.exceptionDetails.text ?? 'page expression threw')
+    await waitForPageReady()
+    const evaluatePage = async (expr: string): Promise<any> => {
+      const evaluated = await send('Runtime.evaluate', {
+        expression: expr,
+        awaitPromise: true,
+        returnByValue: true,
+        userGesture: true
+      }, 35_000)
+      if (evaluated.exceptionDetails !== undefined) {
+        throw new Error(evaluated.exceptionDetails.text ?? 'page expression threw')
+      }
+      return evaluated.result?.value ?? {}
+    }
+    let value: Record<string, any> = {}
+    const reconnectAfterNavigation = async (): Promise<void> => {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 700))
+      try { socket?.close() } catch {}
+      const nextTarget = await waitFor(async () => {
+        try {
+          const pages = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json() as Array<{ type: string; url?: string; webSocketDebuggerUrl?: string }>
+          return selectRendererTarget(pages)
+        } catch {
+          return null
+        }
+      }, 15_000, 'Chrome page target after navigation')
+      socket = new WebSocket(nextTarget)
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        socket!.onopen = () => resolveOpen()
+        socket!.onerror = () => rejectOpen(new Error('Chrome CDP websocket failed after navigation'))
+      })
+      sequence = 0
+      pending.clear()
+      pageReady = false
+      attachSocket(socket)
+      await send('Runtime.enable')
+      await send('Page.enable')
+      await send('Page.setLifecycleEventsEnabled', { enabled: true })
+      await waitForPageReady()
+    }
+    for (let hop = 0; hop < 5; hop += 1) {
+      const expr = hop === 0
+        ? expression
+        : (afterNavigationExpression ?? expression)
+      try {
+        value = await evaluatePage(expr)
+        break
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : String(caught)
+        if (!/navigated or closed/i.test(message)) throw caught
+        if (hop === 4) throw caught
+        await reconnectAfterNavigation()
+      }
     }
     try {
       const image = await send('Page.captureScreenshot', { format: 'png' }, 10_000)
       if (typeof image.data === 'string') writeFileSync(screenshotFile, Buffer.from(image.data, 'base64'))
     } catch {}
-    return evaluated.result?.value ?? {}
+    return value
   } finally {
     try { socket?.close() } catch {}
     stopProcess(child)
@@ -730,19 +1012,28 @@ async function evaluateInChrome(url: string, expression: string, screenshotFile:
   }
 }
 
-async function playGeneratedWebPage(source: string, port: number, mode: 'game' | 'page' = 'game'): Promise<string | null> {
+async function playGeneratedWebPage(source: string, port: number, mode: 'game' | 'page' | 'company' = 'game'): Promise<string | null> {
   const screenshotFile = join(source, '.rxy-play-probe.png')
   try {
     const parsed = await evaluateInChrome(
       `http://127.0.0.1:${port}/`,
-      mode === 'page' ? pagePlayExpression : gamePlayExpression,
-      screenshotFile
-    ) as { ok?: boolean; score?: number; state?: string; reason?: string; overlayHidden?: boolean }
+      mode === 'company' ? companyPagePlayExpression : mode === 'page' ? pagePlayExpression : gamePlayExpression,
+      screenshotFile,
+      mode === 'company' ? companyPagePlayExpression : undefined
+    ) as { ok?: boolean; score?: number; state?: string; reason?: string; overlayHidden?: boolean; startVisible?: boolean; demoClicked?: boolean; navigated?: boolean; adminModules?: number; adminText?: string }
     writeFileSync(join(source, '.rxy-play-probe.json'), JSON.stringify(parsed, null, 2))
-    if (parsed.ok !== true) {
+    if (mode === 'company') {
+      const probeIssue = companyLoginProbeIssue(parsed)
+      if (probeIssue !== null) return probeIssue
+    } else if (parsed.ok !== true) {
       return `generated page is not playable: ${parsed.reason ?? 'unknown'} (state=${String(parsed.state ?? '')}, score=${String(parsed.score ?? 0)})`
     }
-    if (mode === 'game' && !gameEnteredPlayableState(String(parsed.state ?? ''), Number(parsed.score ?? 0)) && parsed.overlayHidden !== true && Number(parsed.score ?? 0) <= 0) {
+    if (mode === 'game' && gameMenuStillBlockingPlay({
+      overlayHidden: parsed.overlayHidden === true,
+      startVisible: parsed.startVisible === true,
+      state: String(parsed.state ?? ''),
+      score: Number(parsed.score ?? 0)
+    })) {
       return `generated page did not enter a running/playable state (state=${String(parsed.state ?? '')}, score=${String(parsed.score ?? 0)})`
     }
     return null
@@ -753,17 +1044,242 @@ async function playGeneratedWebPage(source: string, port: number, mode: 'game' |
   }
 }
 
+function redactSecrets(text: string): string {
+  return text.replace(/(password|pwd|passwd)\s*[:=]\s*\S+/gi, '$1=***')
+}
+
+function summarizeMvnOutput(out: string): string {
+  const errors = [...out.matchAll(/^\[ERROR\].+$/gm)].map((match) => match[0])
+  const causes = [...out.matchAll(/^Caused by: .+$/gm)].map((match) => match[0])
+  const beans = [...out.matchAll(/Error creating bean with name '[^']+'/g)].map((match) => match[0])
+  const tables = [...out.matchAll(/Table '[^']+' does(?:n't| not) exist/g)].map((match) => match[0])
+  const asserts = [...out.matchAll(/Status expected:<[^>]+> but was:<[^>]+>/g)].map((match) => match[0])
+  const csrf403 = [...out.matchAll(/Status expected:<20[01]> but was:<403>/g)].map((match) => match[0])
+  const rolePrefix = [...out.matchAll(/ROLE_[A-Z]+ cannot start with ROLE_/g)].map((match) => match[0])
+  const symbols = [...out.matchAll(/^\[ERROR\].*(?:找不到符号|cannot find symbol|PluginContainerException|flyway-maven-plugin).*$/gm)].map((match) => match[0])
+  const flywayVal = [...out.matchAll(/FlywayValidateException: .+$/gm)].map((match) => match[0])
+  const checksum = [...out.matchAll(/Migration checksum mismatch[^\n]*/g)].map((match) => match[0])
+  const flywayEmpty = [...out.matchAll(/Found non-empty schema[^\n]*/g)].map((match) => match[0])
+  const jdbcQuery = [...out.matchAll(/executeQuery\(\) cannot issue statements[^\n]*/g)].map((match) => match[0])
+  const bootCfg = [...out.matchAll(/Unable to find a @SpringBootConfiguration[^\n]*/g)].map((match) => match[0])
+  const notNull = [...out.matchAll(/Column '[^']+' cannot be null[^\n]*/g)].map((match) => match[0])
+  const lazy = [...out.matchAll(/LazyInitializationException[^\n]*/g)].map((match) => match[0])
+  const jacksonEnum = [...out.matchAll(/No enum constant tools\.jackson[^\n]*/g)].map((match) => match[0])
+  const extra = [...new Set([...causes.slice(-8), ...beans.slice(-4), ...tables.slice(-4), ...asserts.slice(-4), ...csrf403.slice(-4), ...rolePrefix.slice(-4), ...symbols.slice(-6), ...flywayVal.slice(-4), ...checksum.slice(-4), ...flywayEmpty.slice(-4), ...jdbcQuery.slice(-4), ...bootCfg.slice(-4), ...notNull.slice(-4), ...lazy.slice(-4), ...jacksonEnum.slice(-4)])]
+  const parts = [...errors.slice(-12), ...extra]
+  if (parts.length > 0) return parts.join('\n').slice(0, 4000)
+  return out.slice(-1200)
+}
+
+function mysqlClientBin(): string | null {
+  const which = process.platform === 'win32' ? 'where.exe' : 'which'
+  const located = spawnSync(which, ['mysql'], { encoding: 'utf8', windowsHide: true, timeout: 10_000 })
+  const found = String(located.stdout ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && existsSync(line))
+  if (found !== undefined) return found
+  const fallbacks = [
+    'C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysql.exe',
+    'C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin\\mysql.exe'
+  ]
+  return fallbacks.find((file) => existsSync(file)) ?? null
+}
+
+function resetMysqlTestSchema(): string | null {
+  const env = mysqlTestEnv()
+  const db = env.MYSQL_DATABASE ?? ''
+  const user = env.MYSQL_USER ?? ''
+  const userPassword = env.MYSQL_PASSWORD ?? ''
+  if (!/^rxycode_t0\d+$/i.test(db) || !/^[A-Za-z0-9_]+$/.test(user) || userPassword.length === 0) {
+    return 'mysql schema reset skipped: MYSQL_DATABASE/MYSQL_USER/MYSQL_PASSWORD are missing or unsafe'
+  }
+  const bin = mysqlClientBin()
+  if (bin === null) return 'mysql schema reset failed: mysql client was not found'
+  const host = env.MYSQL_HOST ?? '127.0.0.1'
+  const port = env.MYSQL_PORT ?? '3306'
+  const runSql = (account: string, password: string, args: string[], sql: string) => spawnSync(
+    bin,
+    ['--protocol=TCP', '-h', host, '-P', port, '-u', account, ...args, '-N', '-e', sql],
+    { env: { ...process.env, MYSQL_PWD: password }, encoding: 'utf8', windowsHide: true, timeout: 30_000 }
+  )
+  const adminPassword = env.MYSQL_ADMIN_PASSWORD ?? ''
+  if (adminPassword.length > 0) {
+    const listed = runSql('root', adminPassword, [], `SELECT id FROM information_schema.processlist WHERE db='${db}' AND id <> CONNECTION_ID()`)
+    for (const id of String(listed.stdout ?? '').split(/\s+/)) {
+      if (!/^\d+$/.test(id)) continue
+      runSql('root', adminPassword, [], `KILL ${id}`)
+    }
+    const drop = runSql('root', adminPassword, [], [
+      `DROP DATABASE IF EXISTS \`${db}\``,
+      `CREATE DATABASE \`${db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+      `GRANT ALL PRIVILEGES ON \`${db}\`.* TO '${user}'@'localhost'`,
+      `GRANT ALL PRIVILEGES ON \`${db}\`.* TO '${user}'@'%'`,
+      'FLUSH PRIVILEGES'
+    ].join('; '))
+    if (drop.status === 0) return null
+  }
+  const wipe = runSql(user, userPassword, ['-D', db], [
+    'SET FOREIGN_KEY_CHECKS=0',
+    'SET GROUP_CONCAT_MAX_LEN=1000000',
+    `SET @tables = (SELECT GROUP_CONCAT(CONCAT('\`', table_name, '\`')) FROM information_schema.tables WHERE table_schema='${db}' AND table_type='BASE TABLE')`,
+    "SET @sql = IF(@tables IS NULL OR @tables = '', 'DO 0', CONCAT('DROP TABLE IF EXISTS ', @tables))",
+    'PREPARE stmt FROM @sql',
+    'EXECUTE stmt',
+    'DEALLOCATE PREPARE stmt',
+    `SET @views = (SELECT GROUP_CONCAT(CONCAT('\`', table_name, '\`')) FROM information_schema.tables WHERE table_schema='${db}' AND table_type='VIEW')`,
+    "SET @vsql = IF(@views IS NULL OR @views = '', 'DO 0', CONCAT('DROP VIEW IF EXISTS ', @views))",
+    'PREPARE vstmt FROM @vsql',
+    'EXECUTE vstmt',
+    'DEALLOCATE PREPARE vstmt',
+    'DROP TABLE IF EXISTS `flyway_schema_history`, `users`, `products`, `inventory`, `orders`, `order_items`',
+    'SET FOREIGN_KEY_CHECKS=1'
+  ].join('; '))
+  if (wipe.status !== 0) {
+    return `mysql schema reset failed: ${redactSecrets(String(wipe.stderr || wipe.stdout || 'could not drop tables')).slice(0, 500)}`
+  }
+  const remain = runSql(user, userPassword, ['-D', db], `SELECT table_name FROM information_schema.tables WHERE table_schema='${db}'`)
+  const leftover = String(remain.stdout ?? '').replace(/\0/g, '').split(/\s+/).filter((name) => /^[A-Za-z0-9_]+$/.test(name))
+  if (remain.status !== 0 || leftover.length > 0) {
+    return `mysql schema reset failed: leftover tables ${leftover.join(',') || redactSecrets(String(remain.stderr || 'unknown')).slice(0, 200)}`
+  }
+  return null
+}
+
+function decodeXmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+function surefireText(source: string): string {
+  const dir = join(source, 'target', 'surefire-reports')
+  if (!existsSync(dir)) return ''
+  const chunks: string[] = []
+  for (const name of readdirSync(dir)) {
+    let body = ''
+    try { body = readFileSync(join(dir, name), 'utf8') } catch { continue }
+    if (/\.txt$/i.test(name)) {
+      chunks.push(body)
+      continue
+    }
+    if (!/\.xml$/i.test(name)) continue
+    const decoded = decodeXmlEntities(body)
+    const messages = [...decoded.matchAll(/<(?:failure|error)\b[^>]*message="([^"]*)"/g)].map((match) => match[1])
+    const types = [...decoded.matchAll(/<(?:failure|error)\b[^>]*type="([^"]*)"/g)].map((match) => match[1])
+    const boot = [...decoded.matchAll(/Unable to find a @SpringBootConfiguration[^\n<]*/g)].map((match) => match[0])
+    chunks.push([...messages, ...types, ...boot].join('\n'))
+  }
+  return chunks.join('\n').slice(0, 6000)
+}
+
+function runProjectLocalMvnTest(source: string, files: string[]): { summary: string | null; error: string | null } {
+  const relativeMaven = findProjectLocalMaven(files)
+  if (relativeMaven === null) return { summary: null, error: null }
+  const mvn = join(source, relativeMaven)
+  const pom = join(source, 'pom.xml')
+  if (!existsSync(mvn) || !existsSync(pom)) return { summary: null, error: null }
+  const resetError = resetMysqlTestSchema()
+  if (resetError !== null) return { summary: null, error: resetError }
+  const env = {
+    ...process.env,
+    ...mysqlTestEnv(),
+    JAVA_TOOL_OPTIONS: '-Dfile.encoding=UTF-8',
+    MAVEN_OPTS: '-Dfile.encoding=UTF-8'
+  }
+  const args = ['-f', pom, 'test', '-Dfile.encoding=UTF-8']
+  const result = process.platform === 'win32'
+    ? spawnSync(
+      process.env.ComSpec || 'cmd.exe',
+      ['/d', '/s', '/c', [mvn, ...args].map((part) => (/\s/.test(part) ? `"${part}"` : part)).join(' ')],
+      { cwd: source, env, encoding: 'utf8', timeout: 480_000, windowsHide: true, shell: false }
+    )
+    : spawnSync(mvn, args, { cwd: source, env, encoding: 'utf8', timeout: 480_000, windowsHide: true, shell: false })
+  const out = redactSecrets(`${result.stdout ?? ''}\n${result.stderr ?? ''}\n${surefireText(source)}`)
+  if (/Downloading Maven|找不到指定的路径|The system cannot find the path specified/i.test(out)) {
+    return { summary: null, error: 'spring-mysql artifact has no project-local Maven (mvnw or .tools/apache-maven)' }
+  }
+  const countIssue = mavenTestCountsIssue(out)
+  const summary = [...out.matchAll(/Tests run:\s*\d+,\s*Failures:\s*\d+,\s*Errors:\s*\d+/g)].at(-1)?.[0]
+    ?? out.match(/Tests run:\s*[1-9][^\n]*/)?.[0]
+    ?? null
+  if (result.status !== 0 || /BUILD FAILURE/i.test(out) || countIssue !== null) {
+    const compileFailed = /BUILD FAILURE|COMPILATION ERROR|找不到符号/i.test(out)
+    return {
+      summary,
+      error: `mvn test failed:\n${compileFailed ? '' : (countIssue ?? '')}\n${summarizeMvnOutput(out)}`.trim()
+    }
+  }
+  if (summary === null) {
+    return { summary: null, error: `mvn test produced no Tests run: N line:\n${summarizeMvnOutput(out)}` }
+  }
+  return { summary, error: null }
+}
+
 async function smokeArtifact(scenario: RealBusinessScenario, source: string): Promise<string | null> {
-  if (!existsSync(source)) return 'output directory was not created'
+  if (scenario.id === 'T09' || scenario.artifactKind === 'spring-mysql') {
+    const underscored = join(dirname(source), scenario.outputDir.replaceAll('-', '_'))
+    const dirIssue = missingOutputDirIssue(
+      scenario.outputDir,
+      existsSync(source),
+      underscored !== source && existsSync(underscored)
+    )
+    if (dirIssue !== null) return dirIssue
+  } else if (!existsSync(source)) {
+    return 'output directory was not created'
+  }
   if (scenario.artifactKind === 'web') {
-    const missing = missingWebDeliverables(listFiles(source))
+    const files = listFiles(source)
+    const missing = missingWebDeliverables(files)
     if (missing.length > 0) return `web artifact is incomplete; missing ${missing.join(', ')}`
+    if (scenario.id === 'T03') {
+      const companyIssue = companyWebsiteArtifactIssue(files, (rel) => {
+        const disk = files.find((file) => file.replace(/\\/g, '/') === rel) ?? rel
+        return readFileSync(join(source, disk), 'utf8')
+      })
+      if (companyIssue !== null) return companyIssue
+    }
+    if (scenario.id === 'T04') {
+      const travelIssue = travelWebsiteArtifactIssue(files, (rel) => {
+        const disk = files.find((file) => file.replace(/\\/g, '/') === rel) ?? rel
+        return readFileSync(join(source, disk), 'utf8')
+      })
+      if (travelIssue !== null) return travelIssue
+    }
+    if (scenario.id === 'T06') {
+      const biIssue = marketBiArtifactIssue(files, (rel) => {
+        const disk = files.find((file) => file.replace(/\\/g, '/') === rel) ?? rel
+        return readFileSync(join(source, disk), 'utf8')
+      })
+      if (biIssue !== null) return biIssue
+    }
+    if (scenario.id === 'T07') {
+      const evIssue = evTcoArtifactIssue(files, (rel) => {
+        const disk = files.find((file) => file.replace(/\\/g, '/') === rel) ?? rel
+        return readFileSync(join(source, disk), 'utf8')
+      })
+      if (evIssue !== null) return evIssue
+    }
+    if (scenario.id === 'T08') {
+      const rentalIssue = rentalDecisionArtifactIssue(files, (rel) => {
+        const disk = files.find((file) => file.replace(/\\/g, '/') === rel) ?? rel
+        return readFileSync(join(source, disk), 'utf8')
+      })
+      if (rentalIssue !== null) return rentalIssue
+    }
+    const serveRoot = webServeRoot(source, files)
     let server: { process: ChildProcess; port: number } | null = null
     try {
-      server = await startStaticServer(source)
+      server = await startStaticServer(serveRoot)
       const response = await fetch(`http://127.0.0.1:${server.port}/`)
       if (!response.ok) return `generated web server returned ${response.status}`
-      if (scenario.id === 'T01' || scenario.id === 'T02') {
+      if (scenario.id === 'T03') {
+        const playError = await playGeneratedWebPage(source, server.port, 'company')
+        if (playError !== null) return playError
+      } else if (scenario.id === 'T01' || scenario.id === 'T02') {
         const playError = await playGeneratedWebPage(source, server.port, 'game')
         if (playError !== null) return playError
       } else {
@@ -774,25 +1290,48 @@ async function smokeArtifact(scenario: RealBusinessScenario, source: string): Pr
       if (server !== null) stopProcess(server.process)
     }
   }
+  if (scenario.artifactKind === 'spring-mysql' || scenario.id === 'T09') {
+    const files = listFiles(source)
+    const issue = springMysqlArtifactIssue(files, (rel) => {
+      const disk = files.find((file) => file.replace(/\\/g, '/') === rel) ?? rel
+      return readFileSync(join(source, disk), 'utf8')
+    })
+    if (issue !== null && /starter-flyway/i.test(issue)) return issue
+    if (issue !== null && /H2\/SQLite|jdbc:h2/i.test(issue)) return issue
+    if (issue !== null && /class-load|MockMvc/i.test(issue)) return issue
+    if (issue !== null && /SpringBootConfiguration/i.test(issue)) return issue
+    if (issue !== null && /write-dates-as-timestamps|Jackson 3/i.test(issue)) return issue
+    if (issue !== null && /fasterxml\.jackson\.databind|autoconfigure\.webmvc/i.test(issue)) return issue
+    const hasJava = files.some((file) => file.endsWith('.java'))
+    const mvn = hasJava ? runProjectLocalMvnTest(source, files) : { summary: null, error: null }
+    if (mvn.error !== null) return mvn.error
+    const reportOnly = issue !== null && /TEST-REPORT|placeholders|Maven test counts/i.test(issue)
+    if (issue !== null && !reportOnly) return issue
+    if (issue !== null && mvn.summary !== null) {
+      return `${issue}; harness mvn test observed: ${mvn.summary}`
+    }
+    return issue
+  }
   if (scenario.id === 'T05') {
     const javaFiles = listFiles(source).filter((file) => file.endsWith('.java'))
     if (javaFiles.length === 0) return 'Java artifact has no .java source'
     const required = ['README.md', 'DEVELOPMENT.md', 'TEST-REPORT.md']
     const missing = required.filter((file) => !existsSync(join(source, file)))
     if (missing.length > 0) return `Java artifact is incomplete; missing ${missing.join(', ')}`
-    const compile = spawnSync('javac', ['-encoding', 'UTF-8', ...javaFiles], { cwd: source, windowsHide: true, encoding: 'utf8', timeout: 120_000 })
+    const classOut = join(source, '.rxy-javac-out')
+    mkdirSync(classOut, { recursive: true })
+    const compile = spawnSync('javac', ['-encoding', 'UTF-8', '-d', classOut, ...javaFiles], { cwd: source, windowsHide: true, encoding: 'utf8', timeout: 120_000 })
     if (compile.status !== 0) return `javac failed: ${String(compile.stderr).slice(0, 1000)}`
-    const mainFile = javaFiles.find((file) => /public\s+static\s+void\s+main\s*\(/.test(readFileSync(join(source, file), 'utf8')))
-    if (mainFile === undefined) return 'Java artifact has no main(String[]) entry point'
-    const mainSource = readFileSync(join(source, mainFile), 'utf8')
-    const pkg = mainSource.match(/^\s*package\s+([A-Za-z0-9_.]+)\s*;/m)
-    const simple = mainFile.replace(/\\/g, '/').split('/').pop()!.replace(/\.java$/, '')
-    const mainClass = pkg !== null ? `${pkg[1]}.${simple}` : simple
-    const launched = spawn('java', ['-cp', source, mainClass], { cwd: source, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const mains = javaFiles.map((file) => ({ path: file, source: readFileSync(join(source, file), 'utf8') }))
+    const mainClass = selectJavaSwingMain(mains)
+    if (mainClass === null) return 'Java artifact has no Swing JFrame main(String[]) entry point'
+    const launched = spawn('java', ['-cp', classOut, mainClass], { cwd: source, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stderr = ''
+    launched.stderr?.on('data', (chunk) => { stderr += String(chunk) })
     try {
       await new Promise((resolve) => setTimeout(resolve, 2500))
       if (launched.exitCode !== null) {
-        return `Swing process exited immediately with ${launched.exitCode}: ${String(launched.stderr?.read?.() ?? '')}`.slice(0, 500)
+        return `Swing process exited immediately with ${launched.exitCode}: ${stderr}`.slice(0, 500)
       }
     } finally {
       stopProcess(launched)
@@ -805,15 +1344,33 @@ function buildArtifactRepairPrompt(scenario: RealBusinessScenario, validationErr
   return [
     `Artifact repair pass for ${scenario.id}. The previous turn was incomplete and failed validation. Work on the existing ${scenario.outputDir} only.`,
     `Validation failure: ${validationError}`,
-    'Inspect every file currently present, identify the root cause, and implement the missing work now. Do not only explain or return a code snippet. Do not claim success without executing the real validation command.',
+    'Inspect the existing Txx files with ls or glob, then implement the missing work now. Do not probe python, node, pip, pandas, or the network with bash. Do not write _probe.py. Do not only explain or return a code snippet. Do not claim success without executing the real validation command.',
     `If the validation failure names missing files, call the write tool now with filePath inside ${scenario.outputDir} for each missing file. A table or Final Answer that lists the filename is not sufficient.`,
     scenario.artifactKind === 'web'
-      ? 'For a web artifact, create a complete index.html entry point plus README.md and TEST-REPORT.md, start a local static server, and actually play the page. Fix JavaScript syntax/runtime errors so Start enters a running state, score can increase, collision or game-over can occur, and restart works. Do not claim success if the page stays on a menu or throws Uncaught SyntaxError.'
+      ? (
+        scenario.id === 'T01' || scenario.id === 'T02'
+          ? 'For this game artifact, create a complete index.html entry point plus README.md and TEST-REPORT.md, start a local static server, and actually play the page. Fix JavaScript syntax/runtime errors so Start hides the menu overlay, #btn-start is no longer visible, a DOM #score/#stateLabel updates, score can increase, collision or game-over can occur, and restart works. A painted canvas behind a still-visible Start button is not playing. Do not claim success if the page stays on a menu or throws Uncaught SyntaxError.'
+          : scenario.id === 'T03'
+            ? 'For T03, call the write tool. The no-websearch rule does not forbid write, ls, or edit. If README.md or TEST-REPORT.md are missing, write those two files immediately and do not only re-read admin.js. If login redirects to admin.html, that file must exist with visible 用户管理, 订单管理, 内容管理, 设置, and 分析 navigation. Required: PLAN.md, public home/products/team/cases/contact, #btn-open-login, failed-login status, #btn-demo-login, localStorage admin CRUD, README.md, and TEST-REPORT.md. Java, Spring, Maven, pom.xml, or a /api backend is a hard failure. A three-file stub without a real company site is a hard failure; README.md and TEST-REPORT.md are still required once the site exists. A department/employee CRUD page is not the product.'
+            : scenario.id === 'T04'
+              ? 'For T04, call the write tool. Do not emit a three-file index.html/README.md/TEST-REPORT.md stub. Required: PLAN.md, sources.md, a budget CSV, an interactive index.html with daily timetable, city switch, cost categories, total-budget validation (hard cap CNY 3000), rain plan, alternatives, price-change warnings, and one makeup/styling session, plus README.md and TEST-REPORT.md. Record source URLs and uncertainty; do not invent live inventory. A static table without select/input/button controls is a hard failure.'
+              : scenario.id === 'T06'
+                ? 'For T06, call the write tool immediately. Do not call bash, python, or node, and do not write _probe.py. Do not emit a three-file stub. Required: sources.md, raw and cleaned CSVs, an interactive BI index.html with date/asset/metric filters, tooltips or a detail table, data-gap warnings, and a risk disclaimer covering gold, silver, Nasdaq, and S&P 500, plus README.md and TEST-REPORT.md. Mark inaccessible data unavailable; do not fabricate prices.'
+                : scenario.id === 'T07'
+                  ? 'For T07, call the write tool immediately. Do not call bash, python, or node, and do not write _probe.py. Do not emit a three-file stub. Do not load Chart.js or any CDN. Close every HTML tag. Draw charts with native canvas. Required: sources.md, data CSV, an interactive EV TCO index.html with Guangzhou family coverage, CNY 150k-250k budget, five-year TCO, mileage and weight controls, recommendation, and risk disclosure, plus README.md and TEST-REPORT.md. Mark inaccessible prices unavailable; do not fabricate live promotions.'
+                  : scenario.id === 'T08'
+                    ? 'For T08, call the write tool immediately. Do not call bash, python, node, Java, Spring, or Maven, and do not write _probe.py or pom.xml. Do not emit a three-file stub. Do not load Chart.js or any CDN. Close every HTML tag. Put a visible 合同与风险 section in index.html covering 合同条款, 解约/退租, 噪音, and 维修. Required: sources.md, data CSV, an interactive rental index.html with Zhujiang New Town commute coverage, CNY 3500 rent cap, 60-minute commute cap, filters, ranking, schematic map, moving calendar, contract/risk checklist, and weights, plus README.md and TEST-REPORT.md. Do not fabricate exact listings.'
+                    : `For this web artifact, call the write tool now for ${scenario.outputDir}/index.html, ${scenario.outputDir}/README.md, and ${scenario.outputDir}/TEST-REPORT.md. Build the requested site (not a parkour/platformer game): public pages, demo login, and the admin/console interactions named in the checkpoints. Start a local static server and actually click through login, persistence, and logout. Do not substitute a game Start overlay for the required product.`
+      )
       : scenario.artifactKind === 'java-swing'
-        ? 'For the Java artifact, compile every Java source with javac -encoding UTF-8 and launch the real Swing window before reporting success.'
-        : 'For this application artifact, run the smallest real build and smoke test available; do not substitute a description for execution.',
+        ? 'For the Java artifact, compile with javac -encoding UTF-8 -d a classes directory that preserves packages, then launch the Swing JFrame main (not *Test or *Driver). java -cp <project-root> com.example.Main cannot see classes under src/main/java. HTML or a screenshot is not an acceptable substitute.'
+        : scenario.artifactKind === 'spring-mysql'
+          ? `For this Spring/MySQL artifact, ${buildSpringMysqlRepairInstructions(validationError)} A markdown fence or Final Answer is not a write. Do not probe mysql/env again.`
+          : 'For this application artifact, run the smallest real build and smoke test available; do not substitute a description for execution.',
     `The required visible checkpoints are: ${scenario.visualCheckpoints.join(', ')}. Verify them if the environment supports them and record unavailable capabilities honestly.`,
-    'This is a local artifact repair pass. Do not call or use websearch, webfetch, browsing, internet, or external research. Use only the existing workspace and local tools; this prohibition is intentional even if the validation text contains words such as current, status, or source.',
+    scenario.artifactKind === 'spring-mysql'
+      ? 'This is a local artifact repair pass. Do not call websearch or webfetch. You must call bash to run project-local mvn test or API smoke with MYSQL_* from the environment, then write TEST-REPORT.md. Do not skip tests. Do not probe python or rewrite the schema host.'
+      : 'This is a local artifact repair pass. Do not call or use websearch, webfetch, browsing, internet, bash environment probes, or external research. Use only write, ls, glob, and edit; this prohibition is intentional even if the validation text contains words such as current, status, or source.',
     'Keep all files inside the requested Txx directory. End with a non-empty Final Answer listing the files changed, commands actually executed, results, and remaining risks.'
   ].join('\n\n')
 }
@@ -890,7 +1447,7 @@ async function runScenario(
     // artifact-repair prompts after stopping the run would create additional
     // model/tool traffic, approvals, and misleading timing evidence. Repair
     // is only valid after a completed run whose artifact failed validation.
-    runAbortedByWatchdog = /stopped through GUI|first model activity|silent interval|remained queued|approval state/i.test(error)
+    runAbortedByWatchdog = /stopped through GUI|first model activity|silent interval|remained queued|approval state|approval storm|always-allow form|wall clock/i.test(error)
     try {
       status = await harness.evaluate<string>(`(() => document.querySelector('[data-testid="session-${sessionId}"] .session-state')?.className.match(/state-(queued|running|approval|succeeded|failed|cancelled|timed_out)/)?.[1] ?? 'unknown')()`)
       finalAnswer = await harness.evaluate<string>('Array.from(document.querySelectorAll("[data-testid=\\"final-answer\\"] .timeline-prose")).at(-1)?.textContent ?? ""')
@@ -909,20 +1466,33 @@ async function runScenario(
   // invalid as well, allow one bounded repair pass and then revalidate.
   const layoutOnlyFailure = layout.issues.length > 0 && artifactError === null && terminalIssue === null
   const missingDocs = /missing /i.test(artifactError ?? '')
-  const maxRepairAttempts = layoutOnlyFailure ? 0 : missingDocs ? 2 : 1
+  const missingOutput = /output directory was not created/i.test(artifactError ?? '')
+  const maxRepairAttempts = layoutOnlyFailure ? 0 : scenario.artifactKind === 'spring-mysql' ? 8 : scenario.id === 'T03' ? 3 : (missingDocs || missingOutput) ? 2 : 1
   if (validationError !== null) error = error ?? validationError
   for (let attempt = 1; validationError !== null && attempt <= maxRepairAttempts && !runAbortedByWatchdog; attempt += 1) {
-    const missingFiles = parseMissingFilenames(validationError)
-    const repairPrompt = missingFiles.length > 0
-      ? buildMissingFileRepairPrompt(scenario.outputDir, missingFiles)
+    if (taskWallClockIssue(Date.now() - startedAt) !== null) break
+    if (/mysql schema reset failed|mysql schema reset skipped/i.test(validationError)) break
+    const missingFiles = (() => {
+      const selected = selectMissingFileRepair(scenario.id, validationError ?? '', files)
+      if (selected.length > 0) return selected
+      if (scenario.id === 'T03') return []
+      if (/output directory was not created/i.test(validationError ?? '')) {
+        if (scenario.artifactKind === 'spring-mysql') return []
+        return scenario.artifactKind === 'web' ? ['index.html', 'README.md', 'TEST-REPORT.md'] : ['README.md', 'TEST-REPORT.md']
+      }
+      return []
+    })()
+    const repairBody = missingFiles.length > 0
+      ? buildMissingFileRepairPrompt(scenario.outputDir, missingFiles, validationError ?? '')
       : buildArtifactRepairPrompt(scenario, validationError)
+    const repairPrompt = `Repair attempt ${attempt} of ${maxRepairAttempts}.\n\n${repairBody}`
     repairAttempts.push(repairPrompt)
     try {
       await submitPrompt(
         harness,
         repairPrompt,
         sessionId,
-        Math.min(scenario.timeoutMs, 15 * 60 * 1000),
+        Math.min(scenario.timeoutMs, 8 * 60 * 1000),
         join(batchDir, 'screenshots', scenario.id, `repair-${attempt}`),
         approvals
       )
@@ -939,7 +1509,8 @@ async function runScenario(
       artifactError = caught instanceof Error ? caught.message : String(caught)
     }
   }
-  if (validationError !== null) error = validationError
+  if (runAbortedByWatchdog) error = error ?? validationError
+  else if (validationError !== null) error = validationError
   else if (layout.issues.length > 0) error = `layout issues: ${layout.issues.map((issue) => issue.kind).join(', ')}`
   else error = null
   const allLines = await harness.evaluate<string[]>('window.__rxyRealProtocol ?? []')
@@ -964,8 +1535,18 @@ async function runScenario(
   const skillEvents = messages.filter((message) => String(message.method ?? '').toLowerCase().includes('skill')).map((message) => String(message.method))
   const mcpEvents = messages.filter((message) => String(message.method ?? '').toLowerCase().includes('mcp')).map((message) => String(message.method))
   if (scenario.id === 'T03' && skillEvents.length === 0 && !tools.some((tool) => tool.toLowerCase().includes('skill'))) defects.push('T03 did not expose a Skill search/load event')
-  if (timing.first_token_ms !== null && timing.first_token_ms > 30_000) error = error ?? 'first token exceeded 30s hard-fail gate'
+  if (timing.first_token_ms !== null && firstTokenHardFail(timing.first_token_ms, timing.first_event_ms)) error = error ?? 'first token exceeded 30s hard-fail gate'
   if (timing.silent_gaps_ms.some((gap) => gap > 30_000)) error = error ?? 'silent interval exceeded 30s hard-fail gate'
+  const storm = approvalStormIssue(approvals.length)
+  if (storm !== null) {
+    defects.push(storm)
+    error = error ?? storm
+  }
+  const wallIssue = taskWallClockIssue(timing.wall_ms)
+  if (wallIssue !== null) {
+    defects.push(wallIssue)
+    error = error ?? wallIssue
+  }
   const protocolFile = join(batchDir, 'events', `${scenario.id}.ndjson`)
   mkdirSync(dirname(protocolFile), { recursive: true })
   writeFileSync(protocolFile, allLines.join('\n') + '\n')
@@ -978,7 +1559,7 @@ async function runScenario(
     title: scenario.title,
     prompt,
     model,
-    provider: 'deepseek',
+    provider: REAL_BUSINESS_PROVIDER,
     gateway,
     session_id: sessionId,
     status,
@@ -1017,18 +1598,18 @@ async function runBatch(batch: Batch): Promise<{ results: RealBusinessResult[]; 
         workspaceMode: 'empty',
         width: 1440,
         height: 900,
-      extraEnv: { RXYCODE_SUBAGENTS: '1', RXYCODE_SUBAGENTS_TASK: '1', RXYCODE_SUBAGENTS_MENTION: '1', RXYCODE_SUBAGENTS_CHILD_TASKS: '1' }
+      extraEnv: desktopSuiteEnv()
       })
       let cleanup: CleanupProof | null = null
       const prompt = prompts.independent.find((item) => item.id === scenario.id)?.prompt ?? scenario.prompt
       let sessionId = ''
-      let selectedModel = { model: 'deepseek/deepseek-v4-flash', gateway: 'https://api.deepseek.com/v1' }
+      let selectedModel = { model: REAL_BUSINESS_MODEL_ID, gateway: REAL_BUSINESS_GATEWAY }
       try {
         await harness.start()
-        await harness.evaluate(`(() => { window.__rxyRealProtocol=[]; window.__rxyCdAppserverLogs=[]; window.api.appserver.onLog((line)=>window.__rxyCdAppserverLogs.push(String(line))); window.api.appserver.onLine((line)=>{try{const m=JSON.parse(line);m.__at_ms=Date.now();window.__rxyRealProtocol.push(JSON.stringify(m))}catch{}}) })()`)
-        await selectOfficialModelInSettings(harness)
+        await harness.evaluate(PROTOCOL_CAPTURE_BOOTSTRAP)
+        await selectOpenCodeGoModelInSettings(harness)
         sessionId = await createSession(harness)
-        selectedModel = await assertOfficialModel(harness)
+        selectedModel = await assertOpenCodeGoModel(harness)
         await setPermission(harness, 'auto_edit')
         try {
           results.push(await runScenario(harness, scenario, batch, prompt, sessionId, selectedModel.model, selectedModel.gateway, batchDir))
@@ -1051,19 +1632,17 @@ async function runBatch(batch: Batch): Promise<{ results: RealBusinessResult[]; 
       workspaceMode: 'empty',
       width: 1440,
       height: 900,
-      extraEnv: { RXYCODE_SUBAGENTS: '1', RXYCODE_SUBAGENTS_TASK: '1', RXYCODE_SUBAGENTS_MENTION: '1', RXYCODE_SUBAGENTS_CHILD_TASKS: '1' }
+      extraEnv: desktopSuiteEnv()
     })
-    const defaultModel = 'deepseek/deepseek-v4-flash'
-    const defaultGateway = 'https://api.deepseek.com/v1'
     const sequentialPrompts = new Map(prompts.sequential.map((item) => [item.id, item.prompt]))
     let sessionId = ''
-    let selectedModel = { model: defaultModel, gateway: defaultGateway }
+    let selectedModel = { model: REAL_BUSINESS_MODEL_ID, gateway: REAL_BUSINESS_GATEWAY }
     try {
       await harness.start()
-      await harness.evaluate(`(() => { window.__rxyRealProtocol=[]; window.__rxyCdAppserverLogs=[]; window.api.appserver.onLog((line)=>window.__rxyCdAppserverLogs.push(String(line))); window.api.appserver.onLine((line)=>{try{const m=JSON.parse(line);m.__at_ms=Date.now();window.__rxyRealProtocol.push(JSON.stringify(m))}catch{}}) })()`)
-      await selectOfficialModelInSettings(harness)
+        await harness.evaluate(PROTOCOL_CAPTURE_BOOTSTRAP)
+      await selectOpenCodeGoModelInSettings(harness)
       sessionId = await createSession(harness)
-      selectedModel = await assertOfficialModel(harness)
+      selectedModel = await assertOpenCodeGoModel(harness)
       await setPermission(harness, 'full_auto')
       for (const scenario of selected) {
         const prompt = sequentialPrompts.get(scenario.id) ?? scenario.prompt
@@ -1100,8 +1679,8 @@ async function main(): Promise<void> {
   writeFileSync(join(artifactRoot, 'real-business-results.json'), JSON.stringify({
     generated_at: new Date().toISOString(),
     repository: repositoryDir,
-    model: 'deepseek/deepseek-v4-flash',
-    gateway: 'https://api.deepseek.com/v1',
+    model: REAL_BUSINESS_MODEL_ID,
+    gateway: REAL_BUSINESS_GATEWAY,
     batches,
     results: all,
     cleanup

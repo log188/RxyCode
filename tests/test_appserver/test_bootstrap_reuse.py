@@ -23,6 +23,7 @@ def _bare_host() -> AgentHost:
     host._stub = True
     host.workspace_root = Path(".")
     host.session_id = "s1"
+    host.model_id = None
     return host
 
 

@@ -144,7 +144,11 @@ async def test_local_task_hides_network_tools_from_model():
 
     await agent._fast_reply_with_tools("Build the local offline demo and check the current time.")
 
-    assert [getattr(tool, "name", "") for tool in agent._captured_tools] == ["datetime", "write"]
+    names = [getattr(tool, "name", "") for tool in agent._captured_tools]
+    assert "websearch" not in names
+    assert "webfetch" not in names
+    assert "datetime" in names
+    assert "write" in names
 
 
 @pytest.mark.asyncio
@@ -254,6 +258,28 @@ async def test_fresh_query_fails_honestly_when_no_search_result_can_be_fetched()
     assert "will not guess" in result
     assert "none could be fetched" in result
     assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_creation_task_continues_when_research_prefetch_fails():
+    agent, captured = make_agent(
+        "[search error: All engines failed or timed out]",
+        answer="PLAN.md notes search was unavailable; wrote the static site.",
+    )
+    prompt = (
+        "Create T03-company in the current workspace. First call websearch and webfetch "
+        "to research company website competitors, then build a static HTML website."
+    )
+
+    result = await agent._fast_reply_with_tools(prompt)
+
+    assert "will not guess" not in result
+    assert "wrote the static site" in result
+    assert captured
+    assert any(
+        "External research prefetch failed" in str(getattr(message, "content", ""))
+        for message in captured
+    )
 
 
 @pytest.mark.asyncio

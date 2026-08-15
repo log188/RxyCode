@@ -266,6 +266,30 @@ def research_failure_message(detail: str = "") -> str:
     )
 
 
+def research_prefetch_failure_note(detail: str = "") -> str:
+    suffix = f" Detail: {detail[:300]}" if detail else ""
+    return (
+        "External research prefetch failed. Do not invent live facts or cite "
+        "unverified URLs. Record the unavailable research honestly, then continue "
+        "the requested local artifact with write/edit tools." + suffix
+    )
+
+
+def should_abort_on_research_prefetch_failure(user_input: str) -> bool:
+    """Pure Q&A must not guess. A create/build product task must still write files."""
+    from RxyCode.RxyCode1_1_0.core.request_routing import has_creation_product_intent
+    return not has_creation_product_intent(user_input)
+
+
+def _is_usable_research_query(query: str) -> bool:
+    text = str(query or "").strip()
+    if len(text) < 8:
+        return False
+    if text[:1] in {"/", "\\"}:
+        return False
+    return True
+
+
 # Instruction prefixes / boilerplate that should not be sent to a search engine.
 # They describe the *task*, not the *topic* being searched.
 _ZH_TASK_PREFIXES = (
@@ -308,9 +332,19 @@ _ZH_TASK_SUFFIXES = (
 
 _EN_RESEARCH_TOPIC_TERMS = re.compile(
     r"\b(?:travel|trip|tour|budget|transport|lodging|hotel|ticket|styling|"
-    r"website|company|dashboard|market|data|gold|silver|stock|index|"
+    r"website|company|dashboard|market|gold|silver|nasdaq|stock|index|"
     r"vehicle|car|rental|rent|commute|coffee|inventory|order|spring|mysql|"
-    r"game|application|project|research|price|pricing|cost|investment)\b",
+    r"price|pricing|cost|investment|suzhou|hangzhou|guangzhou)\b",
+    re.IGNORECASE,
+)
+_EN_STRONG_RESEARCH_TERMS = re.compile(
+    r"\b(?:gold|silver|nasdaq|s&p|spx|star\s*50|suzhou|hangzhou|"
+    r"zhujiang|tco|vehicle|rental)\b",
+    re.IGNORECASE,
+)
+_EN_UI_REQUIREMENT = re.compile(
+    r"\b(?:the page must|must provide|date filter|asset filter|"
+    r"metric switcher|tooltips?|detail table)\b",
     re.IGNORECASE,
 )
 _EN_RESEARCH_TOOL_WORDS = re.compile(
@@ -337,9 +371,16 @@ def _english_research_topic(text: str) -> str:
         if topic_hits == 0:
             continue
         score = topic_hits * 10 - tool_hits * 4
+        score += len(_EN_STRONG_RESEARCH_TERMS.findall(sentence)) * 20
+        if _EN_UI_REQUIREMENT.search(sentence):
+            # Page-control copy ("date filter", "tooltips") is the deliverable,
+            # not the external fact to look up. T06-3 searched this sentence.
+            score -= 50
         if re.search(r"\bweb(?:search|fetch)\b", sentence, re.IGNORECASE):
-            # Tool names describe how to research, not what to research.
-            score -= 40
+            # Tool names describe how to research, not what to research, unless
+            # the same sentence already names the assets ("webfetch ... for gold").
+            if len(_EN_STRONG_RESEARCH_TERMS.findall(sentence)) == 0:
+                score -= 40
         if re.search(
             r"\b(?:plan|collect|research|create|build|develop|analy[sz]e)\b",
             sentence,
@@ -350,6 +391,20 @@ def _english_research_topic(text: str) -> str:
     if not scored:
         return ""
     candidate = max(scored)[2]
+    for_clause = re.search(
+        r"\b(?:websearch|webfetch)\b[\s\S]{0,160}?\bfor\b\s+(.+)",
+        candidate,
+        re.IGNORECASE,
+    )
+    if for_clause is not None:
+        after = re.split(
+            r";|\.\s+|Record |Do not |If a source",
+            for_clause.group(1),
+            maxsplit=1,
+        )[0]
+        after = after.strip().strip(",")
+        if len(after) >= 8:
+            candidate = after
     # Keep search requests topical and compact.  Long acceptance prose lowers
     # recall in public engines and makes the prefetch path wait for fallbacks.
     candidate = re.sub(
@@ -398,14 +453,17 @@ def extract_research_query(user_input: str) -> str:
     # 2. Take the clause after an explicit search verb.
     lowered = candidate.lower()
     for marker in ("搜索", "search", "查一下", "查找", "浏览"):
-        idx = (
-            lowered.find(marker)
-            if marker != "search"
-            else next(
-                (match.start() for match in re.finditer(r"\bsearch\b", lowered)),
+        if marker == "search":
+            idx = next(
+                (
+                    match.start()
+                    for match in re.finditer(r"\bsearch\b", lowered)
+                    if not lowered[match.end():].lstrip().startswith("/")
+                ),
                 -1,
             )
-        )
+        else:
+            idx = lowered.find(marker)
         if idx == -1:
             continue
         after = candidate[idx + len(marker):].lstrip("（( ：:，,。")
@@ -425,7 +483,7 @@ def extract_research_query(user_input: str) -> str:
             if stop:
                 after = after[: stop.start()].rstrip("（( ")
             after = after.strip().strip("，,。")
-            if after and len(after) <= 120:
+            if after and len(after) <= 120 and _is_usable_research_query(after):
                 return after
 
     # 3. No explicit verb.  If we stripped a task-direction prefix, trim

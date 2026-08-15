@@ -333,7 +333,17 @@ def _save_graph_checkpoint(state: AgentState, update: dict | None = None) -> Non
             _merged_checkpoint_state(state, update),
         )
         if update and update.get("phase") == "done":
-            store.mark_complete(document["checkpoint_id"])
+            # Do not rotate the attempt identity while a WRITE/DANGER call is
+            # still pending in the bound journal. Sealing here and then
+            # starting a new attempt for the same request trips the orphan
+            # guard and blocks later writes.
+            binding = ToolOrchestrator.get_tool_journal_binding()
+            journal_pending = bool(
+                binding is not None
+                and binding.journal.has_pending(binding.attempt_id)
+            )
+            if not journal_pending:
+                store.mark_complete(document["checkpoint_id"])
     except Exception as exc:
         _logger.warning("graph checkpoint failed at %s: %s", state.get("phase"), exc)
 

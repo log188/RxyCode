@@ -172,6 +172,12 @@ class TestShellExecutor:
         assert "||" not in cmd
         assert "echo missing" in cmd
 
+        chained, _ = executor.translate_command(
+            'cmd.exe /d /c "mvn -version 2>&1" || echo mvn-missing || echo still-missing'
+        )
+        assert "||" not in chained
+        assert chained.count("if (-not $?)") == 2
+
     def test_powershell_translates_posix_find(self):
         """POSIX find -name → Get-ChildItem -Recurse -Filter（B7）。"""
         executor = self._make_executor()
@@ -415,6 +421,37 @@ class TestShellExecutor:
 
         nul, _ = executor.translate_command("python run.py 2>nul")
         assert nul == "python run.py 2>$null"
+
+    def test_powershell_runs_mysql_through_cmd(self):
+        """mysql stderr warnings and SQL semicolons must not fail the bash tool."""
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command(
+            r'"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u rxycode_t09 --password=secret -e "SELECT CURRENT_USER(); SHOW DATABASES;"'
+        )
+        assert shell == "powershell"
+        assert "cmd.exe /d /c" in cmd
+        assert "ErrorActionPreference" in cmd
+        assert "SELECT CURRENT_USER(); SHOW DATABASES;" in cmd
+        assert "mysql.exe" in cmd
+
+    def test_powershell_does_not_wrap_mysql_env_or_get_command(self):
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        env_probe, _ = executor.translate_command(
+            'Get-ChildItem Env: | Where-Object { $_.Name -like "MYSQL*" -or $_.Name -like "SPRING*" }'
+        )
+        assert "cmd.exe" not in env_probe
+        assert "Get-ChildItem Env:" in env_probe
+
+        which, _ = executor.translate_command(
+            "Get-Command mysql,mysqld,mvn -ErrorAction SilentlyContinue"
+        )
+        assert "cmd.exe" not in which
+        assert "Get-Command mysql" in which
+
+        echo_env, _ = executor.translate_command('echo "URL=$MYSQL_URL"')
+        assert "cmd.exe" not in echo_env
 
     def test_powershell_translates_head_tail_pipes(self):
         executor = self._make_executor()

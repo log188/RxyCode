@@ -885,6 +885,70 @@ def test_parse_dsml_with_surrounding_text():
     assert calls[0]["name"] == "read"
 
 
+def test_contains_dsml_markup_when_invoke_is_truncated():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+        _contains_dsml_tool_markup,
+        _parse_dsml_tool_calls,
+    )
+
+    text = (
+        "<\uff5c\uff5cDSML\uff5c\uff5ctool_calls>\n"
+        "<\uff5c\uff5cDSML\uff5c\uff5cinvoke name=\"\n"
+        "Get-ChildItem Env:\n"
+    )
+    assert _contains_dsml_tool_markup(text) is True
+    assert not (_parse_dsml_tool_calls(text) or [])
+
+
+def test_should_nudge_build_to_write_until_write_succeeds():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _should_nudge_build_to_write
+
+    assert _should_nudge_build_to_write("build", False, 0) is True
+    assert _should_nudge_build_to_write("build", False, 1) is True
+    assert _should_nudge_build_to_write("build", False, 2) is False
+    assert _should_nudge_build_to_write("build", True, 0) is False
+    assert _should_nudge_build_to_write("plan", False, 0) is False
+    assert _should_nudge_build_to_write("build", False, 0, has_write_tool=False) is False
+
+
+def test_should_nudge_build_after_partial_write_continuation():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+        _answer_is_incomplete_build_continuation,
+        _redact_env_secrets,
+        _should_nudge_build_to_write,
+    )
+
+    continuation = (
+        "Entities done. Now the repositories and the auth/product/"
+        "inventory/order/revenue controllers with @RestController annotations."
+    )
+    assert _answer_is_incomplete_build_continuation(continuation) is True
+    assert _should_nudge_build_to_write(
+        "build", True, 0, answer=continuation
+    ) is True
+    assert _should_nudge_build_to_write(
+        "build", True, 8, answer=continuation
+    ) is False
+    assert _should_nudge_build_to_write(
+        "build", True, 0, answer="All controllers written and smoke passed."
+    ) is False
+    listing = (
+        "Wrote pom.xml plus Auth/Product/Inventory/Order/Revenue "
+        "controllers, Flyway SQL, and index.html. "
+        "Tests run: 2, Failures: 0, Errors: 0."
+    )
+    assert _answer_is_incomplete_build_continuation(listing) is False
+
+
+def test_redact_env_secrets_strips_password_values(monkeypatch):
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _redact_env_secrets
+
+    monkeypatch.setenv("MYSQL_PASSWORD", "unit-test-secret-value")
+    text = "env MYSQL_PASSWORD=unit-test-secret-value leaked"
+    assert "unit-test-secret-value" not in _redact_env_secrets(text)
+    assert "***" in _redact_env_secrets(text)
+
+
 def test_stuck_detector_breaks_outer_loop():
     """stuck 触发后不再发起下一次 LLM 调用（跳出外层工具轮，luna R1-2）。"""
     import asyncio

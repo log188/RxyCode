@@ -376,6 +376,7 @@ class ShellExecutor:
                 command,
                 flags=re.IGNORECASE,
             )
+            command = self._wrap_mysql_client_for_powershell(command)
         elif actual_shell == "cmd":
             command = command.replace("$env:USERPROFILE", "%USERPROFILE%")
             command = command.replace("$env:APPDATA", "%APPDATA%")
@@ -393,6 +394,53 @@ class ShellExecutor:
         反斜杠转义（PS 不认）与 $ 变量展开（双引号会展开）。
         """
         return "'" + (text or "").replace("'", "''") + "'"
+
+    @staticmethod
+    def _invokes_mysql_client(command: str) -> bool:
+        """True only when the mysql CLI is the program being run.
+
+        ``MYSQL_URL``, ``-like "MYSQL*"``, and ``Get-Command mysql`` must stay
+        in PowerShell. A case-insensitive ``\\bmysql\\b`` also matches those.
+        """
+        if re.search(
+            r"\b(Get-Command|Get-ChildItem|Get-Alias|Select-String)\b",
+            command,
+            flags=re.IGNORECASE,
+        ) and re.search(r"mysql\.exe\s+-", command, flags=re.IGNORECASE) is None:
+            return False
+        if re.search(r"-like\s+[\"']MYSQL", command, flags=re.IGNORECASE):
+            return False
+        if re.search(
+            r'(?:^|[;&|]\s*)\s*(?:&\s*)?["\']?(?:[A-Za-z]:\\[^"\';&|\n]*\\)?mysql\.exe\b',
+            command,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        return (
+            re.search(
+                r"(?:^|[;&|]\s*)\s*(?:&\s*)?[\"']?mysql(?:\.exe)?(?:\s+-|\s*$)",
+                command,
+            )
+            is not None
+        )
+
+    def _wrap_mysql_client_for_powershell(self, command: str) -> str:
+        """Run the mysql CLI through cmd.exe so WinPS 5 does not fail the tool.
+
+        The official client writes password-on-CLI warnings to stderr.
+        PowerShell 5 turns that into NativeCommandError even when the query
+        succeeded. Unquoted ``-e "SELECT 1; SHOW DATABASES;"`` is also split
+        on ``;``. cmd.exe keeps mysql's native status and SQL separators.
+        """
+        if not self._invokes_mysql_client(command):
+            return command
+        if re.search(r"(?<![\w-])\bcmd(?:\.exe)?\s+/d\s+/c\b", command, flags=re.IGNORECASE):
+            prefix = "$ErrorActionPreference='Continue'; "
+            return command if command.startswith(prefix) else prefix + command
+        return (
+            "$ErrorActionPreference='Continue'; cmd.exe /d /c "
+            + self._ps_single_quote(command)
+        )
 
     def _translate_grep_find(self, command: str) -> str:
         """B7: POSIX grep/find → PowerShell（pattern 参数在引号内，
@@ -676,14 +724,14 @@ class ShellExecutor:
             if not cat_file.startswith(("|", "&", ";")):
                 command = "Get-Content " + cat_file + command[cat_match.end():]
         # B7: POSIX `cmd1 || cmd2` 失败回退 → `cmd1; if (-not $?) { cmd2 }`。
-        # 只处理单一 || 链（多段链不强制，避免误转换）。
-        if "||" in command and command.count("||") == 1:
-            left, _, right = command.partition("||")
-            left = left.strip().rstrip(";").strip()
-            right = right.strip()
-            if left and right:
-                command = f"{left}; if (-not $?) {{ {right} }}"
-                # luna R3-5: || 重写后 right 内的 pwd 处于 `{ ` 后，需再转换一次。
+        # WinPS 5 rejects ``||``. Rewrite every unquoted segment, not just one.
+        if "||" in command:
+            parts = [part.strip().rstrip(";").strip() for part in command.split("||")]
+            if len(parts) >= 2 and all(parts):
+                rebuilt = parts[0]
+                for part in parts[1:]:
+                    rebuilt = f"{rebuilt}; if (-not $?) {{ {part} }}"
+                command = rebuilt
                 command = re.sub(
                     r"(\{\s*)(?<![\w-])\bpwd\b",
                     r"\1Get-Location",

@@ -36,6 +36,13 @@ export function electronViteDevArgs(profileDir: string): string[] {
   ]
 }
 
+export function electronViteNodeOptions(existing?: string): string {
+  const extra = '--max-old-space-size=8192'
+  const current = existing?.trim() ?? ''
+  if (/(^|\s)--max-old-space-size=/.test(current)) return current
+  return current.length > 0 ? `${current} ${extra}` : extra
+}
+
 export async function waitFor<T>(
   probe: () => Promise<T | null>,
   timeoutMs: number,
@@ -167,6 +174,7 @@ export class DesktopCdpHarness {
   private readonly options: HarnessOptions
   private readonly workspaceIsGitWorktree: boolean
   private child: ChildProcess | null = null
+  private childExit: { code: number | null; signal: NodeJS.Signals | null } | null = null
   private socket: WebSocket | null = null
   private sequence = 0
   private pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>()
@@ -214,23 +222,25 @@ export class DesktopCdpHarness {
 
   async start(): Promise<void> {
     if (!existsSync(vite)) throw new Error(`electron-vite missing: ${vite}`)
+    const spawnEnv = {
+      ...process.env,
+      ...this.options.extraEnv,
+      RXYCODE_REPO_DIR: repositoryDir,
+      RXYCODE_DATA_DIR: this.dataDir,
+      RXYCODE_DESKTOP_USER_DATA: this.profileDir,
+      RXYCODE_DESKTOP_WIDTH: String(this.options.width ?? 1280),
+      RXYCODE_DESKTOP_HEIGHT: String(this.options.height ?? 800),
+      RXYCODE_SKILLS_DIR: this.skillDir,
+      RXYCODE_SKILLS_DIRS: this.skillDir,
+      ...(this.options.fakeAppserver ? { RXYCODE_DESKTOP_FAKE_APPSERVER: '1' } : {})
+    }
+    spawnEnv.NODE_OPTIONS = electronViteNodeOptions(spawnEnv.NODE_OPTIONS)
     this.child = spawn(
       process.execPath,
       electronViteDevArgs(this.profileDir),
       {
         cwd: desktopAppDir,
-        env: {
-          ...process.env,
-          ...this.options.extraEnv,
-          RXYCODE_REPO_DIR: repositoryDir,
-          RXYCODE_DATA_DIR: this.dataDir,
-          RXYCODE_DESKTOP_USER_DATA: this.profileDir,
-          RXYCODE_DESKTOP_WIDTH: String(this.options.width ?? 1280),
-          RXYCODE_DESKTOP_HEIGHT: String(this.options.height ?? 800),
-          RXYCODE_SKILLS_DIR: this.skillDir,
-          RXYCODE_SKILLS_DIRS: this.skillDir,
-          ...(this.options.fakeAppserver ? { RXYCODE_DESKTOP_FAKE_APPSERVER: '1' } : {})
-        },
+        env: spawnEnv,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe']
       }
@@ -242,9 +252,21 @@ export class DesktopCdpHarness {
     }
     this.child.stdout?.on('data', capture(this.stdout))
     this.child.stderr?.on('data', capture(this.stderr))
+    this.child.once('exit', (code, signal) => {
+      this.childExit = { code, signal }
+    })
 
     const activePortFile = join(this.profileDir, 'DevToolsActivePort')
     this.debugPort = await waitFor(async () => {
+      if (this.childExit !== null) {
+        const stderr = this.stderr.map((entry) => entry.line).join('\n')
+        const oom = /heap out of memory/i.test(stderr)
+        throw new Error(
+          `Electron/vite exited ${this.childExit.code ?? this.childExit.signal} before DevToolsActivePort` +
+          `${oom ? ' (JavaScript heap out of memory)' : ''}` +
+          (stderr.length > 0 ? `: ${stderr.slice(-1500)}` : '')
+        )
+      }
       if (!existsSync(activePortFile)) return null
       const value = Number(readFileSync(activePortFile, 'utf8').split(/\r?\n/)[0])
       return Number.isInteger(value) && value > 0 ? value : null

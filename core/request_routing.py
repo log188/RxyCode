@@ -351,13 +351,21 @@ def detect_download_intent(text: str) -> tuple[str, str, str] | None:
         r"(?:下载|安装|添加|获取|load|install|download|add)\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*\s*(?:这个|个)?\s*(?:skill|插件)",
         r"(?:我要|我想|请|帮我|please)\s*(?:下载|安装|添加|获取|load|install|download|add)\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*\s*(?:这个|个)?\s*(?:skill|插件)",
         r"(?:find-skill|/find-skill|/addskill)\s+([a-zA-Z0-9_-]+)",
-        r"(?:skill|插件)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
+        # Require an explicit name marker. A bare "Skill directory" in a
+        # product prompt previously routed the whole request to
+        # download_skill(name="directory").
+        r"(?:skill|插件)\s*(?:叫|名为|叫作|叫做|named|called)\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
     ]
+    skill_name_stopwords = {
+        "directory", "dir", "folder", "tool", "file", "files", "plugin",
+        "isolated", "test", "frontend", "development", "suitable", "one",
+        "the", "and", "for", "into", "only", "from",
+    }
     for pattern in skill_patterns:
         match = re.search(pattern, text_lower)
         if match:
             name = match.group(1).strip()
-            if name and len(name) > 1:
+            if name and len(name) > 1 and name.lower() not in skill_name_stopwords:
                 return ("skill", name, "")
 
     # Only a genuinely imperative "install/add an MCP server" phrase should

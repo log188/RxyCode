@@ -85,7 +85,11 @@ stable checkpoint document before request execution and reused only while that
 checkpoint is unfinished. After policy checks and approval, every WRITE/DANGER
 call is atomically recorded as `pending` before the real invocation. A verified
 successful result is cleaned, bounded, and atomically changed to `completed`.
-READ calls never use the journal.
+READ calls never use the journal. The checkpoint is marked complete only when
+the journal has no pending entries, even if the model answer succeeded: a
+failed bash probe otherwise leaves the attempt unsealed, and completing the
+checkpoint would rotate `attempt_id` on the next identical prompt so the
+orphan guard blocks later writes (`journal_unavailable`).
 
 On checkpoint resume, a completed call with the same tool, argument digest, and
 occurrence ordinal returns the stored result without invoking the tool again. A

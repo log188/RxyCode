@@ -206,11 +206,31 @@ async def _execute_script_async(
         script_argument = (
             script_path.name if interpreter == ["python"] else str(script_path)
         )
-        result = await shell_executor.execute_argv_async(
-            [*interpreter, script_argument],
-            workdir=workdir,
-            timeout=effective_timeout,
-        )
+        started = time.monotonic()
+
+        async def _liveness() -> None:
+            from ..utils.tui import get_tui
+
+            while True:
+                await asyncio.sleep(10.0)
+                tui = get_tui()
+                if tui is not None and hasattr(tui, "write_progress"):
+                    elapsed = int(time.monotonic() - started)
+                    tui.write_progress(f"Workflow script still running ({elapsed}s)...")
+
+        heartbeat = asyncio.create_task(_liveness())
+        try:
+            result = await shell_executor.execute_argv_async(
+                [*interpreter, script_argument],
+                workdir=workdir,
+                timeout=effective_timeout,
+            )
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
     except asyncio.CancelledError:
         raise
     except Exception as exc:

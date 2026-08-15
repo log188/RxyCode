@@ -24,4 +24,6 @@ def test_final_synthesis_uses_compact_tool_free_context():
     assert isinstance(compact[1], HumanMessage)
     assert "Build the requested artifact." in compact[1].content
     assert "[wrote README.md]" in compact[1].content
+    assert "tool-round budget ended" in compact[1].content
+    assert "do not invent write receipts" in compact[1].content.lower()
     assert not any(getattr(message, "tool_calls", None) for message in compact)

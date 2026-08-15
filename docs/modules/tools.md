@@ -56,7 +56,9 @@ coroutine never starts a raw subprocess. Workflow runs live on a dedicated
 asyncio loop so synchronous and asynchronous status/wait/cancel calls share
 one task, and cancel waits for `ShellExecutor` cancellation cleanup. Public
 `run` calls are foreground operations: they return only after the script has
-completed, failed, timed out, or been cancelled. The returned text begins with
+completed, failed, timed out, or been cancelled. While the script is running,
+the tool emits a progress heartbeat every 10s so Desktop does not look frozen.
+The returned text begins with
 the real script outcome and includes a `run_id/status` trailer. This is an
 intentional durability boundary: the side-effect journal cannot commit a
 misleading `started` acknowledgement. If the process dies mid-run, the journal

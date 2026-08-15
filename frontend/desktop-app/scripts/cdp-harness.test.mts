@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { DesktopCdpHarness, electronViteDevArgs, selectRendererTarget } from './cdp-harness.mts'
+import { DesktopCdpHarness, electronViteDevArgs, electronViteNodeOptions, selectRendererTarget } from './cdp-harness.mts'
 
 test('CDP harness ignores devtools targets and chooses the renderer page', () => {
   assert.equal(selectRendererTarget([
@@ -17,6 +17,13 @@ test('CDP harness asks Vite for an ephemeral renderer port', () => {
   const args = electronViteDevArgs('C:\\temp\\rxycode-profile')
   assert.deepEqual(args.slice(1, 4), ['dev', '--', '--port=0'])
   assert.ok(args.includes('--remote-debugging-port=0'))
+})
+
+test('electron-vite node options raise the heap without clobbering an existing cap', () => {
+  assert.equal(electronViteNodeOptions(undefined), '--max-old-space-size=8192')
+  assert.equal(electronViteNodeOptions(''), '--max-old-space-size=8192')
+  assert.equal(electronViteNodeOptions('--enable-source-maps'), '--enable-source-maps --max-old-space-size=8192')
+  assert.equal(electronViteNodeOptions('--max-old-space-size=4096'), '--max-old-space-size=4096')
 })
 
 test('real artifact harness can use an empty workspace instead of exposing the source tree', () => {

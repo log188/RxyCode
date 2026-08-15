@@ -7,6 +7,8 @@ from RxyCode.RxyCode1_1_0.core.research_policy import (
     is_successful_research_fetch,
     normalize_research_url,
     research_failure_message,
+    research_prefetch_failure_note,
+    should_abort_on_research_prefetch_failure,
 )
 
 
@@ -278,3 +280,43 @@ def test_extract_research_query_does_not_use_webfetch_as_english_topic():
     assert "websearch" not in query.lower()
     assert len(query) <= 120
     assert "今天 Python 最新版本是什么" in query or query
+
+
+def test_extract_research_query_ignores_search_filter_ui_feature():
+    prompt = (
+        "Create T03-company in the current workspace. First call websearch at least three "
+        "times and webfetch at least twice to research company website competitors. "
+        "Build a static HTML company website. A successful demo login must open an admin "
+        "console; support validation, search/filter, CRUD, persistence after refresh, and logout."
+    )
+    query = extract_research_query(prompt)
+    assert query != "/filter"
+    assert "filter" not in query.lower()
+    assert "website" in query.lower() or "company" in query.lower() or "competitors" in query.lower()
+
+
+def test_extract_research_query_prefers_market_assets_over_page_controls():
+    prompt = (
+        "Create T06-market-bi in the current workspace. Call datetime first. "
+        "Then call websearch at least three times and webfetch at least twice for gold, silver, "
+        "an A-share technology index or STAR 50, Nasdaq Composite, and S&P 500. "
+        "The page must provide date filter, asset filter, normalized benchmark, metric switcher, "
+        "tooltips, detail table, data-gap warnings, and a risk disclaimer."
+    )
+    query = extract_research_query(prompt)
+    lowered = query.lower()
+    assert "date filter" not in lowered
+    assert "tooltip" not in lowered
+    assert "gold" in lowered or "silver" in lowered or "nasdaq" in lowered
+    assert "webfetch" not in lowered
+    assert len(query) <= 120
+
+
+def test_creation_task_does_not_abort_when_research_prefetch_fails():
+    create = (
+        "Create T03-company in the current workspace. First call websearch and webfetch "
+        "to research company website competitors, then build a static website."
+    )
+    assert should_abort_on_research_prefetch_failure(create) is False
+    assert should_abort_on_research_prefetch_failure("今天最新 Python 版本是什么？") is True
+    assert "continue the requested local artifact" in research_prefetch_failure_note("timeout")

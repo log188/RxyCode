@@ -149,6 +149,7 @@ def test_fast_build_does_not_append_source_with_shell_fragments():
     assert "use the write/edit tools for source files" in instruction
     assert "do not append source code with" in instruction
     assert "replace the complete file" in instruction
+    assert "do not write _probe.py" in instruction
 
 
 def test_fast_build_tool_rounds_keep_tool_calls_concise():
