@@ -74,8 +74,12 @@ def _run_agent() -> AgentV2:
 
 
 def test_fast_reply_disables_extended_thinking():
-    src = inspect.getsource(AgentV2._fast_reply)
-    assert "_thinking_disabled_this_turn" in src
+    """FX7: thinking is disabled ONLY on the ChatPrefix path (_fast_reply);
+    the AgentPrefix path (_fast_reply_with_tools) must never set the flag."""
+    fast_reply_src = inspect.getsource(AgentV2._fast_reply)
+    assert "_thinking_disabled_this_turn" in fast_reply_src
+    tools_src = inspect.getsource(AgentV2._fast_reply_with_tools)
+    assert "_thinking_disabled_this_turn = True" not in tools_src
 
 
 def test_chengdu_itinerary_declines_tools():

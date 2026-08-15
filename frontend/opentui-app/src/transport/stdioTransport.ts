@@ -547,6 +547,41 @@ class StdioAppserverSession {
     callbacks.onStreaming(true);
     callbacks.onProgress?.("Connecting...");
 
+    // FX7: draw the thought placeholder BEFORE ensureReady so the assistant
+    // row is on screen while the worker boots (aligned with HTTP transport).
+    const thinkingId = newId("thinking");
+    const assistantId = newId("assistant");
+
+    let state: StreamReduceState = {
+      messages: [
+        {
+          id: thinkingId,
+          role: "thinking",
+          content: "…",
+          timestamp: Date.now(),
+          live: true,
+          done: false,
+        },
+      ],
+      thinkingId,
+      assistantId,
+      acc: "",
+      assistantCreated: false,
+      reasoningAcc: "",
+      hasReasoning: false,
+    };
+
+    callbacks.onMessages((prev) => [...prev, ...state.messages]);
+
+    const publish = (next: StreamReduceState) => {
+      state = next;
+      callbacks.onMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === userMsg.id);
+        if (idx < 0) return [...prev, ...next.messages];
+        return [...prev.slice(0, idx + 1), ...next.messages];
+      });
+    };
+
     try {
       const client = await this.ensureReady();
       if (signal?.aborted) {
@@ -556,39 +591,6 @@ class StdioAppserverSession {
         throw new Error("appserver session not ready");
       }
       callbacks.onProgress?.("");
-
-      const thinkingId = newId("thinking");
-      const assistantId = newId("assistant");
-
-      let state: StreamReduceState = {
-        messages: [
-          {
-            id: thinkingId,
-            role: "thinking",
-            content: "…",
-            timestamp: Date.now(),
-            live: true,
-            done: false,
-          },
-        ],
-        thinkingId,
-        assistantId,
-        acc: "",
-        assistantCreated: false,
-        reasoningAcc: "",
-        hasReasoning: false,
-      };
-
-      callbacks.onMessages((prev) => [...prev, ...state.messages]);
-
-      const publish = (next: StreamReduceState) => {
-        state = next;
-        callbacks.onMessages((prev) => {
-          const idx = prev.findIndex((m) => m.id === userMsg.id);
-          if (idx < 0) return [...prev, ...next.messages];
-          return [...prev.slice(0, idx + 1), ...next.messages];
-        });
-      };
 
       const priorOnNotification = client.onNotification;
       let sawStreamActivity = false;
@@ -725,6 +727,15 @@ class StdioAppserverSession {
         signal?.removeEventListener("abort", onAbort);
       }
     } catch (e) {
+      // FX7: the thought placeholder may already be on screen — settle it
+      // so a startup failure never leaves a dangling "…" row.
+      if (state.messages.some((m) => m.role === "thinking")) {
+        callbacks.onMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === userMsg.id);
+          if (idx < 0) return prev;
+          return [...prev.slice(0, idx + 1), ...settleActiveMessages(state.messages)];
+        });
+      }
       if (signal?.aborted || (e as Error)?.name === "AbortError") {
         callbacks.onMessages((prev) => [
           ...prev,

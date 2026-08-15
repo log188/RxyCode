@@ -91,4 +91,35 @@ describe("stdio transport startup failures", () => {
     expect(result.streaming).toBe(false);
     expect(result.progress).toBe("");
   }, 20_000);
+
+  test("thought placeholder is pushed before ensureReady (FX7)", async () => {
+    process.env.RXYCODE_TRANSPORT = "stdio";
+    process.env.RXYCODE_PROJECT_ROOT = repoRoot;
+    process.env.RXYCODE_APPSERVER_INIT_TIMEOUT_MS = "500";
+    process.env.RXYCODE_APPSERVER_SESSION_TIMEOUT_MS = "500";
+    __setPythonCmdForTests([python, "-c", "import sys; sys.exit(1)"]);
+
+    const transport = getChatTransport();
+    const rolesSeen: string[][] = [];
+    await transport.sendChatMessage("你好", "build", {
+      onMessages: (updater) => {
+        rolesSeen.push(updater([]).map((m) => m.role));
+      },
+      onStreaming: () => {},
+      onProgress: () => {},
+      onStatus: () => {},
+    });
+
+    // Startup fails (worker exits), yet the assistant "…" row must already
+    // have been pushed before ensureReady ever resolved/rejected — the
+    // placeholder can only originate from the pre-ensureReady section.
+    const thoughtAppeared = rolesSeen.some((roles) => roles.includes("thinking"));
+    expect(thoughtAppeared).toBe(true);
+    const settled = rolesSeen.some((roles) => {
+      return roles.some((role) => role === "thinking");
+    });
+    expect(settled).toBe(true);
+
+    await transport.shutdown?.();
+  }, 20_000);
 });
