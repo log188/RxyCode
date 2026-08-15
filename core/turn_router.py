@@ -42,6 +42,9 @@ def route(
     original ``AgentV2._run_impl`` waterfall 1:1 so outcomes are identical."""
     text = (user_text or "").strip()
     empty_skip: frozenset[str] = frozenset()
+    chat_skip: frozenset[str] = frozenset(
+        {"memory.initialize", "session.load", "mcp.refresh"}
+    )
 
     if mode == "plan":
         return TurnDecision("plan", "agent", empty_skip, True)
@@ -56,7 +59,7 @@ def route(
     social = is_social_chat(text)
 
     if mode in ("build", "plan") and not force_full and declines_tools(text):
-        return TurnDecision("chat", "chat", empty_skip, False, social=social)
+        return TurnDecision("chat", "chat", chat_skip, False, social=social)
 
     if (
         mode in ("build", "plan")
@@ -64,7 +67,7 @@ def route(
         and social
         and PURE_SOCIAL_GREETING_RE.match(text)
     ):
-        return TurnDecision("chat", "chat", empty_skip, False, social=True)
+        return TurnDecision("chat", "chat", chat_skip, False, social=True)
 
     if mode == "compose" and social:
         return TurnDecision("agent", "agent", empty_skip, True, social=True)

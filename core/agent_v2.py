@@ -4287,7 +4287,9 @@ class AgentV2:
         incrementally. When stream=False (default), uses ainvoke()
         for complete token usage tracking.
         """
-        await self._ensure_session_loaded()
+        decision = getattr(self, "_turn_decision", None)
+        if decision is None or "session.load" not in decision.skip_await:
+            await self._ensure_session_loaded()
         memory_ctx = self._memory_ctx_for_turn(user_input)
         system = get_system_prompt(variant=self._prompt_variant())
         user_msg = build_user_message("", user_input, memory_ctx)
@@ -5149,14 +5151,9 @@ class AgentV2:
 
         ToolOrchestrator.clear_live_dedup()
 
-        await self._memory.initialize()
-        await self._ensure_session_loaded()
-
-        research_policy = get_research_policy(user_input)
-
-        # Detect (but do NOT handle) file ops / download intents: plan mode
-        # must return _run_plan_only first, so handlers run only after route()
-        # has decided (single route() table owns the waterfall order).
+        # Detect (but do NOT handle) file ops / download intents, then decide
+        # the route BEFORE any await: route() is a pure function and chat
+        # turns must skip memory.initialize / session.load (FX3).
         file_op = self._detect_file_operation(user_input)
         download_intent = self._detect_download_intent(user_input)
 
@@ -5167,6 +5164,14 @@ class AgentV2:
             file_op=file_op,
             download=download_intent,
         )
+        self._turn_decision = decision
+
+        if "memory.initialize" not in decision.skip_await:
+            await self._memory.initialize()
+        if "session.load" not in decision.skip_await:
+            await self._ensure_session_loaded()
+
+        research_policy = get_research_policy(user_input)
 
         if decision.path == "plan":
             return await self._run_plan_only(user_input)
@@ -5214,7 +5219,11 @@ class AgentV2:
         if decision.path == "chat":
             try:
                 _logger.info("route=chat mode=%s -> fast_reply", mode)
-                return await self._fast_reply(user_input)
+                result = await self._fast_reply(user_input)
+                if not self._session_loaded:
+                    self._memory.load_session(append_only=True)
+                    self._session_loaded = True
+                return result
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

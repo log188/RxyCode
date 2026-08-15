@@ -14,7 +14,9 @@ def test_hello_is_chat():
     d = route("你好", "build", RoutingDirective.AUTO, file_op=None, download=None)
     assert d.path == "chat"
     assert d.profile_kind == "chat"
-    assert d.skip_await == frozenset()
+    assert d.skip_await == frozenset({"memory.initialize", "session.load", "mcp.refresh"})
+    assert "memory.initialize" in d.skip_await
+    assert "session.load" in d.skip_await
 
 
 def test_hello_ah_is_agent_until_fx6():

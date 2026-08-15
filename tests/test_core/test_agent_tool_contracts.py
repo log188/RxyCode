@@ -43,6 +43,8 @@ def _run_agent() -> AgentV2:
     agent._last_thinking = ""
     agent._detect_file_operation = MagicMock(return_value=None)
     agent._detect_download_intent = MagicMock(return_value=None)
+    agent._handle_file_operation = AsyncMock()
+    agent._handle_download_intent = AsyncMock()
     agent._is_simple_query = MagicMock(return_value=False)
     agent._should_use_subagents = MagicMock(return_value=False)
     agent._fast_reply = AsyncMock(return_value="unsafe fallback")
@@ -103,8 +105,10 @@ async def test_plan_mode_is_globally_non_executing(prompt):
     agent._execute_tool.assert_not_awaited()
     agent._fast_reply_with_tools.assert_not_awaited()
     agent._graph.ainvoke.assert_not_awaited()
-    agent._detect_file_operation.assert_not_called()
-    agent._detect_download_intent.assert_not_called()
+    # FX3: detectors are pure probes that run before route(); plan mode must
+    # still never EXECUTE any handler.
+    agent._handle_file_operation.assert_not_awaited()
+    agent._handle_download_intent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
