@@ -1387,10 +1387,10 @@ FXC6 遗留修复：_prompt_variant 对无 provider 构造回退 caps（test_age
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] `_run_impl` 不再包含 `PURE_SOCIAL_GREETING_RE` / `declines_tools(` / `_is_social_chat(` 的 **分流条件**（Grep 确认；包装调用探测函数可以留在探测阶段）
-- [ ] 上列三份测试全绿
-- [ ] `route("你好")` → chat；`route("你好啊")` → agent（本卡刻意保持）
-- [ ] GPT-5.6 审计 PASS
+- [x] `_run_impl` 不再包含 `PURE_SOCIAL_GREETING_RE` / `declines_tools(` / `_is_social_chat(` 的 **分流条件**（Grep 确认；包装调用探测函数可以留在探测阶段）
+- [x] 上列三份测试全绿
+- [x] `route("你好")` → chat；`route("你好啊")` → agent（本卡刻意保持）
+- [x] GPT-5.6 审计 PASS
 
 **实施记录** / **审计记录**：同 FX1 格式。
 
@@ -1400,6 +1400,15 @@ FXC6 遗留修复：_prompt_variant 对无 provider 构造回退 caps（test_age
 
 - 把 plan 模式放到 greeting 之后，会改变今日「plan 一律 `_run_plan_only`」行为。
 - 在 `_run_impl` 既 call `route` 又留旧 if → 双决策。
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1-R3：FAIL（social 失败消息等价元数据、route() 统一 plan 分发 + 恢复 「你好啊」测试文本、plan 模式在 route() 前不得执行 file/download handler）
+R4：PASS。_run_impl 无三类探针；route() 单一路由表、顺序与原瀑布等价（含 file_op 失败→download 回退链）；TurnDecision frozen+slots、skip_await 全空；social 安慰消息保留；58+ 测试全绿、ruff 通过。
+可以勾选 FX2 完成判据。
+```
 
 **Commit**
 
