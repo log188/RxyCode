@@ -905,11 +905,21 @@ cd "D:\agent-demo\RxyCode\RxyCode1_1_0"
 python -m pytest tests/test_cache/test_unknown_model_fallback.py -q
 ```
 
+**实施记录**（Grok 填写）
+
+```
+commits: FXC6 首 commit（fix 分支）
+pytest: tests/test_cache/test_unknown_model_fallback.py → 5 passed
+回归（test_cache + test_thinking_contract）：96+ passed
+ruff（Python 白名单）: All checks passed
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] `get_contract("no-such", "mystery") is None` 时注入层走 fallback 五条
-- [ ] 假 payload 无 `cache_control`、无 `prompt_cache_key`
-- [ ] GPT-5.6 审计 PASS
+- [x] `get_contract("no-such", "mystery") is None` 时注入层走 fallback 五条
+- [x] 假 payload 无 `cache_control`、无 `prompt_cache_key`
+- [x] GPT-5.6 审计 PASS
 
 **Commit**
 
@@ -1142,8 +1152,10 @@ python -m ruff check core/prefix_profile.py tests/test_core/test_prefix_profile.
 **审计记录**（GPT-5.6 填写）
 
 ```
-结果：PASS / FAIL
-意见：
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1-R6：FAIL（fallback 强制应用、protocol 校验、真实 None 路径、variant 在 prompt 组装前生效等逐一修复）
+R7：PASS。unknown_fallback_contract() 五条显式；_prompt_variant 对未知 模型在组装前解析 default；_raw_stream None 分支强制 default variant + openai-compatible 校验；真实 payload 无 cache_control/prompt_cache_key，tools 排序 + session 头（FXC4）；DeepSeek/M3/未知不打点；无模型名启发式、无协议升级、无第二注入器。
+可以勾选 FXC6 完成判据。
 ```
 
 **回滚**：删这两个新文件。
