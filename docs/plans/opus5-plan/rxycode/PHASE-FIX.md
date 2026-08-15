@@ -1826,6 +1826,18 @@ def test_agent_path_appends_after_memory():
     ...
 ```
 
+**实施记录**（Grok 填写）
+
+```
+commits: feat(agent): add append_turn_context suffix seam for LinkAgent（fix 分支）
+pytest: test_turn_context 5（新）+ 回归全量 7777 passed（基线 8 不变）
+ruff: All checks passed
+实现：core/turn_context.py（TurnContextBlock TypedDict + validate_blocks 拒绝 system/tools kind + serialize_turn_context 空输入逐字节等同 no-op）；AgentV2.
+  append_turn_context/clear_turn_context/_turn_context_suffix；_fast_reply_with_tools memory_ctx 尾部拼接（memory 之后、user_content 之前）；_fast_reply（chat）忽略
+注：测试用 pytest-asyncio（手动 get_event_loop 在全量顺序下失效——FXC4 已知坑）
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
 - [ ] 公开方法在 AgentV2 上，不需要碰 `_memory`
