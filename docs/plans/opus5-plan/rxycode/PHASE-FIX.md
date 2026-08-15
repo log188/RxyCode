@@ -1840,11 +1840,20 @@ ruff: All checks passed
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] 公开方法在 AgentV2 上，不需要碰 `_memory`
-- [ ] 拒绝 system/tools kind
-- [ ] chat 忽略；agent 追加后缀
-- [ ] 空 blocks 不增加 memory_context 字符
-- [ ] GPT-5.6 审计 PASS
+- [x] 公开方法在 AgentV2 上，不需要碰 `_memory`
+- [x] 拒绝 system/tools kind
+- [x] chat 忽略；agent 追加后缀
+- [x] 空 blocks 不增加 memory_context 字符
+- [x] GPT-5.6 审计 PASS
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1：FAIL（签名须用 TurnContextBlock、空 blocks 经真实 agent 路径逐字节验证）
+R2：PASS。append_turn_context/clear_turn_context 公开且不碰 _memory；拒绝 system/tools（ValueError）；chat 忽略、agent 在 memory 后追加；空 blocks/全空 text 经真实路径 memory_context 与未调用相同；build_user_message 签名未改；不实现 EKO 检索。
+可以勾选 FX8 完成判据。
+```
 
 **Commit**
 
