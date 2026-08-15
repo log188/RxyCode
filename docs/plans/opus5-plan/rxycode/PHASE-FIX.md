@@ -1667,6 +1667,19 @@ fix(cache): send keep-alive with the frozen AgentPrefix, not a third body
 - datetime 对闲聊零收益，失去它是预期。
 - 本卡仍不实现 MCP 动态工具进前缀（MCP 指纹变化 = 新 Profile，那是未来卡）。
 
+**实施记录**（Grok 填写）
+
+```
+commits: fix(agent): stop mutating tool schemas per turn（fix 分支）
+pytest: test_turn_router 10 + test_first_turn_latency 14 + test_request_routing 22 + test_agent_tool_contracts 38 全绿；全量 7772 passed（基线 8 不变）
+ruff: All checks passed
+实现：route() 宽社交（含「你好啊」+ compose social）→ path=chat（ChatPrefix 空工具冻档案）；
+  _fast_reply_with_tools 删除 resolve_fast_reply_tool_allowlist 隐式裁剪（user 文本启发式不再
+  改 API schema），bind 全量核心工具；显式 allowlist（plan 只读）保持为执行层契约；
+  resolve_fast_reply_tool_allowlist 标注「执行层遗留，禁止用于 schema」
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
 - [ ] `route("你好啊").path == "chat"`
