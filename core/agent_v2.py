@@ -5146,8 +5146,6 @@ class AgentV2:
 
         routing_directive, user_input = parse_routing_directive(user_input)
         self._routing_directive = routing_directive
-        force_fast = routing_directive == RoutingDirective.FORCE_FAST
-        force_full = routing_directive == RoutingDirective.FORCE_FULL
 
         ToolOrchestrator.clear_live_dedup()
 
