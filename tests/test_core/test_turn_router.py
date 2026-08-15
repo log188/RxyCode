@@ -18,7 +18,7 @@ def test_hello_is_chat():
 
 
 def test_hello_ah_is_agent_until_fx6():
-    d = route("嗨", "build", RoutingDirective.AUTO, file_op=None, download=None)
+    d = route("你好啊", "build", RoutingDirective.AUTO, file_op=None, download=None)
     assert d.path == "agent"
 
 

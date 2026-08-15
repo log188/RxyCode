@@ -5152,9 +5152,6 @@ class AgentV2:
         await self._memory.initialize()
         await self._ensure_session_loaded()
 
-        if mode == "plan":
-            return await self._run_plan_only(user_input)
-
         research_policy = get_research_policy(user_input)
 
         # Fast tool path for simple file operations (check BEFORE download intent)
@@ -5175,11 +5172,6 @@ class AgentV2:
         # Check for download intent (after file operations)
         download_intent = self._detect_download_intent(user_input)
         if download_intent:
-            if mode == "plan":
-                result = "[blocked: plan mode is read-only; downloads were not executed]"
-                self._memory.add_interaction(user_input, result)
-                self._memory.save_session()
-                return result
             try:
                 result = await self._handle_download_intent(download_intent)
                 self._memory.add_interaction(user_input, result)
@@ -5199,6 +5191,9 @@ class AgentV2:
             file_op=file_op,
             download=download_intent,
         )
+
+        if decision.path == "plan":
+            return await self._run_plan_only(user_input)
 
         if decision.path == "file_op":
             try:
