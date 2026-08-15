@@ -3195,13 +3195,17 @@ class AgentV2:
             # 冷却窗口由 _prewarm_last_attempt_at 控制
 
     async def _keep_alive_async(self) -> None:
-        """B5: 后台保活——发 max_tokens=1 空请求保活前缀，不阻塞当前请求。"""
-        from langchain_core.messages import HumanMessage
+        """B5: 后台保活——发 max_tokens=1 空请求保活前缀，不阻塞当前请求。
+
+        FX5: keep-alive rides the frozen AgentPrefix (system + core tools +
+        keep-alive), never a bare HumanMessage body.
+        """
+        from .prewarm import core_tools_for, keepalive_messages
 
         try:
             async for _chunk in self._raw_stream(
-                [HumanMessage(content="keep-alive")],
-                tools=None,
+                keepalive_messages(self),
+                tools=core_tools_for(self, "agent"),
                 max_tokens=1,
             ):
                 break  # 只消费首个 chunk

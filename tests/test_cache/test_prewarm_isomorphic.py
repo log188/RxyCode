@@ -221,6 +221,49 @@ async def test_prewarm_signature_equals_real_request_signature():
     )
 
 
+@pytest.mark.asyncio
+async def test_keep_alive_rides_agent_prefix_shape():
+    """FX5: keep-alive must carry the frozen agent archive (system + core
+    tools + keep-alive user text), never a bare HumanMessage body."""
+    agent = _prewarm_agent()
+    await agent._keep_alive_async()
+    call = agent._captured_calls[0]
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    assert any(isinstance(m, SystemMessage) for m in call["msgs"]), (
+        "keep-alive must carry system"
+    )
+    assert any(
+        isinstance(m, HumanMessage) and m.content == "keep-alive" for m in call["msgs"]
+    )
+    assert call["tools"] is not None
+    assert [t.name for t in call["tools"]] == ["bash", "read"]
+    assert call["thinking_disabled"] is False
+
+
+def test_keepalive_tools_digest_equals_agent_profile():
+    from RxyCode.RxyCode1_1_0.core.prewarm import keepalive_messages
+    from RxyCode.RxyCode1_1_0.core.prefix_profile import digest_tools
+
+    agent = _prewarm_agent()
+    msgs = keepalive_messages(agent)
+    agent_profile_digest = _core_tools_digest()
+    assert digest_tools([{"name": "bash"}, {"name": "read"}]) == agent_profile_digest
+    from langchain_core.messages import SystemMessage
+
+    sys = next(m for m in msgs if isinstance(m, SystemMessage))
+    assert "fx4-test-tool" not in sys  # system shape == agent prewarm system
+    assert len(msgs) == 2  # system + keep-alive only
+
+
+def test_keep_alive_disabled_by_default():
+    from RxyCode.RxyCode1_1_0.core.cache_policy import keep_alive_enabled
+
+    assert keep_alive_enabled(None) is False
+    assert keep_alive_enabled({}) is False
+    assert keep_alive_enabled({"cache": {}}) is False
+
+
 def test_signature_includes_kind_thinking_tools():
     sig_chat = build_prewarm_signature(
         model="m", cwd="/w", mcp="", kind="chat",

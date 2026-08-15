@@ -91,6 +91,22 @@ def session_prewarm_messages(agent: Any, kind: PrewarmKind = "agent") -> list:
     return msgs
 
 
+def keepalive_messages(agent: Any) -> list:
+    """FX5: keep-alive rides the frozen agent archive — same system + core
+    tools as the agent prewarm slot, user text ``keep-alive``. Never a
+    bare HumanMessage body (that would be a third prefix)."""
+    from langchain_core.messages import HumanMessage
+
+    msgs = session_prewarm_messages(agent, "agent")
+    out: list = []
+    for m in msgs:
+        if m.__class__.__name__ == "HumanMessage":
+            out.append(HumanMessage(content="keep-alive"))
+        else:
+            out.append(m)
+    return out
+
+
 async def prewarm_archive(agent: Any, kind: PrewarmKind) -> None:
     """Send one max_tokens=1 prewarm request for one slot and consume the
     stream fully (provider writes the prefix); confirm via the agent.
