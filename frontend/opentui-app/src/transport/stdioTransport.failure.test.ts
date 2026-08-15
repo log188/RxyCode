@@ -100,10 +100,18 @@ describe("stdio transport startup failures", () => {
     __setPythonCmdForTests([python, "-c", "import sys; sys.exit(1)"]);
 
     const transport = getChatTransport();
-    const rolesSeen: string[][] = [];
+    const snapshots: Array<{ role: string; live?: boolean; done?: boolean }[]> = [];
+    let acc: import("../types.ts").ChatMessage[] = [];
     await transport.sendChatMessage("你好", "build", {
       onMessages: (updater) => {
-        rolesSeen.push(updater([]).map((m) => m.role));
+        acc = updater(acc);
+        snapshots.push(
+          acc.map((m) => ({
+            role: m.role,
+            live: "live" in m ? (m.live as boolean) : undefined,
+            done: "done" in m ? (m.done as boolean) : undefined,
+          })),
+        );
       },
       onStreaming: () => {},
       onProgress: () => {},
@@ -113,12 +121,20 @@ describe("stdio transport startup failures", () => {
     // Startup fails (worker exits), yet the assistant "…" row must already
     // have been pushed before ensureReady ever resolved/rejected — the
     // placeholder can only originate from the pre-ensureReady section.
-    const thoughtAppeared = rolesSeen.some((roles) => roles.includes("thinking"));
-    expect(thoughtAppeared).toBe(true);
-    const settled = rolesSeen.some((roles) => {
-      return roles.some((role) => role === "thinking");
-    });
-    expect(settled).toBe(true);
+    const placeholderSeen = snapshots.some((roles) =>
+      roles.some(
+        (m) => m.role === "thinking" && m.live === true && m.done === false,
+      ),
+    );
+    expect(placeholderSeen).toBe(true);
+    // The placeholder must not dangle: the same thinking row settles to
+    // done/live:false before the call finishes.
+    const settledSeen = snapshots.some((roles) =>
+      roles.some(
+        (m) => m.role === "thinking" && m.live === false && m.done === true,
+      ),
+    );
+    expect(settledSeen).toBe(true);
 
     await transport.shutdown?.();
   }, 20_000);
