@@ -9,7 +9,7 @@ greeting no longer misses a tools-on warmup prefix.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any
 
 from RxyCode.RxyCode1_1_0.core.cache_policy import build_prewarm_signature
 from RxyCode.RxyCode1_1_0.core.prefix_profile import digest_tools
