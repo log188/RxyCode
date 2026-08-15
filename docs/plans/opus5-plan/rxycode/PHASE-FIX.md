@@ -1374,6 +1374,17 @@ python -m pytest tests/test_core/test_turn_router.py tests/test_core/test_reques
 python -m ruff check core/turn_router.py core/agent_v2.py tests/test_core/test_turn_router.py
 ```
 
+**实施记录**（Grok 填写）
+
+```
+commits: 5d8019f + 后续（fix 分支）
+pytest: test_turn_router 9 + test_request_routing + test_first_turn_latency 全绿；全量 test_core+test_cache 7755 passed
+  （基线失败 8：lazy_import_budget×2 历史、research_fast_path×2+session 他人改动区、usage_reasoning B3 遗留、breakpoint_budget×2 FXC2 已知）
+ruff: All checks passed
+FXC6 遗留修复：_prompt_variant 对无 provider 构造回退 caps（test_agent_prompt_variant 恢复绿）
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
 - [ ] `_run_impl` 不再包含 `PURE_SOCIAL_GREETING_RE` / `declines_tools(` / `_is_social_chat(` 的 **分流条件**（Grep 确认；包装调用探测函数可以留在探测阶段）
