@@ -1619,10 +1619,19 @@ ruff: All checks passed
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] Grep `_keep_alive_async`：不再 `_raw_stream([HumanMessage(...)], tools=None)` 这种无 system 调用
-- [ ] 测试证明 keepalive tools_digest == agent profile tools_digest
-- [ ] 默认 keep_alive 仍 False
-- [ ] GPT-5.6 审计 PASS
+- [x] Grep `_keep_alive_async`：不再 `_raw_stream([HumanMessage(...)], tools=None)` 这种无 system 调用
+- [x] 测试证明 keepalive tools_digest == agent profile tools_digest
+- [x] 默认 keep_alive 仍 False
+- [x] GPT-5.6 审计 PASS
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1：FAIL（digest 测试须从实际捕获的 keep-alive 请求 tools 派生，不得硬编码）
+R2：PASS。_keep_alive_async 无裸 HumanMessage+tools=None；keep-alive = agent 槽同构（system+核心 tools+keep-alive，max_tokens=1）；digest == agent profile digest（从捕获调用计算）；默认开关 False 保持；白名单内。
+可以勾选 FX5 完成判据。
+```
 
 **Commit**
 
