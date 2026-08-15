@@ -1540,6 +1540,21 @@ python -m pytest tests/test_cache/test_prewarm_isomorphic.py tests/test_cache/te
 python -m ruff check core/prewarm.py core/cache_policy.py core/agent_v2.py
 ```
 
+**实施记录**（Grok 填写）
+
+```
+commits: fix(cache): make prewarm isomorphic to ChatPrefix and AgentPrefix（fix 分支）
+pytest: test_prewarm_isomorphic 6（新）+ test_session_reuse 36 全绿；全量 test_core+test_cache 7766 passed（基线失败 8 不变）
+ruff: All checks passed
+实现：build_prewarm_signature 增加 kind/thinking_enabled/tools_digest；core/prewarm.py（新）
+  双槽（chat: tools=None/thinking off/system(tools=False)；agent: 核心 tools/thinking on/
+  system(tools=True)）并行 prewarm_all；agent_v2 薄包装（_prewarm_async→prewarm_all、
+  _session_prewarm_messages→prewarm、_prewarm_state 双槽：agent 槽兼容旧注入形态、
+  chat 槽 _prewarm_chat）；LAT-1 保持（run/_run_impl 仍无 _schedule_prewarm）；
+  keep-alive 未改（FX5）
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
 - [ ] 预热签名含 kind/thinking/tools_digest
