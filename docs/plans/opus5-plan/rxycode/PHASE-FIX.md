@@ -1474,11 +1474,19 @@ ruff: All checks passed
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] `route("你好").skip_await` 含 `memory.initialize` 与 `session.load`
-- [ ] `_run_impl("你好")` 在 `_fast_reply` 返回前不 `load_session`
-- [ ] 编码任务路径仍 load_session（测试：非 chat 的 `_run_impl` 会 load）
-- [ ] 现有 routing / first_turn 测试绿
-- [ ] GPT-5.6 审计 PASS
+- [x] `route("你好").skip_await` 含 `memory.initialize` 与 `session.load`
+- [x] `_run_impl("你好")` 在 `_fast_reply` 返回前不 `load_session`
+- [x] 编码任务路径仍 load_session（测试：非 chat 的 `_run_impl` 会 load）
+- [x] 现有 routing / first_turn 测试绿
+- [x] GPT-5.6 审计 PASS
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1：PASS。chat 路径 skip_await 含 memory.initialize/session.load/mcp.refresh；_run_impl 先 route（纯函数）再按 skip 决定 await；_fast_reply 经 _turn_decision 跳过 _ensure_session_loaded；chat 回复后补 load_session 不挡本回合 LLM；非 chat 仍 load；plan 契约测试升级为 handler 级断言（检测是纯查询，FX2 R3 要求检测在 route 前），「plan 不执行」保持。
+可以勾选 FX3 完成判据。
+```
 
 **Commit**
 
