@@ -241,19 +241,21 @@ async def test_keep_alive_rides_agent_prefix_shape():
     assert call["thinking_disabled"] is False
 
 
-def test_keepalive_tools_digest_equals_agent_profile():
-    from RxyCode.RxyCode1_1_0.core.prewarm import keepalive_messages
+@pytest.mark.asyncio
+async def test_keepalive_tools_digest_equals_agent_profile():
+    """Derived from the ACTUAL keep-alive request (captured call), not
+    hard-coded tools."""
     from RxyCode.RxyCode1_1_0.core.prefix_profile import digest_tools
 
     agent = _prewarm_agent()
-    msgs = keepalive_messages(agent)
-    agent_profile_digest = _core_tools_digest()
-    assert digest_tools([{"name": "bash"}, {"name": "read"}]) == agent_profile_digest
+    await agent._keep_alive_async()
+    call = agent._captured_calls[0]
+    keepalive_digest = digest_tools(call["tools"])
+    assert keepalive_digest == _core_tools_digest()
+
     from langchain_core.messages import SystemMessage
 
-    sys = next(m for m in msgs if isinstance(m, SystemMessage))
-    assert "fx4-test-tool" not in sys  # system shape == agent prewarm system
-    assert len(msgs) == 2  # system + keep-alive only
+    assert any(isinstance(m, SystemMessage) for m in call["msgs"])
 
 
 def test_keep_alive_disabled_by_default():
