@@ -5260,6 +5260,14 @@ class AgentV2:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if decision.social:
+                    _logger.warning(
+                        "social chat fast path failed (no graph): %s", exc
+                    )
+                    return (
+                        "刚才没能完整回复你，我在这儿听着呢。"
+                        "你可以再说一次，或者换个说法。"
+                    )
                 if research_policy.requires_web:
                     return research_failure_message(str(exc))
                 if self._side_effecting_tool_attempted:

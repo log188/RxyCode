@@ -27,6 +27,7 @@ class TurnDecision:
     skip_await: frozenset[str]
     thinking_enabled: bool
     role_instruction: str = ""
+    social: bool = False
 
 
 def route(
@@ -55,7 +56,7 @@ def route(
     social = is_social_chat(text)
 
     if mode in ("build", "plan") and not force_full and declines_tools(text):
-        return TurnDecision("chat", "chat", empty_skip, False)
+        return TurnDecision("chat", "chat", empty_skip, False, social=social)
 
     if (
         mode in ("build", "plan")
@@ -63,13 +64,13 @@ def route(
         and social
         and PURE_SOCIAL_GREETING_RE.match(text)
     ):
-        return TurnDecision("chat", "chat", empty_skip, False)
+        return TurnDecision("chat", "chat", empty_skip, False, social=True)
 
     if mode == "compose" and social:
-        return TurnDecision("agent", "agent", empty_skip, True)
+        return TurnDecision("agent", "agent", empty_skip, True, social=True)
 
     if mode in ("build", "plan") and not force_full:
-        return TurnDecision("agent", "agent", empty_skip, True)
+        return TurnDecision("agent", "agent", empty_skip, True, social=social)
 
     if mode == "compose":
         return TurnDecision("compose", "agent", empty_skip, True)

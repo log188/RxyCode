@@ -163,6 +163,24 @@ def test_agent_v2_compat_routing_reexports():
     assert _GIT_FORCE_RE.search("必须调用 git 工具")
 
 
+@pytest.mark.asyncio
+async def test_social_tools_failure_returns_comfort_message():
+    """FX2 equivalence: build-mode social non-greeting turns that fail on the
+    tools fast path return the comfort message, never [error]/research."""
+    agent = _routed_agent()
+    agent._fast_reply_with_tools = AsyncMock(side_effect=RuntimeError("boom"))
+    result = await agent._run_impl("i'm sad", mode="build")
+    assert "刚才没能完整回复你" in result
+
+
+@pytest.mark.asyncio
+async def test_compose_social_tools_failure_returns_comfort_message():
+    agent = _routed_agent()
+    agent._fast_reply_with_tools = AsyncMock(side_effect=RuntimeError("boom"))
+    result = await agent._run_impl("i'm sad", mode="compose")
+    assert "刚才没能完整回复你" in result
+
+
 def test_mcp_explanatory_question_is_not_download_intent():
     """Regression: asking about the MCP protocol must never be routed to
     download_mcp, which would add an npx MCP server to the user's config."""
