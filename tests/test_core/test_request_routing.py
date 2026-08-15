@@ -165,12 +165,15 @@ def test_agent_v2_compat_routing_reexports():
 
 @pytest.mark.asyncio
 async def test_social_tools_failure_returns_comfort_message():
-    """FX2 equivalence: build-mode social non-greeting turns that fail on the
-    tools fast path return the comfort message, never [error]/research."""
+    """FX6: social non-greeting turns ride the ChatPrefix fast reply — they
+    never reach the tools path, and a chat-branch failure still returns
+    the comfort message, never [error]/research."""
     agent = _routed_agent()
     agent._fast_reply_with_tools = AsyncMock(side_effect=RuntimeError("boom"))
     result = await agent._run_impl("i'm sad", mode="build")
-    assert "刚才没能完整回复你" in result
+    assert result == "fast"
+    agent._fast_reply.assert_awaited_once_with("i'm sad")
+    agent._fast_reply_with_tools.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -191,10 +194,13 @@ async def test_plan_mode_never_handles_file_op_or_download():
 
 @pytest.mark.asyncio
 async def test_compose_social_tools_failure_returns_comfort_message():
+    """FX6: compose-mode social also rides ChatPrefix (no tools binding)."""
     agent = _routed_agent()
     agent._fast_reply_with_tools = AsyncMock(side_effect=RuntimeError("boom"))
     result = await agent._run_impl("i'm sad", mode="compose")
-    assert "刚才没能完整回复你" in result
+    assert result == "fast"
+    agent._fast_reply.assert_awaited_once_with("i'm sad")
+    agent._fast_reply_with_tools.assert_not_awaited()
 
 
 def test_mcp_explanatory_question_is_not_download_intent():

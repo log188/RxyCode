@@ -11,7 +11,6 @@ from typing import Any, Literal, Optional
 
 from RxyCode.RxyCode1_1_0.core.prefix_profile import PrefixKind
 from RxyCode.RxyCode1_1_0.core.request_routing import (
-    PURE_SOCIAL_GREETING_RE,
     RoutingDirective,
     declines_tools,
     is_social_chat,
@@ -61,16 +60,13 @@ def route(
     if mode in ("build", "plan") and not force_full and declines_tools(text):
         return TurnDecision("chat", "chat", chat_skip, False, social=social)
 
-    if (
-        mode in ("build", "plan")
-        and not force_full
-        and social
-        and PURE_SOCIAL_GREETING_RE.match(text)
-    ):
+    # FX6: wide social (incl. "你好啊") rides the frozen empty-tool ChatPrefix
+    # archive — never datetime-cropped AgentPrefix schemas.
+    if mode in ("build", "plan") and not force_full and social:
         return TurnDecision("chat", "chat", chat_skip, False, social=True)
 
     if mode == "compose" and social:
-        return TurnDecision("agent", "agent", empty_skip, True, social=True)
+        return TurnDecision("chat", "chat", chat_skip, False, social=True)
 
     if mode in ("build", "plan") and not force_full:
         return TurnDecision("agent", "agent", empty_skip, True, social=social)

@@ -3315,9 +3315,11 @@ class AgentV2:
         self.model_config = dict(self.model_config)
         if not self.model_config.get("effort"):
             self.model_config["effort"] = self._effort_for(mode, user_input)
-        allowed_tool_names = self._resolve_fast_reply_tool_allowlist(
-            user_input, allowed_tool_names
-        )
+        # FX6: the agent path NEVER resolves per-turn allowlists for schema
+        # shaping — tools are the frozen full core set. Explicit allowlists
+        # passed by callers (e.g. plan-only readonly) remain execution-layer
+        # contracts applied below; execution denials belong to orchestrator
+        # permissions, not user-text heuristics.
         if (
             allowed_tool_names is SOCIAL_CHAT_TOOL_NAMES
             and not role_instruction.strip()
@@ -3472,7 +3474,10 @@ class AgentV2:
                     tool_call_id=fetch_call["id"],
                 ))
 
-        # Get core tools for binding
+        # Get core tools for binding. FX6: the agent path NEVER resolves
+        # per-turn allowlists from user text — the schema is the frozen full
+        # core set. An EXPLICIT allowlist (e.g. plan-only readonly) is an
+        # execution-layer contract passed by the caller and still applies.
         core_tools = self._get_core_tools()
         if allowed_tool_names is not None:
             core_tools = [

@@ -19,9 +19,11 @@ def test_hello_is_chat():
     assert "session.load" in d.skip_await
 
 
-def test_hello_ah_is_agent_until_fx6():
+def test_hello_ah_is_chat():
+    """FX6: wide social (incl. 你好啊) rides the frozen ChatPrefix."""
     d = route("你好啊", "build", RoutingDirective.AUTO, file_op=None, download=None)
-    assert d.path == "agent"
+    assert d.path == "chat"
+    assert "session.load" in d.skip_await
 
 
 def test_declines_tools_is_chat():
