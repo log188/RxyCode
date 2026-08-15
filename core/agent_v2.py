@@ -254,6 +254,7 @@ from RxyCode.RxyCode1_1_0.core.request_routing import (
     should_use_subagents,
 )
 from RxyCode.RxyCode1_1_0.core.turn_router import route
+from RxyCode.RxyCode1_1_0.core.turn_context import TurnContextBlock
 CODE_MUTATING_TOOL_NAMES = frozenset({
     "write",
     "edit",
@@ -3275,7 +3276,7 @@ class AgentV2:
             return ""
         return self._get_memory_context(user_input, include_long_term=True)
 
-    def append_turn_context(self, blocks: Sequence[dict]) -> None:
+    def append_turn_context(self, blocks: Sequence[TurnContextBlock]) -> None:
         """FX8: public seam for LinkAgent — EKO-style context can only
         append to the user suffix after the prefix is frozen.
 

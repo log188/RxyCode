@@ -146,3 +146,42 @@ def test_clear_turn_context_removes_suffix():
     assert "A" in agent._turn_context_suffix()
     agent.clear_turn_context()
     assert agent._turn_context_suffix() == ""
+
+
+@pytest.mark.asyncio
+async def test_empty_blocks_byte_identical_through_agent_path(monkeypatch):
+    """append([]) / all-blank text through the REAL agent path must pass the
+    same memory_context to build_user_message as no call at all."""
+    import RxyCode.RxyCode1_1_0.core.agent_v2 as agent_v2_module
+
+    captured = []
+    original = agent_v2_module.build_user_message
+
+    def _spy(role_instruction, user_content, memory_context="", locale=None):
+        captured.append(memory_context)
+        return original(role_instruction, user_content, memory_context, locale)
+
+    monkeypatch.setattr(agent_v2_module, "build_user_message", _spy)
+
+    agent = _ctx_agent()
+    agent._fast_reply_with_tools = AgentV2._fast_reply_with_tools.__get__(
+        agent, AgentV2
+    )
+
+    async def _raw(msgs, tools=None, max_tokens=None):
+        if False:  # pragma: no cover
+            yield None
+
+    agent._raw_stream = _raw
+    agent._get_core_tools = lambda: [SimpleNamespace(name="bash", args_schema={})]
+    agent._is_social_chat = AgentV2._is_social_chat.__get__(agent, AgentV2)
+    agent.model_config = {"model_name": "test-model", "effort": "balanced"}
+
+    await agent._fast_reply_with_tools("帮我写个排序函数。")
+    agent.append_turn_context([])
+    await agent._fast_reply_with_tools("帮我写个排序函数。")
+    agent.append_turn_context([{"kind": "eko", "text": "   "}])
+    await agent._fast_reply_with_tools("帮我写个排序函数。")
+
+    assert len(captured) == 3
+    assert captured[0] == captured[1] == captured[2] == "MEMORY-BASE"
