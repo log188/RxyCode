@@ -26,8 +26,11 @@ def _mcp_signature(agent: Any) -> str:
 
     try:
         cfg = getattr(agent, "_cfg", None) or {}
+        servers = cfg.get("mcpServers") or {}
+        if not servers:
+            return ""
         return json.dumps(
-            cfg.get("mcpServers") or {},
+            servers,
             sort_keys=True,
             ensure_ascii=False,
             separators=(",", ":"),

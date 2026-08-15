@@ -58,7 +58,7 @@ def _prewarm_agent() -> AgentV2:
     return agent
 
 
-def _profile(kind: str, tools_digest: str, thinking: bool) -> PrefixProfile:
+def _profile(kind: str, tools_digest: str, thinking: bool, variant: str = "default") -> PrefixProfile:
     return PrefixProfile(
         kind=kind,  # type: ignore[arg-type]
         session_id="s",
@@ -69,7 +69,7 @@ def _profile(kind: str, tools_digest: str, thinking: bool) -> PrefixProfile:
         tools_digest=tools_digest,
         s1_digest="s1",
         system_template_version="1.0.0",
-        prompt_variant="default",
+        prompt_variant=variant,
         agent_id=None,
     )
 
@@ -154,20 +154,71 @@ async def test_prewarm_async_fires_both_slots_and_confirms_both():
     assert agent._thinking_disabled_this_turn is False  # restored after swap
 
 
-def test_chat_prewarm_profile_is_compatible_with_chat_real_turn():
-    """Derived from actual prewarm parameters (not hand-copied objects)."""
-    chat_digest = digest_tools(None)
-    prewarm_p = _profile("chat", chat_digest, thinking=False)
-    real_p = _profile("chat", chat_digest, thinking=False)
+@pytest.mark.asyncio
+async def test_chat_prewarm_profile_matches_real_chat_turn_params():
+    """Both profiles derive from actual parameters: the captured prewarm
+    call (tools=None, thinking off, variant) vs the real greeting-turn
+    parameters (same tools/thinking/variant rules)."""
+    agent = _prewarm_agent()
+    from RxyCode.RxyCode1_1_0.core.prewarm import prewarm_archive
+
+    await prewarm_archive(agent, "chat")
+    call = agent._captured_calls[0]
+    prewarm_p = _profile("chat", digest_tools(call["tools"]), thinking=False)
+    # Real chat turn: no tools, thinking disabled via the greeting switch,
+    # same variant the system prompt used.
+    real_p = _profile("chat", digest_tools(None), thinking=False)
     assert profiles_compatible(prewarm_p, real_p) is True
-    assert profiles_compatible(prewarm_p, _profile("agent", chat_digest, False)) is False
+    assert profiles_compatible(prewarm_p, _profile("agent", digest_tools(None), False)) is False
 
 
-def test_agent_prewarm_profile_is_compatible_with_agent_real_turn():
-    agent_digest = _core_tools_digest()
-    prewarm_p = _profile("agent", agent_digest, thinking=True)
-    real_p = _profile("agent", agent_digest, thinking=True)
+@pytest.mark.asyncio
+async def test_agent_prewarm_profile_matches_real_agent_turn_params():
+    """Derived from the captured agent-slot call (core tools, thinking on)
+    vs the real encoding-turn parameters (same core tools, thinking on)."""
+    agent = _prewarm_agent()
+    from RxyCode.RxyCode1_1_0.core.prewarm import prewarm_archive
+
+    await prewarm_archive(agent, "agent")
+    call = agent._captured_calls[0]
+    prewarm_p = _profile("agent", digest_tools(call["tools"]), thinking=True)
+    real_p = _profile("agent", digest_tools(list(CORE_TOOLS)), thinking=True)
     assert profiles_compatible(prewarm_p, real_p) is True
+    # Changing any slot dimension breaks compatibility.
+    assert profiles_compatible(prewarm_p, _profile("chat", digest_tools(call["tools"]), True)) is False
+    assert profiles_compatible(prewarm_p, _profile("agent", digest_tools(None), True)) is False
+
+
+@pytest.mark.asyncio
+async def test_prewarm_signature_equals_real_request_signature():
+    """The prewarm signature for a slot must equal the signature computed
+    from the real request parameters of that slot."""
+    from RxyCode.RxyCode1_1_0.core.prewarm import prewarm_signature
+
+    agent = _prewarm_agent()
+    chat_sig = prewarm_signature(agent, "chat")
+    chat_real = build_prewarm_signature(
+        model="test-model", cwd="/w", mcp="", kind="chat",
+        thinking_enabled=False, tools_digest=digest_tools(None),
+    )
+    assert chat_sig == chat_real
+
+    agent_sig = prewarm_signature(agent, "agent")
+    agent_real = build_prewarm_signature(
+        model="test-model", cwd="/w", mcp="", kind="agent",
+        thinking_enabled=True, tools_digest=_core_tools_digest(),
+    )
+    assert agent_sig == agent_real
+    # Any single dimension change invalidates the slot signature.
+    assert chat_sig != agent_sig
+    assert agent_sig != build_prewarm_signature(
+        model="test-model", cwd="/w", mcp="", kind="agent",
+        thinking_enabled=True, tools_digest=digest_tools(None),
+    )
+    assert agent_sig != build_prewarm_signature(
+        model="test-model", cwd="/w", mcp="", kind="agent",
+        thinking_enabled=False, tools_digest=_core_tools_digest(),
+    )
 
 
 def test_signature_includes_kind_thinking_tools():
