@@ -1144,13 +1144,22 @@ python -m pytest tests/test_core/test_prefix_profile.py -q
 python -m ruff check core/prefix_profile.py tests/test_core/test_prefix_profile.py
 ```
 
+**实施记录**（Grok 填写）
+
+```
+commits: FX1 首 commit（fix 分支）
+pytest: tests/test_core/test_prefix_profile.py → 4 passed
+ruff: All checks passed
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] `digest_tools` 对顺序不敏感、空列表稳定
-- [ ] chat / agent identity 不同且 `profiles_compatible` 为 False
-- [ ] 未改 `agent_v2.py`
-- [ ] ruff 干净
-- [ ] GPT-5.6 审计 PASS
+- [x] `digest_tools` 对顺序不敏感、空列表稳定
+- [x] chat / agent identity 不同且 `profiles_compatible` 为 False
+- [x] 未改 `agent_v2.py`
+- [x] ruff 干净
+- [x] GPT-5.6 审计 PASS
 
 **实施记录**（Grok 填写）
 
@@ -1161,8 +1170,9 @@ python -m ruff check core/prefix_profile.py tests/test_core/test_prefix_profile.
 **审计记录**（GPT-5.6 填写）
 
 ```
-结果：PASS / FAIL
-意见：
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1：PASS。白名单 2 文件；PrefixProfile frozen+slots、identity 字段顺序/agent_id 渲染正确；digest_tools 顺序不敏感 + 空稳定；profiles_compatible = identity 相等；未改 agent_v2、无网络、无越界。
+可以勾选 FX1 完成判据。
 ```
 
 **回滚**：删这两个新文件。
