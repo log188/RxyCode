@@ -242,7 +242,7 @@ def test_unknown_model_request_sends_session_affinity_header(monkeypatch):
     assert not any("x-opencode-session" in k.casefold() for k in h)
 
 
-def test_unknown_model_five_points_on_raw_stream_path(monkeypatch):
+def test_unknown_model_five_points_on_raw_stream_path():
     """Five-point fallback exercised on the real _raw_stream injection path:
     contract None -> default variant + openai-compatible shape + no
     cache_control + no prompt_cache_key + sorted tools. (Session header lives
@@ -258,15 +258,9 @@ def test_unknown_model_five_points_on_raw_stream_path(monkeypatch):
     from RxyCode.RxyCode1_1_0.core.catalog import get_contract, reset_contract_cache
 
     reset_contract_cache()
-    assert get_contract("no-such", "mystery") is None  # rule 0: no contract
-
-    # prove the injection layer actually receives None: pin get_contract to
-    # return None for this model on the real _raw_stream path
-    import RxyCode.RxyCode1_1_0.core.agent_v2 as _av2
-
-    monkeypatch.setattr(
-        _av2, "_owner_cache_contract", lambda owner: None
-    )
+    # rule 0: the REAL catalog lookup returns None for this unknown model,
+    # and it flows into _raw_stream untouched (no monkeypatching)
+    assert get_contract("no-such", "mystery") is None
 
     captured: dict = {}
 
@@ -313,8 +307,11 @@ def test_unknown_model_five_points_on_raw_stream_path(monkeypatch):
     # rule 4: tools sorted by name
     names = [t.get("function", {}).get("name", "") for t in (captured["payload"].get("tools") or [])]
     assert names == sorted(names)
-    # rule 4 (headers): session affinity header shape for an unknown vendor
-    # base_url (carried by the HTTP client layer, FXC4 production path)
+    # rule 4 (headers): session affinity is carried by the HTTP client layer
+    # (_build_llm_from_config -> ChatOpenAI default_headers, FXC4) — the same
+    # AgentV2 instance; the dedicated production-path test above captures the
+    # actual request headers. Here we assert the header shape for an unknown
+    # vendor base_url stays X-Session-Id-only.
     from RxyCode.RxyCode1_1_0.core.agent_v2 import build_session_headers
 
     hdr = build_session_headers("https://api.unknown-vendor.example/v1", "sess-fxc6")

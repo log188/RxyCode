@@ -190,7 +190,7 @@ def test_v4_compaction_behaviour_old_90pct_no_longer_triggers(monkeypatch):
 
     import asyncio
 
-    asyncio.get_event_loop().run_until_complete(agent._maybe_compress_context([]))
+    asyncio.run(agent._maybe_compress_context([]))
     assert called["n"] == 0  # old 90% point does NOT trigger anymore
 
 
@@ -217,7 +217,7 @@ def test_v4_compaction_behaviour_triggers_near_97pct(monkeypatch):
 
     import asyncio
 
-    asyncio.get_event_loop().run_until_complete(agent._maybe_compress_context([]))
+    asyncio.run(agent._maybe_compress_context([]))
     assert called["n"] == 1  # 0.97x budget reached -> compaction fires
 
 
@@ -396,7 +396,7 @@ def test_go_gateway_request_carries_all_three_affinity_headers():
     import asyncio
 
     llm, captured = _fake_llm("https://opencode.ai/zen/go/v1", "ses_test123")
-    asyncio.get_event_loop().run_until_complete(llm.ainvoke("hi"))
+    asyncio.run(llm.ainvoke("hi"))
     h = captured["headers"]
     assert _find_header(h, "x-opencode-session") == "ses_test123"
     assert _find_header(h, "x-session-affinity") == "ses_test123"
@@ -407,7 +407,7 @@ def test_direct_vendor_request_only_sends_session_id():
     import asyncio
 
     llm, captured = _fake_llm("https://api.deepseek.com/v1", "ses_test123")
-    asyncio.get_event_loop().run_until_complete(llm.ainvoke("hi"))
+    asyncio.run(llm.ainvoke("hi"))
     h = captured["headers"]
     assert _find_header(h, "x-session-id") == "ses_test123"
     assert _find_header(h, "x-opencode-session") is None  # never faked
@@ -512,7 +512,7 @@ def test_production_build_path_captures_gateway_request(monkeypatch):
         {"base_url": "https://opencode.ai/zen/go/v1", "api_key": "sk-test",
          "model_name": "deepseek/deepseek-v4-flash"}
     )
-    asyncio.get_event_loop().run_until_complete(llm.ainvoke("hi"))
+    asyncio.run(llm.ainvoke("hi"))
     h = captured["headers"]
     assert _find_header(h, "x-opencode-session") == "ses_test123"
     assert _find_header(h, "x-session-affinity") == "ses_test123"
@@ -585,7 +585,7 @@ def test_production_build_path_direct_vendor_only_session_id(monkeypatch):
         {"base_url": "https://api.deepseek.com/v1", "api_key": "sk-test",
          "model_name": "deepseek/deepseek-v4-flash"}
     )
-    asyncio.get_event_loop().run_until_complete(llm.ainvoke("hi"))
+    asyncio.run(llm.ainvoke("hi"))
     h = captured["headers"]
     assert _find_header(h, "x-session-id") == "ses_test123"
     assert _find_header(h, "x-opencode-session") is None
