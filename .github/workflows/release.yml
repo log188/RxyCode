@@ -253,6 +253,7 @@ jobs:
 
       - name: Attach desktop artifacts to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

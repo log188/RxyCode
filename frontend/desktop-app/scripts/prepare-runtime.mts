@@ -202,8 +202,12 @@ function copyTree(srcRoot: string, dstRoot: string, keep: (src: string) => boole
       const target = join(dst, name)
       const stat = lstatSync(full)
       if (stat.isSymbolicLink()) {
+        // Dereference: copy the link target's *content* as a real file. The
+        // keep predicate was already applied to the link itself, and the
+        // target may live outside pythonRoot (macOS setup-python links
+        // bin/python3 to the framework), so do not re-filter the target.
         const resolved = resolve(src, readlinkSync(full))
-        if (keep(full) && keep(resolved)) {
+        if (keep(full)) {
           copyFileSync(resolved, target)
         }
       } else if (stat.isDirectory()) {
