@@ -284,6 +284,22 @@ async function main(argv: string[]): Promise<void> {
   //    app then carries `RxyCode.RxyCode1_1_0.*` just like a pip install.
   const pythonExe = join(outDir, 'python', pythonRelExe(platform))
   const appDirStaged = join(outDir, 'app')
+
+  // Diagnose the staged interpreter before invoking pip: a stale symlink or a
+  // broken sys.prefix on macOS/Linux manifests as spawnSync status === null,
+  // which otherwise gets reported as a bare "pip install failed".
+  const probeStaged = spawnSync(pythonExe, ['-c', 'import sys; print(sys.prefix, sys.version)'], {
+    cwd: outDir,
+    encoding: 'utf8',
+    timeout: 30_000
+  })
+  if (probeStaged.status !== 0) {
+    fail(
+      `staged python ${pythonExe} failed to run (status ${String(probeStaged.status)}, ` +
+        `error ${String(probeStaged.error)}): ${probeStaged.stderr}${probeStaged.stdout}`
+    )
+  }
+
   const pip = spawnSync(
     pythonExe,
     [
@@ -309,7 +325,8 @@ async function main(argv: string[]): Promise<void> {
   )
   if (pip.status !== 0) {
     fail(
-      `pip install rxycode into runtime failed (status ${String(pip.status)}): ${pip.stderr}${pip.stdout}`
+      `pip install rxycode into runtime failed (status ${String(pip.status)}, ` +
+        `error ${String(pip.error)}): ${pip.stderr}${pip.stdout}`
     )
   }
 

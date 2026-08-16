@@ -44,6 +44,8 @@ __pycache__/
 *.egg-info/
 *.egg
 build/
+!frontend/desktop-app/build/
+!frontend/desktop-app/build/installer.nsh
 /dist/
 .eggs/
 .pytest_cache/
