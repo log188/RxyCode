@@ -199,16 +199,19 @@ jobs:
             glob: |
               frontend/desktop-app/dist/*.exe
               frontend/desktop-app/dist/*.zip
+            find: '-name "*.exe" -o -name "*.zip"'
           - os: macos-latest
             label: mac-dmg
             script: build:mac
             glob: |
               frontend/desktop-app/dist/*.dmg
+            find: '-name "*.dmg" -o -name "*.zip"'
           - os: ubuntu-latest
             label: linux-appimage
             script: build:linux
             glob: |
               frontend/desktop-app/dist/*.AppImage
+            find: '-name "*.AppImage"'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     permissions:
@@ -268,10 +271,12 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          shopt -s globstar
-          artifacts=(${{ matrix.glob }})
+          # macOS runners ship bash 3.2 where globstar is unavailable, so
+          # expand with find instead of relying on ** globbing.
+          mapfile -t artifacts < <(find frontend/desktop-app/dist -maxdepth 1 -type f \( ${{ matrix.find }} \) -print)
           if [ "${#artifacts[@]}" -eq 0 ]; then
             echo "No desktop artifacts produced for ${{ matrix.label }}" >&2
+            ls -la frontend/desktop-app/dist/ >&2 || true
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${artifacts[@]}" --clobber || {
