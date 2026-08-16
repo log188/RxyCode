@@ -57,13 +57,33 @@ function runPython(pythonExe: string, args: string[], cwd?: string): string {
   return result.stdout.trim()
 }
 
-function keepPythonFile(pythonRoot: string, src: string, platform: string): boolean {
+function keepPythonFile(
+  pythonRoot: string,
+  src: string,
+  platform: string,
+  isDirectory: boolean
+): boolean {
   if (src === pythonRoot) return true
   // Split on both separators so layout checks work identically on every OS.
   const parts = relative(pythonRoot, src).split(/[\\/]/)
   const name = basename(src)
   if (name === '__pycache__' || name.endsWith('.pyc') || name.endsWith('.pdb')) return false
+  if (name === 'include' || name === 'share' || name === 'Doc' || name === 'docs') return false
   const top = parts[0]
+  // Directories are kept unless they are a known non-runtime subtree; only
+  // files get the precise name-based filtering. This matters for the POSIX
+  // bin/ and lib/ roots, whose directory names never match the file rules.
+  if (isDirectory) {
+    if (top === 'test' || name === 'test' || name === 'tests' || name === 'idlelib') return false
+    if (name === 'site-packages') {
+      // Keep the directory itself; per-package pruning happens on children.
+      return true
+    }
+    if (top === 'bin' || top === 'lib' || top === 'DLLs' || top === 'Lib' || top === 'Scripts') {
+      return true
+    }
+    return true
+  }
   // Windows layout: DLLs / Lib / Scripts / python*.dll.
   if (platform === 'win32') {
     if (top === 'Doc' || top === 'include' || top === 'libs' || top === 'share') return false
@@ -136,7 +156,8 @@ function keepSitePackages(parts: string[], name: string): boolean {
 
 export { keepPythonFile, keepSitePackages }
 
-function keepVendoredFile(repo: string, src: string): boolean {
+function keepVendoredFile(repo: string, src: string, isDirectory: boolean): boolean {
+  void isDirectory // signature parity with keepPythonFile
   if (src === repo) return true
   const parts = relative(repo, src).split(/[\\/]/)
   const name = basename(src)
@@ -191,11 +212,15 @@ function dirSize(dir: string): number {
 // wrappers) are dereferenced and copied as real files: a staged runtime must
 // be self-contained and must not keep a dangling pointer back to the build
 // machine's interpreter.
-function copyTree(srcRoot: string, dstRoot: string, keep: (src: string) => boolean): void {
+function copyTree(
+  srcRoot: string,
+  dstRoot: string,
+  keep: (src: string, isDirectory: boolean) => boolean
+): void {
   const stack: Array<{ src: string; dst: string }> = [{ src: srcRoot, dst: dstRoot }]
   while (stack.length > 0) {
     const { src, dst } = stack.pop() as { src: string; dst: string }
-    if (!keep(src)) continue
+    if (!keep(src, true)) continue
     mkdirSync(dst, { recursive: true })
     for (const name of readdirSync(src)) {
       const full = join(src, name)
@@ -207,12 +232,12 @@ function copyTree(srcRoot: string, dstRoot: string, keep: (src: string) => boole
         // target may live outside pythonRoot (macOS setup-python links
         // bin/python3 to the framework), so do not re-filter the target.
         const resolved = resolve(src, readlinkSync(full))
-        if (keep(full)) {
+        if (keep(full, false)) {
           copyFileSync(resolved, target)
         }
       } else if (stat.isDirectory()) {
         stack.push({ src: full, dst: target })
-      } else if (keep(full)) {
+      } else if (keep(full, false)) {
         cpSync(full, target)
       }
     }
@@ -280,8 +305,10 @@ async function main(argv: string[]): Promise<void> {
   rmSync(outDir, { recursive: true, force: true })
   mkdirSync(join(outDir, 'python'), { recursive: true })
   mkdirSync(join(outDir, 'app'), { recursive: true })
-  copyTree(pythonRoot, join(outDir, 'python'), (src) => keepPythonFile(pythonRoot, src, platform))
-  copyTree(repo, join(outDir, 'app'), (src) => keepVendoredFile(repo, src))
+  copyTree(pythonRoot, join(outDir, 'python'), (src, isDir) =>
+    keepPythonFile(pythonRoot, src, platform, isDir)
+  )
+  copyTree(repo, join(outDir, 'app'), (src, isDir) => keepVendoredFile(repo, src, isDir))
 
   // 4) install the vendored RxyCode package into the runtime's site-packages
   //    (offline: no deps, no build isolation, no index access). The packaged

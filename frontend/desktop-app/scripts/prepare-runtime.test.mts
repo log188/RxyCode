@@ -3,17 +3,24 @@ import assert from 'node:assert/strict'
 import { keepPythonFile } from './prepare-runtime.mts'
 
 function win(src: string): boolean {
-  return keepPythonFile('C:/Python', src, 'win32')
+  return keepPythonFile('C:/Python', src, 'win32', false)
 }
 
 function posix(src: string): boolean {
-  return keepPythonFile('/opt/python', src, 'darwin')
+  return keepPythonFile('/opt/python', src, 'darwin', false)
 }
 
 function linux(src: string): boolean {
-  return keepPythonFile('/opt/python', src, 'linux')
+  return keepPythonFile('/opt/python', src, 'linux', false)
 }
 
+function winDir(src: string): boolean {
+  return keepPythonFile('C:/Python', src, 'win32', true)
+}
+
+function posixDir(src: string): boolean {
+  return keepPythonFile('/opt/python', src, 'darwin', true)
+}
 test('win32 keeps interpreter + stdlib, drops debug/Docs/test', () => {
   assert.equal(win('C:/Python/python.exe'), true)
   assert.equal(win('C:/Python/pythonw.exe'), true)
@@ -54,4 +61,19 @@ test('linux uses the same POSIX layout', () => {
   assert.equal(linux('/opt/python/lib/libpython3.13.so.1.0'), true)
   assert.equal(linux('/opt/python/lib/python3.13/site-packages/pydantic'), true)
   assert.equal(linux('/opt/python/lib/python3.13/site-packages/ruff'), false)
+})
+
+test('directory roots (bin/lib/Lib/DLLs) are always traversed', () => {
+  // A directory that merely carries python executables must not be pruned
+  // by the file-level name rules (this was the mac/linux ENOENT root cause).
+  assert.equal(posixDir('/opt/python/bin'), true)
+  assert.equal(posixDir('/opt/python/lib'), true)
+  assert.equal(posixDir('/opt/python/lib/python3.14'), true)
+  assert.equal(posixDir('/opt/python/lib/python3.14/site-packages'), true)
+  assert.equal(winDir('C:/Python/Lib'), true)
+  assert.equal(winDir('C:/Python/DLLs'), true)
+  assert.equal(winDir('C:/Python/Scripts'), true)
+  // Pruned subtrees stay pruned even as directories.
+  assert.equal(posixDir('/opt/python/lib/python3.14/test'), false)
+  assert.equal(winDir('C:/Python/Lib/site-packages/pytest'), true)
 })
