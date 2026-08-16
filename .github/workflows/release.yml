@@ -187,10 +187,32 @@ jobs:
           fi
 
   desktop:
-    name: Build desktop app (win zip + nsis)
-    runs-on: windows-latest
-    timeout-minutes: 90
+    name: Build desktop app (${{ matrix.label }})
     needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: win-nsis-zip
+            script: build:win
+            glob: |
+              frontend/desktop-app/dist/*.exe
+              frontend/desktop-app/dist/*.zip
+          - os: macos-latest
+            label: mac-dmg
+            script: build:mac
+            glob: |
+              frontend/desktop-app/dist/*.dmg
+          - os: ubuntu-latest
+            label: linux-appimage
+            script: build:linux
+            glob: |
+              frontend/desktop-app/dist/*.AppImage
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -210,18 +232,36 @@ jobs:
         working-directory: frontend/desktop-app
         run: npm ci
 
-      - name: Build portable zip + installer
+      - name: Build desktop app
         working-directory: frontend/desktop-app
         env:
           RXYCODE_REPO_DIR: ${{ github.workspace }}
-        run: npm run build:win
+        run: npm run ${{ matrix.script }}
 
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rxycode-desktop-windows
-          path: |
-            frontend/desktop-app/dist/*.zip
-            frontend/desktop-app/dist/*.exe
+          name: rxycode-desktop-${{ matrix.label }}
+          path: ${{ matrix.glob }}
           if-no-files-found: error
           retention-days: 7
+
+      - name: Attach desktop artifacts to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          shopt -s globstar
+          artifacts=(${{ matrix.glob }})
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo "No desktop artifacts produced for ${{ matrix.label }}" >&2
+            exit 1
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${artifacts[@]}" --clobber || {
+            echo "Release $GITHUB_REF_NAME not found yet; creating it with the desktop assets."
+            gh release create "$GITHUB_REF_NAME" "${artifacts[@]}" \
+              --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          }

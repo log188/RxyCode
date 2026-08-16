@@ -165,6 +165,10 @@ Plan cards offer **是，实施此计划**, a **补充说明** field, and **跳�
   <img src="docs/images/gui-plan-card.png" alt="Plan card with Build, Revise, and Skip" width="800">
 </p>
 
+> **Full GUI guide:** installers, custom install directory, desktop shortcut,
+> auto-launching the backend, and every screen is documented in
+> [docs/GUI.md](docs/GUI.md) (中文版见 [README.zh-CN.md](README.zh-CN.md)).
+
 ## Architecture
 
 ```
