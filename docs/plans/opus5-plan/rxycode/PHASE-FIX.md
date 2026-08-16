@@ -1914,10 +1914,18 @@ ruff: All checks passed
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] 无 `_agent_namespace` 时字符串与改造前格式相同（测试钉死拼接模板）
-- [ ] 设置合法 ns 后多 `|ns`
-- [ ] 非法 ns 抛错
-- [ ] GPT-5.6 审计 PASS
+- [x] 无 `_agent_namespace` 时字符串与改造前格式相同（测试钉死拼接模板）
+- [x] 设置合法 ns 后多 `|ns`
+- [x] 非法 ns 抛错
+- [x] GPT-5.6 审计 PASS
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1：PASS。无 ns/None 时模板逐字节一致（测试真实 sha256 钉死）；合法 ns 追加 |ns（正则 ^[a-z0-9_.-]{1,64}$）；非法（大写/空格/中文/>64/空/|）ValueError；ns 只进应用缓存键，未写 system/SharedReadonlySegment；11 测试绿、ruff 通过。
+可以勾选 FX9 完成判据。
+```
 
 **Commit**
 
