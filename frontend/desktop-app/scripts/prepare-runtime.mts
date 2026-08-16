@@ -16,11 +16,14 @@
  */
 import { spawnSync } from 'node:child_process'
 import {
+  copyFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   rmSync,
   statSync,
   writeFileSync
@@ -183,6 +186,11 @@ function dirSize(dir: string): number {
 // staging layout (repo -> repo/frontend/desktop-app/build/runtime/<plat>/app)
 // is inherently nested, so we walk the tree ourselves and skip excluded
 // paths explicitly. The keep predicates are shared with the unit tests.
+//
+// Symbolic links (macOS/Linux `bin/python3`, `lib/libpython*.dylib`, pip
+// wrappers) are dereferenced and copied as real files: a staged runtime must
+// be self-contained and must not keep a dangling pointer back to the build
+// machine's interpreter.
 function copyTree(srcRoot: string, dstRoot: string, keep: (src: string) => boolean): void {
   const stack: Array<{ src: string; dst: string }> = [{ src: srcRoot, dst: dstRoot }]
   while (stack.length > 0) {
@@ -192,8 +200,13 @@ function copyTree(srcRoot: string, dstRoot: string, keep: (src: string) => boole
     for (const name of readdirSync(src)) {
       const full = join(src, name)
       const target = join(dst, name)
-      const stat = statSync(full)
-      if (stat.isDirectory()) {
+      const stat = lstatSync(full)
+      if (stat.isSymbolicLink()) {
+        const resolved = resolve(src, readlinkSync(full))
+        if (keep(full) && keep(resolved)) {
+          copyFileSync(resolved, target)
+        }
+      } else if (stat.isDirectory()) {
         stack.push({ src: full, dst: target })
       } else if (keep(full)) {
         cpSync(full, target)
