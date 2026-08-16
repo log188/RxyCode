@@ -20,6 +20,7 @@ from RxyCode.RxyCode1_1_0 import main
 def test_resolve_desktop_exe_explicit_dir(tmp_path, monkeypatch):
     exe = tmp_path / "rxycode-desktop.exe"
     exe.write_text("", encoding="utf-8")
+    exe.chmod(0o755)  # packaged builds are executable; os.access(X_OK) gates resolution
     resolved = main._resolve_desktop_executable(desktop_dir=str(tmp_path))
     assert resolved == str(exe)
 
@@ -30,6 +31,7 @@ def test_resolve_desktop_exe_default_dir(monkeypatch, tmp_path):
     desktop.mkdir(parents=True)
     exe = desktop / "rxycode-desktop.exe"
     exe.write_text("", encoding="utf-8")
+    exe.chmod(0o755)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     resolved = main._resolve_desktop_executable()
@@ -48,6 +50,7 @@ def test_resolve_desktop_exe_posix_name(monkeypatch, tmp_path):
     desktop.mkdir(parents=True)
     exe = desktop / "rxycode-desktop"
     exe.write_text("", encoding="utf-8")
+    exe.chmod(0o755)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     resolved = main._resolve_desktop_executable()

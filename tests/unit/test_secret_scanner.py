@@ -54,7 +54,9 @@ def test_secret_scanner_checks_uploaded_report_formats_and_bearer_tokens(tmp_pat
         encoding="utf-8",
     )
 
-    assert scan(tmp_path) == [
+    # scan() walks with rglob, whose ordering is filesystem-dependent; sort
+    # both sides so the assertion does not depend on directory enumeration.
+    assert sorted(scan(tmp_path)) == [
         (Path("conpty.log"), 1, "bearer-token"),
         (Path("junit.xml"), 1, "bearer-token"),
     ]
