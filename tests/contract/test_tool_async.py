@@ -229,8 +229,12 @@ async def test_open_file_async_windows_startfile_fire_and_forget(monkeypatch):
 
         monkeypatch.setattr(of_mod.os, "startfile", fake_startfile)
         out = await open_file_async(tmp)
-        assert out == f"[opened {tmp}]"
-        assert calls == [tmp], "startfile must be the only action"
+        # The tool resolves the path (realpath), which on Windows can expand
+        # to the 8.3 short name (C:\Users\RUNNER~1\...) for long profile
+        # names; compare against the resolved form instead of the raw tmp.
+        resolved = str(Path(tmp).resolve())
+        assert out == f"[opened {resolved}]"
+        assert calls == [resolved], "startfile must receive the resolved path"
 
         def failing_startfile(path):
             raise OSError("no handler")
