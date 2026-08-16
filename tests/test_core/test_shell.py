@@ -6,9 +6,14 @@ from unittest.mock import patch, MagicMock
 
 
 class TestShellExecutor:
-    def _make_executor(self):
+    def _make_executor(self, platform: str = "win32"):
         from RxyCode.RxyCode1_1_0.utils.shell import ShellExecutor
-        return ShellExecutor()
+
+        # The translation tests assert Windows behavior (powershell/cmd
+        # mapping); pin sys.platform so they run identically on every CI OS
+        # instead of only on Windows runners.
+        with patch("sys.platform", platform):
+            return ShellExecutor()
 
     def test_init(self):
         executor = self._make_executor()
