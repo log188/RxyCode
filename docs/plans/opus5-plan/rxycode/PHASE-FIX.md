@@ -1984,10 +1984,18 @@ ruff: All checks passed
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] 含 history 的 dict 构造失败
-- [ ] fields 名称集合不含 messages/history/thinking
-- [ ] 无对 agent_v2 运行时行为变化
-- [ ] GPT-5.6 审计 PASS
+- [x] 含 history 的 dict 构造失败
+- [x] fields 名称集合不含 messages/history/thinking
+- [x] 无对 agent_v2 运行时行为变化
+- [x] GPT-5.6 审计 PASS
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1：PASS。HandoffEnvelope frozen+slots、5 字段；from_dict 拒绝 messages/history/thinking/reasoning_content/tool_calls + 缺字段（TypeError）；文档测试断言字段集无 transcript 字段；无 agent_v2 行为变化、无翻译器/Coordinator。
+可以勾选 FX10 完成判据。
+```
 
 **Commit**
 
