@@ -102,49 +102,19 @@ def test_bench_compare_ok_when_current_meets_baseline(tmp_path):
 
 
 def test_bench_compare_fails_when_stream_regressed(tmp_path):
-    base = tmp_path / "base.json"
-    cur = tmp_path / "cur.json"
-    # A baseline with an optimistic stream time makes the current run FAIL
-    # the relative stream criterion (current > baseline * 1.0). The current
-    # file is written directly (not measured) because a real measurement can
-    # legitimately report 0.0s on fast CI runners, which would mask the
-    # regression this test must detect.
-    base.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "generated_at": "2026-08-11T00:00:00",
-                "rounds": 1,
-                "env": {"python": "3", "platform": "x", "uvloop": False, "commit": "x"},
-                "metrics": {
-                    "interrupt_latency_s": 0.5,
-                    "tool_timeout_kill_rate": 1.0,
-                    "stream_10k_s": 0.0001,
-                    "concurrent_2x_speedup": 2.0,
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    cur.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "generated_at": "2026-08-11T00:00:01",
-                "rounds": 1,
-                "env": {"python": "3", "platform": "x", "uvloop": False, "commit": "x"},
-                "metrics": {
-                    "interrupt_latency_s": 0.5,
-                    "tool_timeout_kill_rate": 1.0,
-                    "stream_10k_s": 0.5,
-                    "concurrent_2x_speedup": 2.0,
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    result = _run_bench("--compare", str(base), "--out", str(cur))
-    assert result.returncode == 2, result.stdout + result.stderr
+    # The stream criterion is a relative check: value > baseline * 1.5 + 1e-9
+    # must FAIL. We test the gate logic directly instead of through a real
+    # measurement, because fast CI runners can legitimately measure
+    # stream_10k_s == 0.0, which can never exceed any baseline and would make
+    # the integration path undetectable for the regression this test guards.
+    from RxyCode.RxyCode1_1_0.scripts.bench_async import _check_metric
+
+    fails = _check_metric("stream_10k_s", 0.001, baseline=0.0)
+    assert len(fails) == 1, fails
+    assert "stream_10k_s" in fails[0]
+
+    ok = _check_metric("stream_10k_s", 0.001, baseline=0.01)
+    assert ok == []
 
 
 def test_bench_invalid_sessions_is_rejected(tmp_path):
