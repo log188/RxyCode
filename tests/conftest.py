@@ -41,7 +41,7 @@ if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
     if _canonical is None:
         _canonical = _types.ModuleType("RxyCode.RxyCode1_1_0")
         sys.modules["RxyCode.RxyCode1_1_0"] = _canonical
-    setattr(sys.modules["RxyCode"], "RxyCode1_1_0", _canonical)
+    sys.modules["RxyCode"].RxyCode1_1_0 = _canonical  # noqa: B010 - dynamic module namespace
     _canonical.__file__ = str(_checkout_root / "__init__.py")
     _canonical.__path__ = [str(_checkout_root)]
     _canonical.__package__ = "RxyCode.RxyCode1_1_0"

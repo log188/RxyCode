@@ -14,7 +14,7 @@ def test_protocol_tui_keeps_recovery_events_in_tool_order() -> None:
     call_two = tui.write_tool_call("search", {"query": "missing"}, "call-2")
     tui.write_tool_result("found", "success", call_two)
 
-    methods = [getattr(item, "method") for item in emitted]
+    methods = [item.method for item in emitted]
     assert methods == [
         "event/tool_begin",
         "event/tool_end",
