@@ -47,16 +47,20 @@ def _ctx_agent() -> AgentV2:
 def test_zero_blocks_leave_memory_ctx_empty():
     """append([]) / no call must both produce an empty suffix — the user
     message stays byte-identical to the untouched call."""
+    from unittest.mock import patch
+    from datetime import datetime
     from RxyCode.RxyCode1_1_0.core.prompts.registry import build_user_message
 
     agent = _ctx_agent()
     assert agent._turn_context_suffix() == ""
     agent.append_turn_context([])
     assert agent._turn_context_suffix() == ""
-    assert (
-        build_user_message("", "hi", "")
-        == build_user_message("", "hi", agent._turn_context_suffix())
-    )
+    fixed = datetime(2026, 1, 1, 12, 0, 0)
+    with patch("RxyCode.RxyCode1_1_0.core.prompts.registry.datetime") as mock_dt:
+        mock_dt.now.return_value = fixed
+        msg_a = build_user_message("", "hi", "")
+        msg_b = build_user_message("", "hi", agent._turn_context_suffix())
+    assert msg_a == msg_b
     agent.append_turn_context([{"kind": "eko", "text": "  "}])
     assert agent._turn_context_suffix() == ""
 
