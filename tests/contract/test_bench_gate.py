@@ -105,7 +105,10 @@ def test_bench_compare_fails_when_stream_regressed(tmp_path):
     base = tmp_path / "base.json"
     cur = tmp_path / "cur.json"
     # A baseline with an optimistic stream time makes the current run FAIL
-    # the relative stream criterion (current > baseline * 1.0).
+    # the relative stream criterion (current > baseline * 1.0). The current
+    # file is written directly (not measured) because a real measurement can
+    # legitimately report 0.0s on fast CI runners, which would mask the
+    # regression this test must detect.
     base.write_text(
         json.dumps(
             {
@@ -123,7 +126,23 @@ def test_bench_compare_fails_when_stream_regressed(tmp_path):
         ),
         encoding="utf-8",
     )
-    assert _run_bench("--out", str(cur), "--rounds", "1").returncode == 0
+    cur.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-08-11T00:00:01",
+                "rounds": 1,
+                "env": {"python": "3", "platform": "x", "uvloop": False, "commit": "x"},
+                "metrics": {
+                    "interrupt_latency_s": 0.5,
+                    "tool_timeout_kill_rate": 1.0,
+                    "stream_10k_s": 0.5,
+                    "concurrent_2x_speedup": 2.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     result = _run_bench("--compare", str(base), "--out", str(cur))
     assert result.returncode == 2, result.stdout + result.stderr
 
