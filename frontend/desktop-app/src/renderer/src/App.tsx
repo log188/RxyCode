@@ -5,6 +5,7 @@ import QuestionModal from './components/QuestionModal'
 import ApprovalRulesModal from './components/ApprovalRulesModal'
 import ChatArea from './components/ChatArea'
 import Composer from './components/Composer'
+import GoalDialog from './components/GoalDialog'
 import SessionList from './components/SessionList'
 import SettingsPage from './components/SettingsPage'
 import TaskHeader from './components/TaskHeader'
@@ -14,6 +15,15 @@ import { useModels } from './hooks/useModels'
 import type { TimelineItem } from './lib/conversationStore.mts'
 import { canTrashTask } from './lib/taskActions.mts'
 import { modelStatusLabel } from './lib/taskPresentation.mts'
+import { isClearGoalText, parseComposerCommand } from './lib/composerCommands.mts'
+import { applyGoalToPrompt, loadSessionGoals, saveSessionGoals } from './lib/goalSettings.mts'
+import {
+  buildImplementPrompt,
+  buildRevisePrompt,
+  planModeInstruction,
+  type AgentRunMode
+} from './lib/planDocument.mts'
+import { latestPlanFromTimeline } from './lib/planTimeline.mts'
 import {
   effectiveWorkspaceRoot,
   loadWorkspaceSettings,
@@ -54,6 +64,11 @@ function App(): React.JSX.Element {
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const [inspectorItem, setInspectorItem] = useState<TimelineItem | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [agentModeBySession, setAgentModeBySession] = useState<Record<string, AgentRunMode>>({})
+  const [sessionGoals, setSessionGoals] = useState(() => loadSessionGoals(window.localStorage))
+  const [goalOpen, setGoalOpen] = useState(false)
+  const [goalDraft, setGoalDraft] = useState('')
+  const [skippedPlanIds, setSkippedPlanIds] = useState<Record<string, true>>({})
   const toastTimerRef = useRef<number | null>(null)
   const conversation = useConversation(platform, info, status, workspaceSettings.workspaceRoot)
   const activeSessionId = conversation.state.activeSessionId
@@ -77,6 +92,22 @@ function App(): React.JSX.Element {
     refreshKey: settingsOpen ? 1 : 0
   })
   const selectedTaskModel = activeSession?.modelId ?? models.snapshot?.active ?? ''
+  const agentMode: AgentRunMode =
+    activeSessionId === null ? 'build' : (agentModeBySession[activeSessionId] ?? 'build')
+  const activeGoal = activeSessionId === null ? '' : (sessionGoals[activeSessionId] ?? '')
+  const activeTimeline =
+    activeSessionId !== null ? (conversation.state.timelineBySession[activeSessionId] ?? []) : []
+  const latestPlan = latestPlanFromTimeline(activeTimeline)
+  const showPlanActions =
+    latestPlan !== null &&
+    skippedPlanIds[latestPlan.itemId] !== true &&
+    agentMode === 'plan' &&
+    !running
+
+  const setAgentMode = (next: AgentRunMode): void => {
+    if (activeSessionId === null) return
+    setAgentModeBySession((current) => ({ ...current, [activeSessionId]: next }))
+  }
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -99,7 +130,7 @@ function App(): React.JSX.Element {
     setPreferences((current) => ({ ...current, permissionMode: next }))
   }
 
-  const pickWorkspace = async (): Promise<void> => {
+  const pickWorkspace = async (): Promise<boolean> => {
     setPickingWorkspace(true)
     try {
       const picked = await platform.pickWorkspaceDirectory()
@@ -107,7 +138,9 @@ function App(): React.JSX.Element {
         const next: WorkspaceSettings = { workspaceRoot: normalizeWorkspaceRoot(picked) }
         setWorkspaceSettings(next)
         saveWorkspaceSettings(next, window.localStorage)
+        return true
       }
+      return false
     } finally {
       setPickingWorkspace(false)
     }
@@ -161,6 +194,76 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', closeNavigationOnEscape, true)
   }, [navOpen])
 
+  const persistGoal = (sessionId: string, value: string): void => {
+    setSessionGoals((current) => {
+      const next = { ...current }
+      const trimmed = value.trim()
+      if (trimmed === '') delete next[sessionId]
+      else next[sessionId] = trimmed
+      saveSessionGoals(next, window.localStorage)
+      return next
+    })
+  }
+
+  const openGoalDialog = (): void => {
+    setGoalDraft(activeGoal)
+    setGoalOpen(true)
+  }
+
+  const sendTurn = async (displayText: string, mode: AgentRunMode, promptText?: string): Promise<void> => {
+    setToast(null)
+    const previousPlan = mode === 'plan' ? latestPlan?.document ?? null : null
+    let body = promptText
+    if (body === undefined) {
+      body = mode === 'plan'
+        ? (previousPlan === null ? `${planModeInstruction()}\n\n${displayText}` : buildRevisePrompt(previousPlan, displayText))
+        : displayText
+    }
+    await conversation.sendMessage(displayText, {
+      permissionMode,
+      mode,
+      promptText: applyGoalToPrompt(activeGoal, body)
+    })
+  }
+
+  const handleComposerSend = async (text: string): Promise<void> => {
+    const command = parseComposerCommand(text)
+    if (command?.kind === 'slash_plan') {
+      setAgentMode('plan')
+      if (command.rest === '') {
+        showToast('已开启计划模式')
+        return
+      }
+      await sendTurn(command.rest, 'plan')
+      return
+    }
+    if (command?.kind === 'slash_build') {
+      setAgentMode('build')
+      if (command.rest === '') {
+        showToast('已切换到 Agent 模式')
+        return
+      }
+      await sendTurn(command.rest, 'build')
+      return
+    }
+    if (command?.kind === 'slash_goal') {
+      if (command.rest === '') {
+        openGoalDialog()
+        return
+      }
+      if (activeSessionId === null) return
+      if (isClearGoalText(command.rest)) {
+        persistGoal(activeSessionId, '')
+        showToast('已清除目标')
+        return
+      }
+      persistGoal(activeSessionId, command.rest)
+      showToast('已保存目标')
+      return
+    }
+    await sendTurn(text, agentMode)
+  }
+
   const handleCreate = async (): Promise<void> => {
     // Navigation is independent from the session/new RPC. Close the drawer
     // immediately so a slow server warm cannot make the click look stuck.
@@ -172,6 +275,30 @@ function App(): React.JSX.Element {
       providerId: selected?.provider_id ?? null
     })
     showToast(created ? '任务已创建' : '任务创建失败，请检查连接')
+  }
+
+  const handlePickWorkspaceForChat = async (): Promise<void> => {
+    setPickingWorkspace(true)
+    try {
+      const picked = await platform.pickWorkspaceDirectory()
+      if (picked === null) return
+      const workspaceRoot = normalizeWorkspaceRoot(picked)
+      if (workspaceRoot === null) return
+      const next: WorkspaceSettings = { workspaceRoot }
+      setWorkspaceSettings(next)
+      saveWorkspaceSettings(next, window.localStorage)
+      setNavOpen(false)
+      showToast('正在用所选项目创建任务…')
+      const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
+      const created = await conversation.createSession({
+        modelId: selectedTaskModel || undefined,
+        providerId: selected?.provider_id || undefined,
+        workspaceRoot
+      })
+      showToast(created ? '已在新项目中创建任务' : '工作区已保存，但任务创建失败')
+    } finally {
+      setPickingWorkspace(false)
+    }
   }
 
   const handleTrash = async (sessionId: string): Promise<void> => {
@@ -296,17 +423,47 @@ function App(): React.JSX.Element {
             </div>
           )}
           <ChatArea
-            timeline={activeSessionId !== null ? (conversation.state.timelineBySession[activeSessionId] ?? []) : []}
+            timeline={activeTimeline}
             running={running}
             error={activeSessionId !== null ? (conversation.state.errorBySession[activeSessionId] ?? null) : null}
             progress={activeSessionId !== null ? (conversation.state.progressBySession[activeSessionId] ?? null) : null}
             onOpenInspector={openInspector}
+            activePlan={latestPlan === null ? null : { ...latestPlan, showActions: showPlanActions }}
+            onBuildPlan={() => {
+              if (latestPlan === null) return
+              setAgentMode('build')
+              void sendTurn('是，实施此计划', 'build', buildImplementPrompt(latestPlan.document))
+            }}
+            onRevisePlan={(feedback) => {
+              setAgentMode('plan')
+              const previous = latestPlan?.document
+              void sendTurn(
+                feedback,
+                'plan',
+                previous === undefined ? undefined : buildRevisePrompt(previous, feedback)
+              )
+            }}
+            onSkipPlan={() => {
+              if (latestPlan !== null) {
+                setSkippedPlanIds((current) => ({ ...current, [latestPlan.itemId]: true }))
+              }
+            }}
           />
           <Composer
             disabled={status !== 'running' || activeSessionId === null}
             running={running}
-            onSend={(text) => void conversation.sendMessage(text, permissionMode)}
+            agentMode={agentMode}
+            goal={activeGoal}
+            hasPlan={latestPlan !== null && skippedPlanIds[latestPlan.itemId] !== true}
+            onSend={(text) => void handleComposerSend(text)}
             onStop={() => void conversation.interrupt()}
+            onTogglePlanMode={() => {
+              const next: AgentRunMode = agentMode === 'plan' ? 'build' : 'plan'
+              setAgentMode(next)
+              showToast(next === 'plan' ? '已开启计划模式' : '已关闭计划模式')
+            }}
+            onOpenGoal={openGoalDialog}
+            onPickWorkspace={() => void handlePickWorkspaceForChat()}
             models={models.snapshot?.models ?? []}
             modelsLoading={models.loading || (conversation.protocolClient !== null && models.snapshot === null)}
             selectedModelId={selectedTaskModel}
@@ -405,6 +562,23 @@ function App(): React.JSX.Element {
           onLanguageChange={setLanguage}
         />
       )}
+      <GoalDialog
+        open={goalOpen}
+        value={goalDraft}
+        onChange={setGoalDraft}
+        onClose={() => setGoalOpen(false)}
+        onSave={() => {
+          if (activeSessionId !== null) persistGoal(activeSessionId, goalDraft)
+          setGoalOpen(false)
+          showToast(goalDraft.trim() === '' ? '已清除目标' : '已保存目标')
+        }}
+        onClear={() => {
+          setGoalDraft('')
+          if (activeSessionId !== null) persistGoal(activeSessionId, '')
+          setGoalOpen(false)
+          showToast('已清除目标')
+        }}
+      />
       {pendingFullAuto && (
         <div className="confirm-overlay" role="presentation">
           <div className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="full-auto-title">

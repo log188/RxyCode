@@ -65,19 +65,29 @@ import { PerformanceTraceRegistry, publishPerformanceTrace } from '../lib/perfor
 import { isRecoverableConnectionError } from '../lib/taskActions.mts'
 import { createNotificationBatcher, type NotificationBatcher } from '../lib/notificationBatch.mts'
 
+export interface SendMessageOptions {
+  permissionMode?: PermissionMode
+  mode?: 'plan' | 'build' | 'compose'
+  promptText?: string
+}
+
+function isPermissionMode(value: unknown): value is PermissionMode {
+  return value === 'confirm_all' || value === 'auto_edit' || value === 'full_auto'
+}
+
 export interface UseConversationResult {
   state: ConversationState
   connectionError: string | null
   protocolClient: ProtocolClient | null
   approvalRules: ApprovalRule[]
-  createSession: (model?: { modelId?: string; providerId?: string | null }) => Promise<boolean>
+  createSession: (model?: { modelId?: string; providerId?: string | null; workspaceRoot?: string }) => Promise<boolean>
   selectSession: (sessionId: string) => void
   renameSession: (sessionId: string, title: string) => Promise<boolean>
   trashSession: (sessionId: string) => Promise<boolean>
   restoreSession: (sessionId: string) => Promise<boolean>
   purgeSession: (sessionId: string) => Promise<boolean>
   setSessionModel: (sessionId: string, modelId: string, providerId?: string | null) => Promise<boolean>
-  sendMessage: (text: string, permissionMode?: PermissionMode) => Promise<void>
+  sendMessage: (text: string, permissionModeOrOptions?: PermissionMode | SendMessageOptions) => Promise<void>
   interrupt: () => Promise<void>
   resolveApproval: (requestId: string, decision: 'approved' | 'rejected') => void
   saveAlwaysAllowRule: (
@@ -539,7 +549,7 @@ export function useConversation(
     }
   }, [])
 
-  const createSession = useCallback(async (model?: { modelId?: string; providerId?: string | null }): Promise<boolean> => {
+  const createSession = useCallback(async (model?: { modelId?: string; providerId?: string | null; workspaceRoot?: string }): Promise<boolean> => {
     const ready = connectionReadyRef.current
     if (ready !== null && !(await ready)) return false
     const client = await ensureClient()
@@ -552,7 +562,7 @@ export function useConversation(
         model_id?: string | null
         provider_id?: string | null
       }>('session/new', {
-        workspace_root: workspaceRootOverride ?? currentInfo.repoRoot,
+        workspace_root: model?.workspaceRoot ?? workspaceRootOverride ?? currentInfo.repoRoot,
         ...(model?.modelId ? { model: model.modelId } : {}),
         ...(model?.providerId ? { provider_id: model.providerId } : {})
       }, 10_000)
@@ -721,10 +731,17 @@ export function useConversation(
     return connectionRef.current?.client ?? null
   }, [])
 
-  const sendMessage = useCallback(async (text: string, permissionMode?: PermissionMode): Promise<void> => {
-    const trimmed = text.trim()
+  const sendMessage = useCallback(async (
+    text: string,
+    permissionModeOrOptions?: PermissionMode | SendMessageOptions
+  ): Promise<void> => {
+    const options: SendMessageOptions = isPermissionMode(permissionModeOrOptions)
+      ? { permissionMode: permissionModeOrOptions }
+      : (permissionModeOrOptions ?? {})
+    const displayText = text.trim()
+    const rpcText = (options.promptText ?? displayText).trim()
     const sessionId = stateRef.current.activeSessionId
-    if (sessionId === null || trimmed === '') return
+    if (sessionId === null || displayText === '' || rpcText === '') return
     const recoveredTurn = recoverableSessionsRef.current.delete(sessionId)
     const timeline = stateRef.current.timelineBySession[sessionId] ?? []
     const latestPromptIndex = timeline.findLastIndex((item) => item.kind === 'user_prompt')
@@ -744,7 +761,7 @@ export function useConversation(
     const trace = performanceTraceRef.current
     trace.startRun(sessionId)
     trace.mark(sessionId, 'send_click')
-    const mention = parseLeadingAgentMentions(trimmed)
+    const mention = parseLeadingAgentMentions(displayText)
     if (mention !== null) {
       if (mention.prompt === '') {
         setState((current) => applyError(current, sessionId, 'An @agent mention requires a task prompt.'))
@@ -752,7 +769,7 @@ export function useConversation(
       }
       setState((current) =>
         beginMentionDispatch(
-          beginAssistantMessage(addUserMessage(current, sessionId, trimmed), sessionId),
+          beginAssistantMessage(addUserMessage(current, sessionId, displayText), sessionId),
           sessionId,
           mention.agentIds
         )
@@ -778,7 +795,7 @@ export function useConversation(
       }
       return
     }
-    setState((current) => addUserMessage(current, sessionId, trimmed))
+    setState((current) => addUserMessage(current, sessionId, displayText))
     setState((current) => beginAssistantMessage(current, sessionId))
     try {
       trace.mark(sessionId, 'rpc_sent')
@@ -791,8 +808,9 @@ export function useConversation(
       // safety net so the renderer cannot retain a request forever.
       }>('session/prompt', {
         session_id: sessionId,
-        text: trimmed,
-        ...(permissionMode === undefined ? {} : { permission_mode: permissionMode })
+        text: rpcText,
+        ...(options.mode === undefined ? {} : { mode: options.mode }),
+        ...(options.permissionMode === undefined ? {} : { permission_mode: options.permissionMode })
       }, 15 * 60_000)
       trace.mark(sessionId, 'rpc_received')
       trace.mark(sessionId, 'final')

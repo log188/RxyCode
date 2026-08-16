@@ -9,7 +9,10 @@ import {
   X
 } from 'lucide-react'
 import { useEffect, useRef } from 'react'
+import PlanDocumentCard from './PlanDocumentCard'
 import type { TimelineItem } from '../lib/conversationStore.mts'
+import { looksLikePlanDocument, parsePlanDocument, type PlanDocument } from '../lib/planDocument.mts'
+import { hasLaterPlanFinal } from '../lib/planTimeline.mts'
 import { shouldShowStartupProgress, visibleRunProgress } from '../lib/taskPresentation.mts'
 
 interface ChatAreaProps {
@@ -18,6 +21,10 @@ interface ChatAreaProps {
   error: string | null
   progress?: string | null
   onOpenInspector?: (item: TimelineItem) => void
+  activePlan?: { itemId: string; document: PlanDocument; showActions: boolean } | null
+  onBuildPlan?: () => void
+  onRevisePlan?: (feedback: string) => void
+  onSkipPlan?: () => void
 }
 
 function ToolActivity({ item, onOpenInspector }: {
@@ -81,12 +88,49 @@ function RecoveryActivity({ item, onOpenInspector }: {
   )
 }
 
-function TimelineEntry({ item, onOpenInspector }: { item: TimelineItem; onOpenInspector?: (item: TimelineItem) => void }): React.JSX.Element {
+function TimelineEntry({
+  item,
+  timeline,
+  onOpenInspector,
+  activePlan,
+  running,
+  onBuildPlan,
+  onRevisePlan,
+  onSkipPlan
+}: {
+  item: TimelineItem
+  timeline: TimelineItem[]
+  onOpenInspector?: (item: TimelineItem) => void
+  activePlan?: ChatAreaProps['activePlan']
+  running: boolean
+  onBuildPlan?: () => void
+  onRevisePlan?: (feedback: string) => void
+  onSkipPlan?: () => void
+}): React.JSX.Element {
   switch (item.kind) {
     case 'user_prompt':
       return <article className="timeline-prompt"><div className="timeline-eyebrow">你</div><p>{item.text}</p></article>
     case 'assistant_text':
-      return item.text !== '' ? <article className="timeline-assistant"><div className="timeline-eyebrow">RxyCode</div><div className="timeline-prose">{item.text}</div></article> : <></>
+      if (item.text === '') return <></>
+      if (looksLikePlanDocument(item.text)) {
+        if (hasLaterPlanFinal(timeline, item.id)) return <></>
+        return (
+          <PlanDocumentCard
+            document={parsePlanDocument(item.text)}
+            showActions={false}
+            disabled={running}
+            onBuild={() => onBuildPlan?.()}
+            onRevise={(feedback) => onRevisePlan?.(feedback)}
+            onSkip={() => onSkipPlan?.()}
+          />
+        )
+      }
+      if (timeline.slice(timeline.findIndex((entry) => entry.id === item.id) + 1).some(
+        (entry) => entry.kind === 'final_answer' && entry.text.trim() === item.text.trim()
+      )) {
+        return <></>
+      }
+      return <article className="timeline-assistant"><div className="timeline-eyebrow">RxyCode</div><div className="timeline-prose">{item.text}</div></article>
     case 'tool_activity':
       return <ToolActivity item={item} onOpenInspector={onOpenInspector} />
     case 'recovery':
@@ -103,13 +147,35 @@ function TimelineEntry({ item, onOpenInspector }: { item: TimelineItem; onOpenIn
     case 'approval':
       return <button type="button" className="activity-row approval-activity" onClick={() => onOpenInspector?.(item)}><AlertTriangle aria-hidden="true" size={15} /><span className="activity-label">等待审批 · {item.action}</span></button>
     case 'final_answer':
+      if (looksLikePlanDocument(item.text)) {
+        return (
+          <PlanDocumentCard
+            document={parsePlanDocument(item.text)}
+            showActions={Boolean(activePlan?.showActions && activePlan.itemId === item.id)}
+            disabled={running}
+            onBuild={() => onBuildPlan?.()}
+            onRevise={(feedback) => onRevisePlan?.(feedback)}
+            onSkip={() => onSkipPlan?.()}
+          />
+        )
+      }
       return <article className={`final-answer status-${item.status}`} data-testid="final-answer"><div className="final-answer-heading"><FileText aria-hidden="true" size={16} /><span>Final Answer</span></div><div className="timeline-prose">{item.text}</div></article>
     case 'error':
       return <article className="timeline-error" role="alert"><X aria-hidden="true" size={15} /><span>{item.text}</span></article>
   }
 }
 
-function ChatArea({ timeline, running, error, progress, onOpenInspector }: ChatAreaProps): React.JSX.Element {
+function ChatArea({
+  timeline,
+  running,
+  error,
+  progress,
+  onOpenInspector,
+  activePlan = null,
+  onBuildPlan,
+  onRevisePlan,
+  onSkipPlan
+}: ChatAreaProps): React.JSX.Element {
   const scrollRef = useRef<HTMLElement | null>(null)
   const stickToBottomRef = useRef(true)
   const runProgress = visibleRunProgress({ progress, timelineLength: timeline.length })
@@ -145,7 +211,19 @@ function ChatArea({ timeline, running, error, progress, onOpenInspector }: ChatA
         </div>
       ) : (
         <div className="timeline" data-testid="task-timeline">
-          {timeline.map((item) => <TimelineEntry key={item.id} item={item} onOpenInspector={onOpenInspector} />)}
+          {timeline.map((item) => (
+            <TimelineEntry
+              key={item.id}
+              item={item}
+              timeline={timeline}
+              onOpenInspector={onOpenInspector}
+              activePlan={activePlan}
+              running={running}
+              onBuildPlan={onBuildPlan}
+              onRevisePlan={onRevisePlan}
+              onSkipPlan={onSkipPlan}
+            />
+          ))}
           {running && timeline.at(-1)?.kind !== 'tool_activity' && (
             <div className="running-indicator" data-testid="running-indicator" data-phase={timeline.length <= 2 ? 'startup' : 'working'}>
               <CircleDashed className="activity-spinner" aria-hidden="true" size={15} />

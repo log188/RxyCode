@@ -73,7 +73,7 @@ Session restoration searches the current date, earlier dated records, and the le
 - _register_tools(): Registers all available tools via `core/builtin_tool_registration.register_builtin_tools()` (bash, read, write, edit, grep, glob, git, webfetch, websearch, file_download, `task`/`task_manage`, subagent dispatch, etc.). When `subagents_enabled` is on, the `task` name is the isolated subagent dispatch tool and the task-list tool registers as `task_manage`.
 - _is_simple_query(text): Heuristic to decide if a query can skip the full pipeline.
 - _detect_download_intent(text): Regex-based detection of file download, skill download, and MCP download intents.
-- _run_plan_only(user_input): Produces planning text with an explicit read/view/ls/grep/glob/websearch/webfetch/datetime allowlist; mutating calls are hidden and rejected, and the execution graph is never entered.
+- _run_plan_only(user_input): Produces a Markdown plan (`#` / `## Summary` / `## Steps`) with an explicit read/view/ls/grep/glob/websearch/webfetch/datetime allowlist; mutating calls are hidden and rejected, and the execution graph is never entered. Desktop 在计划文档下用「是，实施此计划」切到 Build。
 - cancel(): Cancels the active asyncio request task and propagates cancellation to an active graph task.
 - _extract_and_save_code(response, user_input): Compatibility no-op; implicit code saving/opening was removed. Models must use safety-gated write/open tools explicitly.
 - set_session(session_id)/reset_session()/switch_model(name)/list_checkpoints(): Durable session lifecycle, model switch and checkpoint inspection.

@@ -112,6 +112,7 @@ node --test scripts/real-business-suite.test.mts scripts/cdp-harness.test.mts
 node scripts/real-business-suite.mts --batch=A --artifacts=<dir>
 node scripts/real-business-suite.mts --batch=B --artifacts=<dir>
 node scripts/desktop-cd-suite.mts --mode=deterministic --rounds=3 --artifacts=<dir>
+node scripts/plan-goal-screenshots.mts
 ```
 
 ## Live 测试
