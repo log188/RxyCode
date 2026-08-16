@@ -76,10 +76,10 @@ async def test_auto_edit_skips_write_but_asks_bash(tmp_path, monkeypatch):
     assert "wrote" in out
     assert broker.requests == []
 
-    # bash still needs approval
+    # bash still needs approval (use a command that's WRITE, not a read-only probe)
     out2 = await orch._execute_tool_gated(
         "bash",
-        {"command": "echo hi"},
+        {"command": "cat file.txt"},
         cfg,
     )
     assert out2 == "stdout"

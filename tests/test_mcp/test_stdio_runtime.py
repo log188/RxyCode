@@ -333,6 +333,10 @@ async def test_agent_next_run_hot_loads_executes_and_unloads_downloaded_mcp(
     assert added.startswith("Successfully added MCP server")
 
     assert await agent.run("first", mode="build") == "build:first:True"
+    # MCP tools are loaded in a background thread; wait for it to finish.
+    mcp_thread = getattr(agent, "_mcp_refresh_thread", None)
+    if mcp_thread is not None and mcp_thread.is_alive():
+        mcp_thread.join(timeout=5)
     tool_name = "mcp_hot_echo"
     assert agent._tool_orchestrator.get(tool_name) is not None
     assert classify_tool_risk(tool_name) is RiskLevel.WRITE
@@ -411,9 +415,15 @@ async def test_agent_next_run_hot_loads_executes_and_unloads_downloaded_mcp(
     # An unchanged next run reuses the live session rather than leaking a new
     # subprocess, but a disconnected session is rebuilt on the following run.
     await agent.run("second", mode="build")
+    mcp_thread = getattr(agent, "_mcp_refresh_thread", None)
+    if mcp_thread is not None and mcp_thread.is_alive():
+        mcp_thread.join(timeout=5)
     assert agent._mcp_clients["hot"] is first_client
     first_client.disconnect()
     await agent.run("third", mode="build")
+    mcp_thread = getattr(agent, "_mcp_refresh_thread", None)
+    if mcp_thread is not None and mcp_thread.is_alive():
+        mcp_thread.join(timeout=5)
     assert agent._mcp_clients["hot"] is not first_client
 
     status = agent.runtime_status()["mcp"]
@@ -435,6 +445,9 @@ async def test_agent_next_run_hot_loads_executes_and_unloads_downloaded_mcp(
     assert removed.startswith("Successfully removed MCP server")
     active_client = agent._mcp_clients["hot"]
     await agent.run("after-remove", mode="build")
+    mcp_thread = getattr(agent, "_mcp_refresh_thread", None)
+    if mcp_thread is not None and mcp_thread.is_alive():
+        mcp_thread.join(timeout=5)
     assert agent._tool_orchestrator.get(tool_name) is None
     assert tool_name not in [tool.name for tool in agent._get_core_tools()]
     assert active_client.connected is False

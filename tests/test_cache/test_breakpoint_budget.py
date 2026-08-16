@@ -97,10 +97,12 @@ class TestApplyCacheControlDispatch:
         agent = object.__new__(UsageTrackingLLM)
         agent._cache_enabled = True
         agent._provider = SimpleNamespace(
-            supports_prompt_cache=lambda c: getattr(c, "supports_prompt_cache", False)
+            supports_prompt_cache=lambda c: getattr(c, "supports_prompt_cache", False),
+            name=provider_name,
         )
         agent._capabilities = caps
         agent._cfg = {}
+        agent.model_config = {"model_name": "claude-sonnet-4.5"}
         return agent
 
     def _msgs(self, n_sys: int = 1, n_user: int = 1, n_tool: int = 0):
@@ -327,7 +329,7 @@ class TestApplyCacheControlDispatch:
         agent._session_id = "sess-t"
         agent._llm = SimpleNamespace()
         agent._rate_limiter = None
-        agent.model_config = {"model_name": "claude-sonnet-5"}
+        agent.model_config = {"model_name": "claude-sonnet-4.5"}
         agent._capabilities = caps
         agent._provider = None
         agent._resolve_request_max_tokens = lambda _n: 2048

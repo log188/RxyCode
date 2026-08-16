@@ -17,4 +17,5 @@ def test_non_batch_text_keeps_supplied_line_endings(tmp_path):
 
     atomic_write_text(target, content)
 
-    assert target.read_text(encoding="utf-8", newline="") == content
+    with open(target, encoding="utf-8", newline="") as f:
+        assert f.read() == content

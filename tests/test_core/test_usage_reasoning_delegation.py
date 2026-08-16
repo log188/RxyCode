@@ -135,6 +135,7 @@ def test_apply_cache_control_applies_when_supported():
         MagicMock(), provider=providers.BaseProvider(), capabilities=caps
     )
     llm._cache_enabled = True
+    llm.model_config = {"model_name": "claude-sonnet-4.5"}
     msg = MagicMock(type="system", content="sys")
     msg.additional_kwargs = {}
     msgs = [msg]

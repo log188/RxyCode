@@ -52,8 +52,19 @@ def _get_wrapper(monkeypatch, enabled: bool):
 
     monkeypatch.setattr(settings_mod, "load_config", _load_cfg(enabled))
 
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
     from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
-    return UsageTrackingLLM(_FakeLLM())
+    wrapper = UsageTrackingLLM(_FakeLLM())
+    wrapper._rate_model = "claude-sonnet-4.5"
+    wrapper._provider = SimpleNamespace(
+        supports_prompt_cache=lambda c: getattr(c, "supports_prompt_cache", False),
+        name="anthropic",
+    )
+    wrapper._capabilities = replace(DEFAULT_CAPABILITIES, provider="anthropic")
+    wrapper._cfg = {"cache": {"enabled": True, "prompt_prefix_cache": enabled, "ttl": 3600}}
+    return wrapper
 
 
 @pytest.mark.asyncio
