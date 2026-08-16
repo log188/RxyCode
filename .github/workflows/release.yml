@@ -237,6 +237,14 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -r requirements.txt
 
+      - name: Install uv (standalone POSIX runtime)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          uv --version
+
       - name: Build desktop app
         working-directory: frontend/desktop-app
         env:

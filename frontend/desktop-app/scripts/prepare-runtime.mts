@@ -279,17 +279,73 @@ async function main(argv: string[]): Promise<void> {
   // 2) python source (full install). Probe the *base prefix* (sys.base_prefix)
   // instead of sys.executable's dirname so a venv/conda python still resolves
   // to its real stdlib + site-packages root for staging.
-  const probe = spawnSync(
-    argValue(argv, 'python') ?? 'python',
-    ['-c', 'import sys; print(sys.base_prefix)'],
-    {
+  //
+  // macOS framework Pythons (setup-python installs /Library/Frameworks/...)
+  // are not copyable: their bin/python3 is a symlink into the framework and
+  // include/ is a symlinked directory, so staging fails with ENOTSUP. When no
+  // explicit --python is given we prefer an astral python-build-standalone
+  // install via uv, which is self-contained and layout-identical on POSIX.
+  const explicitPython = argValue(argv, 'python')
+  let pythonRoot: string
+  if (explicitPython) {
+    const probe = spawnSync(explicitPython, ['-c', 'import sys; print(sys.base_prefix)'], {
       encoding: 'utf8'
+    })
+    if (probe.status !== 0) {
+      fail(`cannot resolve python: ${probe.stderr}`)
     }
-  )
-  if (probe.status !== 0) {
-    fail(`cannot resolve python: ${probe.stderr}`)
+    pythonRoot = probe.stdout.trim()
+  } else if (platform === 'win32') {
+    const probe = spawnSync('python', ['-c', 'import sys; print(sys.base_prefix)'], {
+      encoding: 'utf8'
+    })
+    if (probe.status !== 0) {
+      fail(`cannot resolve python: ${probe.stderr}`)
+    }
+    pythonRoot = probe.stdout.trim()
+  } else {
+    // POSIX: fetch a standalone CPython with uv so the staged runtime is
+    // self-contained (no framework symlinks, no hard-coded sys.prefix).
+    const uvProbe = spawnSync('uv', ['python', 'find'], { encoding: 'utf8' })
+    if (uvProbe.status !== 0) {
+      fail('uv is required to stage the POSIX runtime (install from https://astral.sh/uv)')
+    }
+    const uvInstall = spawnSync(
+      'uv',
+      [
+        'python',
+        'install',
+        '--preview',
+        'cpython-3.12',
+        '--mirror',
+        'https://github.com/astral-sh/python-build-standalone/releases/download'
+      ],
+      { encoding: 'utf8' }
+    )
+    if (uvInstall.status !== 0) {
+      // fall back to a system python if uv's standalone fetch failed
+      const probe = spawnSync('python3', ['-c', 'import sys; print(sys.base_prefix)'], {
+        encoding: 'utf8'
+      })
+      if (probe.status !== 0) {
+        fail(`cannot resolve python: ${probe.stderr}`)
+      }
+      pythonRoot = probe.stdout.trim()
+    } else {
+      const find = spawnSync('uv', ['python', 'find', '3.12'], { encoding: 'utf8' })
+      if (find.status !== 0) {
+        fail(`uv python find failed: ${find.stderr}`)
+      }
+      const resolved = find.stdout.trim()
+      const probe = spawnSync(resolved, ['-c', 'import sys; print(sys.base_prefix)'], {
+        encoding: 'utf8'
+      })
+      if (probe.status !== 0) {
+        fail(`cannot resolve uv python: ${probe.stderr}`)
+      }
+      pythonRoot = probe.stdout.trim()
+    }
   }
-  const pythonRoot = probe.stdout.trim()
   if (platform === 'win32') {
     if (!existsSync(join(pythonRoot, 'python.exe')) || !existsSync(join(pythonRoot, 'Lib'))) {
       fail(`python at ${pythonRoot} is not a full install (python.exe + Lib required)`)

@@ -46,6 +46,7 @@ mac:
 dmg:
   artifactName: rxycode-desktop-${version}.${ext}
 linux:
+  executableName: rxycode-desktop
   target:
     - AppImage
   maintainer: RxyCode
