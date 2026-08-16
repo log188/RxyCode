@@ -16,14 +16,15 @@ import pytest
 
 from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 from RxyCode.RxyCode1_1_0.core.request_routing import (
+    RoutingDirective,
     declines_tools,
     has_creation_product_intent,
-    resolve_fast_reply_tool_allowlist,
 )
 
 
 CHENGDU = "用三句话规划成都两日美食游，不要改文件，不要调用工具。"
 CHENGDU_AGAIN = "再用三句话规划成都两日美食游，同样不要改文件不要调用工具。"
+CODE_TASK_FROZEN = "给这个项目补一套单元测试并跑一遍。"
 SNAKE = "做个贪吃蛇小游戏"
 
 
@@ -73,8 +74,12 @@ def _run_agent() -> AgentV2:
 
 
 def test_fast_reply_disables_extended_thinking():
-    src = inspect.getsource(AgentV2._fast_reply)
-    assert "_thinking_disabled_this_turn" in src
+    """FX7: thinking is disabled ONLY on the ChatPrefix path (_fast_reply);
+    the AgentPrefix path (_fast_reply_with_tools) must never set the flag."""
+    fast_reply_src = inspect.getsource(AgentV2._fast_reply)
+    assert "_thinking_disabled_this_turn" in fast_reply_src
+    tools_src = inspect.getsource(AgentV2._fast_reply_with_tools)
+    assert "_thinking_disabled_this_turn = True" not in tools_src
 
 
 def test_chengdu_itinerary_declines_tools():
@@ -84,8 +89,13 @@ def test_chengdu_itinerary_declines_tools():
     assert declines_tools("帮我写一个跑酷小游戏") is False
 
 
-def test_declines_tools_binds_no_tools():
-    assert resolve_fast_reply_tool_allowlist(CHENGDU, None) == frozenset()
+def test_declines_tools_is_chat_prefix():
+    """FX6: declines/social route to ChatPrefix; the allowlist resolver is
+    execution-layer legacy and must never shape API schema."""
+    from RxyCode.RxyCode1_1_0.core.turn_router import route
+
+    d = route(CHENGDU, "build", RoutingDirective.AUTO, file_op=None, download=None)
+    assert d.path == "chat"
 
 
 def test_small_game_is_creation_not_full_project():
@@ -190,3 +200,42 @@ def test_declines_tools_skips_analyze_progress():
     agent = object.__new__(AgentV2)
     assert agent._should_emit_analyze_progress(CHENGDU) is False
     assert agent._should_emit_analyze_progress("帮我重构整个项目") is True
+
+
+@pytest.mark.asyncio
+async def test_agent_tools_frozen_across_encoding_turns():
+    """FX6: the tools bound for encoding turns must not change with user
+    text — two different encoding tasks bind the same full core set."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from RxyCode.RxyCode1_1_0.core.prefix_profile import digest_tools
+
+    agent = _run_agent()
+    captured = []
+
+    async def _raw(msgs, tools=None, max_tokens=None):
+        captured.append(tools)
+        if False:  # pragma: no cover
+            yield None
+
+    agent._raw_stream = _raw
+    agent._get_core_tools = lambda: [
+        SimpleNamespace(name="bash", args_schema={}),
+        SimpleNamespace(name="read", args_schema={}),
+    ]
+    agent._resolve_fast_reply_tool_allowlist = lambda u, a: frozenset()
+    agent._session_loaded = True
+    agent.model_config = {"model_name": "test-model", "effort": "balanced"}
+    agent._memory.get_context_for_prompt = MagicMock(return_value="")
+    agent._fast_reply_with_tools = AgentV2._fast_reply_with_tools.__get__(
+        agent, AgentV2
+    )
+    agent._is_social_chat = AgentV2._is_social_chat.__get__(agent, AgentV2)
+
+    await agent._fast_reply_with_tools(REFACTOR)
+    await agent._fast_reply_with_tools(CODE_TASK_FROZEN)
+
+    assert len(captured) >= 2  # master post-merge: multi-round loop calls _raw_stream per round
+    digests = {digest_tools(t) for t in captured}
+    assert len(digests) == 1  # frozen across ALL rounds and both inputs
+    assert [t.name for t in captured[0]] == ["bash", "read"]

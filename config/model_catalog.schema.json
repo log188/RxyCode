@@ -55,6 +55,7 @@
                 "required": ["cached"],
                 "properties": {
                   "cached": { "type": ["string", "null"] },
+                  "cached_alt": { "type": ["string", "null"] },
                   "cache_read": { "type": ["string", "null"] },
                   "cache_creation": { "type": ["string", "null"] },
                   "cost_ticks": { "type": ["string", "null"] },

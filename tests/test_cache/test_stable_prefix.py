@@ -81,14 +81,15 @@ class TestResearchContractNotRewritingSystem:
         assert "messages[0] = SystemMessage" not in src
 
     def test_research_contract_appended_after_system(self):
-        """修复后 research_contract 以独立 SystemMessage 追加，system 保持头部。"""
+        """FXC3：research 走 user 快照，不得再作为第二条 SystemMessage。"""
         import inspect
 
         from RxyCode.RxyCode1_1_0.core import agent_v2
 
         src = inspect.getsource(agent_v2)
-        # 修复形态：research_contract 作为独立消息 append（不覆盖 messages[0]）
-        assert "SystemMessage(content=research_contract)" in src
+        assert "SystemMessage(content=research_contract)" not in src
+        assert "get_system_s2" in src
+        assert "HumanMessage" in src
         assert "messages.append" in src
 
 
@@ -281,7 +282,7 @@ class TestBehavioralRequestPrefix:
         assert head_a == head_b
 
     def test_research_contract_after_system_not_overwriting(self):
-        """research_contract 以独立 SystemMessage 追加在 system 之后（luna 阻断项 2）。"""
+        """FXC3：research_contract 以 user 快照追加在 system 之后，不改写 messages[0]。"""
         from types import SimpleNamespace
 
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
@@ -291,14 +292,14 @@ class TestBehavioralRequestPrefix:
         )
         contract = "research contract body"
         messages = [system, SimpleNamespace(type="human", content="q", additional_kwargs={})]
-        messages.append(SimpleNamespace(type="system", content=contract, additional_kwargs={}))
+        messages.append(SimpleNamespace(type="human", content=contract, additional_kwargs={}))
 
         out = AgentV2._to_openai_messages(messages)
         # system 前缀保持头部且未改写
         assert out[0]["role"] == "system"
         assert out[0]["content"] == "SYS_PREFIX"
-        # research contract 作为独立消息在断点之后（位置 ≥ 2）
-        assert out[-1]["role"] == "system"
+        # research contract 作为 user 快照在断点之后（位置 ≥ 2）
+        assert out[-1]["role"] == "user"
         assert out[-1]["content"] == contract
         assert len(out) == 3
 
@@ -320,13 +321,13 @@ class TestBehavioralRequestPrefix:
         chain = [
             system,
             SimpleNamespace(type="human", content="query", additional_kwargs={}),
-            SimpleNamespace(type="system", content=contract, additional_kwargs={}),
+            SimpleNamespace(type="human", content=contract, additional_kwargs={}),
         ]
 
         out = AgentV2._to_openai_messages(chain)
         assert out[0]["role"] == "system"
         assert out[0]["content"] == "UNCHANGED_SYSTEM_PREFIX"
-        assert out[-1]["role"] == "system"
+        assert out[-1]["role"] == "user"
         assert out[-1]["content"] == contract
         # system 前缀字节未被 contract 污染
         assert "UNCHANGED_SYSTEM_PREFIX" in out[0]["content"]
@@ -598,31 +599,3 @@ class TestBehavioralRequestPrefix:
         payload = captured["payload"]
         extra = payload.get("extra_body") or {}
         assert "prompt_cache_key" not in extra
-        """research 路径行为验证：system 保持头部、contract 独立消息在断点之后。
-
-        luna 阻断项 3 落地：不依赖真实 web 搜索，验证 research_contract
-        追加后的消息链经 _to_openai_messages 序列化时 system[0] 不被改写。
-        """
-        from types import SimpleNamespace
-
-        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
-
-        # 模拟 research 路径的消息链：system 固定 + research_contract 独立消息
-        system = SimpleNamespace(
-            type="system", content="UNCHANGED_SYSTEM_PREFIX", additional_kwargs={}
-        )
-        contract = "External research is mandatory..."
-        chain = [
-            system,
-            SimpleNamespace(type="human", content="query", additional_kwargs={}),
-            SimpleNamespace(type="system", content=contract, additional_kwargs={}),
-        ]
-
-        out = AgentV2._to_openai_messages(chain)
-        assert out[0]["role"] == "system"
-        assert out[0]["content"] == "UNCHANGED_SYSTEM_PREFIX"
-        assert out[-1]["role"] == "system"
-        assert out[-1]["content"] == contract
-        # system 前缀字节未被 contract 污染
-        assert "UNCHANGED_SYSTEM_PREFIX" in out[0]["content"]
-        assert contract not in out[0]["content"]

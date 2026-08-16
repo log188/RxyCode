@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import string
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from .i18n import get_locale, t
@@ -246,14 +247,47 @@ def get_role_prompt(
     )
 
 
+def get_system_s1(
+    tools: bool = False,
+    tool_names: list[str] | None = None,
+    locale: str | None = None,
+    variant: str = "default",
+) -> str:
+    """Frozen S1: identity, rules, tool descriptions. No date/cwd/research."""
+    return _registry.get_system_prompt(tools, tool_names, locale, variant)
+
+
+def get_system_s2(
+    *,
+    cwd: str = "",
+    research_contract: str = "",
+    memory_excerpt: str = "",
+    session_created_at: str | None = None,
+    locale: str | None = None,
+) -> str:
+    """Dynamic turn snapshot for the user lane (never a second system)."""
+    if locale is None:
+        locale = get_locale()
+    parts: list[str] = []
+    if session_created_at:
+        parts.append(f"[session_created: {session_created_at}]")
+    if cwd:
+        parts.append(f"[cwd: {cwd}]")
+    if memory_excerpt:
+        parts.append(f"[{t('context_label', locale)}]\n{memory_excerpt}")
+    if research_contract:
+        parts.append(research_contract)
+    return "\n\n".join(parts)
+
+
 def get_system_prompt(
     tools: bool = False,
     tool_names: list[str] | None = None,
     locale: str | None = None,
     variant: str = "default",
 ) -> str:
-    """Convenience: render the system prompt from the global registry."""
-    return _registry.get_system_prompt(tools, tool_names, locale, variant)
+    """Convenience: render the frozen S1 system prompt from the global registry."""
+    return get_system_s1(tools, tool_names, locale, variant)
 
 
 def list_stages() -> list[str]:
@@ -276,9 +310,8 @@ def build_user_message(
 
     Injects current system time so the model always knows the time.
     Uses i18n labels for the timestamp and context sections.
+    Timestamp stays on the user suffix (FXC3: never move into S1).
     """
-    from datetime import datetime
-
     if locale is None:
         locale = get_locale()
 

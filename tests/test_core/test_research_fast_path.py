@@ -136,7 +136,10 @@ async def test_fresh_query_ignores_cached_answer_and_stops_when_search_unverifie
 
 
 @pytest.mark.asyncio
-async def test_local_task_hides_network_tools_from_model():
+async def test_local_task_keeps_frozen_full_schema():
+    """FX6 ToolsFreeze (post-merge): the agent path binds the frozen FULL
+    core set even for local tasks — per-turn schema cropping shatters the
+    prefix archive. The model simply should not pick the network path."""
     agent, _captured = make_agent("unused", answer="local build complete")
     agent._get_core_tools = MagicMock(
         return_value=[SimpleNamespace(name=name) for name in ("datetime", "websearch", "webfetch", "write")]
@@ -145,8 +148,8 @@ async def test_local_task_hides_network_tools_from_model():
     await agent._fast_reply_with_tools("Build the local offline demo and check the current time.")
 
     names = [getattr(tool, "name", "") for tool in agent._captured_tools]
-    assert "websearch" not in names
-    assert "webfetch" not in names
+    assert "websearch" in names
+    assert "webfetch" in names
     assert "datetime" in names
     assert "write" in names
 

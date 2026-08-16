@@ -163,6 +163,46 @@ def test_agent_v2_compat_routing_reexports():
     assert _GIT_FORCE_RE.search("必须调用 git 工具")
 
 
+@pytest.mark.asyncio
+async def test_social_tools_failure_returns_comfort_message():
+    """FX6: social non-greeting turns ride the ChatPrefix fast reply — they
+    never reach the tools path, and a chat-branch failure still returns
+    the comfort message, never [error]/research."""
+    agent = _routed_agent()
+    agent._fast_reply_with_tools = AsyncMock(side_effect=RuntimeError("boom"))
+    result = await agent._run_impl("i'm sad", mode="build")
+    assert result == "fast"
+    agent._fast_reply.assert_awaited_once_with("i'm sad")
+    agent._fast_reply_with_tools.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_never_handles_file_op_or_download():
+    """FX2 R3: plan mode returns _run_plan_only before any file/download
+    handler runs, even when the detectors would fire."""
+    agent = _routed_agent()
+    agent._detect_file_operation = MagicMock(return_value={"action": "create"})
+    agent._detect_download_intent = MagicMock(return_value=("http://x/f", "f.xlsx"))
+    agent._handle_file_operation = MagicMock()
+    agent._handle_download_intent = MagicMock()
+    result = await agent._run_impl(REFACTOR, mode="plan")
+    assert result == "plan only"
+    agent._run_plan_only.assert_awaited_once_with(REFACTOR)
+    agent._handle_file_operation.assert_not_called()
+    agent._handle_download_intent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_compose_social_tools_failure_returns_comfort_message():
+    """FX6: compose-mode social also rides ChatPrefix (no tools binding)."""
+    agent = _routed_agent()
+    agent._fast_reply_with_tools = AsyncMock(side_effect=RuntimeError("boom"))
+    result = await agent._run_impl("i'm sad", mode="compose")
+    assert result == "fast"
+    agent._fast_reply.assert_awaited_once_with("i'm sad")
+    agent._fast_reply_with_tools.assert_not_awaited()
+
+
 def test_mcp_explanatory_question_is_not_download_intent():
     """Regression: asking about the MCP protocol must never be routed to
     download_mcp, which would add an npx MCP server to the user's config."""

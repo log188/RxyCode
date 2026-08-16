@@ -74,20 +74,19 @@ def _read_path(usage: dict, path: str | None) -> int:
 
 
 def read_cached_tokens(provider_id: str, model_id: str, usage: dict) -> int:
-    """按契约 usage_fields.cached 路径读取缓存命中 token 数。
+    """按契约 usage_fields.cached / cached_alt 读取缓存命中 token 数。
 
-    各家路径差异在此归一化：
-    - DeepSeek/MiMo/GLM: prompt_tokens_details.cached_tokens
-    - Kimi: cached_tokens（usage 顶层）
-    - Claude/MiniMax: cache_read_input_tokens
-    - OpenAI: cached_input_tokens
-    - Grok: cached_prompt_text_tokens
-    未识别模型 / 字段缺失 → 0（不把缺失当命中，常见坑 2/3）。
+    双路径取 max：Chat Completions 可能回平铺或 nested。cached_alt 缺省为 0。
+    禁止按厂商名 if。未识别模型 / 字段缺失 → 0。
     """
     contract = get_contract(provider_id, model_id)
     if contract is None:
         return 0
-    return _read_path(usage, contract.get("usage_fields", {}).get("cached"))
+    fields = contract.get("usage_fields") or {}
+    return max(
+        _read_path(usage, fields.get("cached")),
+        _read_path(usage, fields.get("cached_alt")),
+    )
 
 
 def read_reasoning_tokens(provider_id: str, model_id: str, usage: dict) -> int:
@@ -134,9 +133,47 @@ def temperature_override(provider_id: str, model_id: str) -> dict | None:
     return contract.get("temperature_override")
 
 
+def injects_cache_control(contract: dict | None) -> bool:
+    """Unknown and implicit families never emit Anthropic cache_control."""
+    if not contract:
+        return False
+    mode = str(contract.get("cache_mode") or "auto").casefold()
+    if mode != "explicit_breakpoints":
+        return False
+    return int(contract.get("breakpoints_max") or 0) > 0
+
+
+def injects_prompt_cache_key(contract: dict | None) -> bool:
+    if not contract:
+        return False  # 未知模型默认不发 key（§15.3）
+    return bool(contract.get("prompt_cache_key_required"))
+
+
+def unknown_fallback_contract() -> dict:
+    """Documented contract for models without a catalog record (FXC6/§15.3).
+
+    Five-point fallback:
+      1. Prompt -> default variant (``prompt_variant: "default"``), never a
+         guess by id
+      2. Protocol -> openai-compatible (``protocol: "openai-compatible"``)
+      3. NEVER inject ``cache_control`` (implicit prefix only; never treat
+         an unknown model as Claude or invent breakpoints)
+      4. still sort tools by name and send session affinity headers
+      5. ``prompt_cache_key`` is NOT sent by default
+
+    Callers that receive ``get_contract() -> None`` must behave exactly as
+    if this contract were in effect — ``injects_cache_control`` /
+    ``injects_prompt_cache_key`` already return False for ``None``.
+    """
+    return {
+        "cache_mode": "auto",
+        "breakpoints_max": 0,
+        "prompt_cache_key_required": False,
+        "prompt_variant": "default",
+        "protocol": "openai-compatible",
+    }
+
+
 def requires_prompt_cache_key(provider_id: str, model_id: str) -> bool:
     """是否要求请求级 prompt_cache_key（Kimi 必填，规范 5）。"""
-    contract = get_contract(provider_id, model_id)
-    if contract is None:
-        return False
-    return bool(contract.get("prompt_cache_key_required"))
+    return injects_prompt_cache_key(get_contract(provider_id, model_id))

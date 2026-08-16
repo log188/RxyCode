@@ -22,7 +22,8 @@ import re
 import tempfile
 import threading
 import time
-from typing import Optional
+from typing import Optional, Sequence
+import re as _re
 from urllib.parse import urlsplit
 
 import httpx
@@ -52,6 +53,7 @@ from RxyCode.RxyCode1_1_0.core.prompts import (
     get_role_prompt,
     get_system_prompt,
 )
+from RxyCode.RxyCode1_1_0.core.prompts.registry import get_system_s2
 from RxyCode.RxyCode1_1_0.core.research_policy import (
     ResearchPolicy,
     extract_research_query,
@@ -209,6 +211,66 @@ def _resolve_stream_idle_timeout(
         1.0,
         min(total_timeout, idle_timeout, STREAM_IDLE_TIMEOUT_CAP_SECONDS),
     )
+def _should_echo_reasoning(
+    reasoning_contract: str | None,
+    provider_id: str | None,
+    has_tool_calls: bool,
+    reasoning: object,
+) -> bool:
+    """FXC5 · per-model reasoning echo decision (PHASE-FIX §5 FXC5).
+
+    - no_thinking (Qwen): never put reasoning_content back into messages
+    - none (GPT / Doubao / Grok): no raw CoT echo
+    - thinking_blocks_echo (Anthropic / MiniMax M3): echo the captured
+      thinking content back (OpenAI-compatible endpoints carry it as
+      reasoning_content; the signature attribute belongs to the native
+      Anthropic classification, which does not pass through here)
+    - mandatory_echo (DeepSeek / Kimi / MiMo / GLM):
+        DeepSeek echoes only on tool-bearing turns (aligned with dsh);
+        Kimi / MiMo / GLM echo across user turns, empty value allowed
+    - unknown / legacy callers: keep the old behaviour (echo captured
+      reasoning when present)
+    """
+    contract = (reasoning_contract or "").casefold()
+    provider = (provider_id or "").casefold()
+    if contract == "no_thinking":
+        return False
+    if contract == "none":
+        return False
+    if contract == "thinking_blocks_echo":
+        return bool(reasoning)
+    if contract == "mandatory_echo":
+        if provider == "deepseek":
+            return has_tool_calls
+        return True
+    # unknown / legacy callers: keep the old behaviour — echo captured
+    # reasoning when present, and still emit the empty placeholder on
+    # tool-bearing turns (provider chain validity).
+    return bool(reasoning) or has_tool_calls
+
+
+def build_session_headers(base_url: str, session_id: str) -> dict[str, str]:
+    """FXC4 · session affinity headers.
+
+    Only the OpenCode gateway domain (``opencode.ai`` and its subdomains,
+    e.g. ``zen``/``go`` under it) carries the full affinity set
+    ``x-opencode-session`` + ``x-session-affinity`` + ``X-Session-Id``.
+    Every direct vendor endpoint (api.deepseek.com, api.openai.com, ...)
+    only sends ``X-Session-Id`` — opencode* headers are never faked on
+    non-OpenCode hosts, even if a path or lookalike domain contains
+    ``go``/``zen``/``opencode``.
+    """
+    session_headers = {"X-Session-Id": str(session_id)}
+    try:
+        netloc = urlsplit(str(base_url or "")).netloc.casefold()
+    except Exception:  # noqa: BLE001 - malformed URLs default to direct
+        netloc = ""
+    hostname = netloc.split(":")[0]
+    is_opencode_gateway = hostname == "opencode.ai" or hostname.endswith(".opencode.ai")
+    if is_opencode_gateway:
+        session_headers["x-opencode-session"] = str(session_id)
+        session_headers["x-session-affinity"] = str(session_id)
+    return session_headers
 
 
 def _get_recovery_tracker():
@@ -295,6 +357,11 @@ from RxyCode.RxyCode1_1_0.core.request_routing import (
     resolve_fast_reply_tool_allowlist,
     should_use_subagents,
 )
+from RxyCode.RxyCode1_1_0.core.turn_router import route
+from RxyCode.RxyCode1_1_0.core.turn_context import TurnContextBlock
+_AGENT_NAMESPACE_RE = _re.compile(r"[a-z0-9_.-]{1,64}")
+
+
 CODE_MUTATING_TOOL_NAMES = frozenset({
     "write",
     "edit",
@@ -989,6 +1056,60 @@ def _is_transport_retryable(exc: BaseException) -> bool:
     return False
 
 
+def _owner_cache_contract(owner) -> dict | None:
+    """Read cache_contract from owner fields without __getattr__ delegation."""
+    from .catalog import get_contract
+
+    data = vars(owner)
+    caps = data.get("_capabilities")
+    provider = data.get("_provider")
+    provider_id = (
+        str(getattr(caps, "provider", "") or "")
+        or str(getattr(provider, "name", "") or "")
+        or str(data.get("_rate_provider") or "")
+    )
+    model_id = ""
+    mc = data.get("model_config")
+    if isinstance(mc, dict):
+        model_id = str(mc.get("model_name") or "")
+    if not model_id:
+        model_id = str(data.get("_rate_model") or "")
+    return get_contract(provider_id, model_id)
+
+
+_THINKING_BLOCK_TYPES = frozenset({"thinking", "reasoning", "reasoning_content"})
+
+
+def _promote_explicit_content(content, cache_control: dict):
+    """Explicit-family string content → text block array; never stamp thinking."""
+    if isinstance(content, str):
+        return [
+            {
+                "type": "text",
+                "text": content,
+                "cache_control": dict(cache_control),
+            }
+        ]
+    if not isinstance(content, list):
+        return content
+    blocks = []
+    last_text = -1
+    for block in content:
+        if not isinstance(block, dict):
+            blocks.append(block)
+            continue
+        item = dict(block)
+        kind = str(item.get("type") or "")
+        if kind in _THINKING_BLOCK_TYPES:
+            item.pop("cache_control", None)
+        elif kind == "text" or "text" in item:
+            last_text = len(blocks)
+        blocks.append(item)
+    if last_text >= 0 and isinstance(blocks[last_text], dict):
+        blocks[last_text]["cache_control"] = dict(cache_control)
+    return blocks
+
+
 class UsageTrackingLLM:
     """Wrapper that auto-records token usage on every LLM call.
 
@@ -1088,20 +1209,10 @@ class UsageTrackingLLM:
         return self._cache_enabled
 
     def _apply_cache_control(self, messages, tools=None):
-        """B3: apply provider-dispatched cache breakpoints (opencode budget).
+        """Apply explicit-family cache breakpoints from cache_contract.
 
-        从 B2 之前的"单一 system 断点"升级为按 provider 能力分派的断点策略
-        （PHASE-B §5 B3）：
-
-        - Anthropic 系（caps.cache_breakpoints 非空）：显式 cache_control
-          ephemeral 打点，分配序 tools→system→messages（≤4 断点预算）。
-        - OpenAI 系：不注入 cache_control（B2 走 prompt_cache_key=session_id，
-          CB3）。
-        - DeepSeek 系：不注入 cache_control（自动前缀 + 命中字段验证，
-          CB3）。
-
-        保留能力门（supports_prompt_cache）与 cache.prompt_prefix_cache 开关；
-        未开启配置或模型不支持缓存时行为与现状一致（CB8）。
+        FXC2：只信 ``injects_cache_control(contract)``。未知 / auto / cache_key
+        族绝不打 ``cache_control``。不再用 ``provider==anthropic`` 启发式。
         """
         if not self._ensure_cache_flag():
             return messages
@@ -1113,74 +1224,26 @@ class UsageTrackingLLM:
             return messages
         if not messages:
             return messages
-        # 用 vars() 判断属性是否真实存在，避免 __getattr__ 委托到 _llm 造成误判
-        # （wrapper._llm 为 MagicMock 时 self._provider 会委托出非 None 假值）。
-        has_provider = "_provider" in vars(self)
-        has_caps = "_capabilities" in vars(self)
-        caps = getattr(self, "_capabilities", None) if has_caps else None
-        breakpoints = getattr(caps, "cache_breakpoints", ()) if caps is not None else ()
-        # CB8 兼容：无 caps（旧调用路径/测试 wrapper/未知模型）时保持改造前
-        # 语义——对首条 system 注入 cache_control（旧行为不回归）。
-        if not has_caps or not has_provider:
-            first = messages[0]
-            if getattr(first, "type", None) != "system":
-                return messages
-            ak = getattr(first, "additional_kwargs", None) or {}
-            if "cache_control" in ak:
-                return messages
-            cached = SystemMessage(
-                content=first.content,
-                additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
-            )
-            return [cached] + list(messages[1:])
-        # B3 (luna B9-R1): 显式断点由契约 cache_mode 裁决（explicit_breakpoints
-        # 才分派），不再硬编码 anthropic 白名单——Qwen 等显式断点厂商同样生效。
-        # 未识别模型回退 caps（CB8，保持 anthropic 白名单语义）。
-        provider_name = ""
-        if has_provider:
-            provider_name = str(getattr(self._provider, "name", "") or "")
-        caps_provider = str(getattr(caps, "provider", "") or "")
-        contract_mode = None
-        try:
-            from .catalog import get_contract
+        from .catalog import injects_cache_control
 
-            contract = get_contract(
-                caps_provider or provider_name,
-                str(self.model_config.get("model_name") or ""),
-            )
-            if contract is not None:
-                contract_mode = contract.get("cache_mode")
-        except Exception:  # pragma: no cover - 契约异常回退现状
-            pass
-        if contract_mode is not None:
-            # 契约明确：仅 explicit_breakpoints 注入显式断点。
-            if contract_mode != "explicit_breakpoints":
-                return messages
-        else:
-            # CB8：未识别模型保持 anthropic 白名单现状。
-            if (
-                provider_name != "anthropic"
-                and caps_provider != "anthropic"
-            ):
-                return messages
-        # 统一走断点预算入口（allocate_breakpoints 分配序 + ≤4 上限 + TTL 解析）。
-        # B9: 契约显式断点厂商（Qwen 等）caps.cache_breakpoints 可能为空——
-        # 契约声明 explicit_breakpoints 时按 breakpoints_max 注入标准断点序。
-        if not breakpoints and contract_mode == "explicit_breakpoints":
-            try:
-                if (contract.get("breakpoints_max") or 0) > 0:
-                    breakpoints = ("tools", "system", "messages", "tail")
-            except Exception:  # pragma: no cover
-                pass
-        if not breakpoints:
+        contract = _owner_cache_contract(self)
+        if not injects_cache_control(contract):
             return messages
+        has_caps = "_capabilities" in vars(self)
+        caps = vars(self).get("_capabilities") if has_caps else None
+        breakpoints = getattr(caps, "cache_breakpoints", ()) if caps is not None else ()
+        if not breakpoints:
+            from types import SimpleNamespace as _NS
+
+            caps = _NS(cache_breakpoints=("tools", "system", "messages", "tail"))
         from .cache_policy import apply_breakpoint_budget
 
         result, _allocated, _ttl = apply_breakpoint_budget(
             messages,
             tools=tools,
             caps=caps,
-            cfg=getattr(self, "_cfg", None),
+            cfg=vars(self).get("_cfg"),
+            contract=contract,
         )
         return result
 
@@ -2112,7 +2175,20 @@ class AgentV2:
         # 2026-08-13: ChatOpenAI 懒导入（顶层导入拖慢 worker bootstrap 6.5s）
         from langchain_openai import ChatOpenAI  # noqa: PLC0415 - 懒导入避免 torch 链
 
-        raw_llm = ChatOpenAI(**provider.llm_kwargs(model_config, caps))
+        llm_kwargs = provider.llm_kwargs(model_config, caps)
+        # FXC4: session affinity headers keep gateway cache hits on one replica
+        # (opencode.ai/zen/go gateways) and X-Session-Id on direct endpoints.
+        headers = build_session_headers(
+            str(model_config.get("base_url") or ""),
+            str(self._session_id or ""),
+        )
+        if headers:
+            llm_kwargs["default_headers"] = {
+                **(llm_kwargs.get("default_headers") or {}),
+                **headers,
+            }
+
+        raw_llm = ChatOpenAI(**llm_kwargs)
 
         return UsageTrackingLLM(
             raw_llm,
@@ -2209,7 +2285,12 @@ class AgentV2:
         )
 
     @staticmethod
-    def _to_openai_messages(messages) -> list:
+    def _to_openai_messages(
+        messages,
+        *,
+        reasoning_contract: str | None = None,
+        provider_id: str | None = None,
+    ) -> list:
         """Convert LangChain messages to OpenAI chat completions message dicts.
 
         CRITICAL: preserves `cache_control` from additional_kwargs so that
@@ -2217,6 +2298,11 @@ class AgentV2:
         LangChain and sends dicts directly to the OpenAI API). Without this,
         the ephemeral cache breakpoint injected by _apply_cache_control is
         silently lost when the message is converted to a plain dict.
+
+        FXC5: reasoning echo follows ``reasoning_contract`` (Qwen never
+        receives reasoning_content back; DeepSeek echoes only on tool-bearing
+        turns; Kimi/MiMo/GLM echo across turns, empty allowed).  Old callers
+        without a contract keep the legacy echo behaviour.
         """
         out = []
         open_tool_ids: list[str] = []
@@ -2237,27 +2323,35 @@ class AgentV2:
                 _flush_open_tool_ids()
                 d = {"role": "system", "content": getattr(m, "content", "") or ""}
                 if "cache_control" in ak:
-                    d["cache_control"] = ak["cache_control"]
+                    cc = ak["cache_control"]
+                    d["cache_control"] = cc
+                    d["content"] = _promote_explicit_content(d["content"], cc)
                 out.append(d)
             elif role == "human":
                 _flush_open_tool_ids()
-                out.append({"role": "user", "content": getattr(m, "content", "") or ""})
+                d = {"role": "user", "content": getattr(m, "content", "") or ""}
+                if "cache_control" in ak:
+                    cc = ak["cache_control"]
+                    d["cache_control"] = cc
+                    d["content"] = _promote_explicit_content(d["content"], cc)
+                out.append(d)
             elif role == "ai":
                 _flush_open_tool_ids()
                 d = {"role": "assistant", "content": getattr(m, "content", "") or ""}
-                # Thinking-mode providers (DeepSeek v4, MiMo, kimi) require the
-                # assistant's reasoning_content to be echoed back verbatim on
-                # every tool-bearing request, or they reject with HTTP 400.
-                # ``_raw_stream`` stores the captured reasoning here.  When a
-                # tool-bearing assistant message has no captured reasoning
-                # (e.g. the research pre-fetch injection), still emit the key
-                # with an empty value so the provider's chain stays valid.
+                # FXC5: echo reasoning_content only when the per-model contract
+                # requires it (never for Qwen/GPT/Doubao/Grok; DeepSeek only on
+                # tool-bearing turns). ``_raw_stream`` stores the captured
+                # reasoning here.
                 reasoning = ak.get("reasoning_content")
                 if reasoning is None:
                     reasoning = getattr(m, "reasoning_content", None)
-                if reasoning:
-                    d["reasoning_content"] = reasoning
                 tcs = getattr(m, "tool_calls", None)
+                if _should_echo_reasoning(
+                    reasoning_contract, provider_id, bool(tcs), reasoning
+                ):
+                    d["reasoning_content"] = (
+                        reasoning if reasoning is not None else ""
+                    )
                 if tcs:
                     d["tool_calls"] = [
                         {
@@ -2270,7 +2364,13 @@ class AgentV2:
                         }
                         for tc in tcs
                     ]
-                    d.setdefault("reasoning_content", "")
+                    # FXC5: the empty-reasoning placeholder is also contract-gated —
+                    # Qwen/GPT/Doubao/Grok must not receive a reasoning_content
+                    # field even on tool-bearing turns.
+                    if _should_echo_reasoning(
+                        reasoning_contract, provider_id, True, reasoning
+                    ):
+                        d.setdefault("reasoning_content", "")
                     open_tool_ids.clear()
                     open_tool_ids.extend(
                         str(tc["id"])
@@ -2359,7 +2459,17 @@ class AgentV2:
         return False
 
     def _prompt_variant(self) -> str:
-        """A9: variant selector from current model capabilities."""
+        """A9: variant selector from current model capabilities.
+
+        FXC6: unknown models (no catalog contract) force the fallback
+        ``default`` variant at the prompt-assembly layer — the variant is
+        resolved here, BEFORE get_system_prompt builds the system message.
+        """
+        from .catalog import unknown_fallback_contract
+
+        contract = _owner_cache_contract(self)
+        if contract is None and getattr(self, "_provider", None) is not None:
+            return str(unknown_fallback_contract().get("prompt_variant") or "default")
         caps = getattr(self, "_capabilities", None)
         return (caps or DEFAULT_CAPABILITIES).prompt_variant
 
@@ -2953,9 +3063,28 @@ class AgentV2:
                 ),
                 timeout=self._rate_limit_timeout,
             )
+        # FXC5: reasoning echo follows the catalog reasoning_contract +
+        # provider (per-model, never a blanket DeepSeek rule).
+        _owner_contract = _owner_cache_contract(self)
+        _reasoning_contract = (
+            (_owner_contract or {}).get("reasoning_contract")
+            if _owner_contract
+            else None
+        )
+        _caps = getattr(self, "_capabilities", None)
+        _prov = getattr(self, "_provider", None)
+        _provider_id = (
+            str(getattr(_caps, "provider", "") or "")
+            or str(getattr(_prov, "name", "") or "")
+            or ""
+        )
         payload = {
             "model": self.model_config.get("model_name", "gpt-4o"),
-            "messages": self._to_openai_messages(messages),
+            "messages": self._to_openai_messages(
+                messages,
+                reasoning_contract=_reasoning_contract,
+                provider_id=_provider_id,
+            ),
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": self.model_config.get("temperature", 0.7),
@@ -3004,34 +3133,54 @@ class AgentV2:
             if isinstance(body, dict) and "thinking" in body:
                 body["thinking"] = {"type": "disabled"}
             payload.pop("reasoning_effort", None)
-        # B2 (CB3): OpenAI 系按能力注入请求级 prompt_cache_key=session_id，
-        # 会话期恒定（跨 turn 前缀复用）；DeepSeek/Anthropic 不注入。
-        # B9 (luna R1-2): 注入与否由契约 requires_prompt_cache_key 裁决——
-        # Kimi 等 auto_and_key 厂商同样注入（不再硬编码 openai provider）。
-        # CB3 保持：向不要求 key 的 provider（DeepSeek/Anthropic）绝不注入。
-        contract_pk_key = False
-        try:
-            from .catalog import requires_prompt_cache_key
+        # FXC2: prompt_cache_key 只信 injects_prompt_cache_key(contract)。
+        # 未知模型默认不发 key（§15.3）；禁止 caps.provider==openai 启发式。
+        from .catalog import injects_prompt_cache_key
 
-            contract_pk_key = requires_prompt_cache_key(
-                str(getattr(caps, "provider", "") or ""),
-                str(self.model_config.get("model_name") or ""),
-            )
-        except Exception:  # pragma: no cover - 契约异常回退现状
-            pass
-        caps_pk_key = bool(
-            caps is not None
-            and getattr(caps, "provider", "") == "openai"
-            and getattr(caps, "prompt_cache_key_required", False)
-        )
+        contract = _owner_cache_contract(self)
+        contract_pk_key = injects_prompt_cache_key(contract)
+        caps_pk_key = False
         if contract_pk_key or caps_pk_key:
             # luna R2-2: key 派生含 provider:model（规范 7：换模型 = 缓存全失效）。
             # session_id 会话期恒定（规范 5：Kimi 恢复/退出不得变更）。
             payload.setdefault("extra_body", {})["prompt_cache_key"] = (
                 self._prompt_cache_key_value()
             )
+        # FXC6: 未知模型（contract is None）走五条 fallback——**强制** default
+        # variant + openai-compatible 协议（fallback 是行为，不抛错）；
+        # cache_control / prompt_cache_key 由 injects_* 对 None 恒 False 保证
+        # 不发；tools 排序 + session 头照旧（B2 / FXC4）。
+        caps = getattr(self, "_capabilities", None)
+        if contract is None:
+            from .catalog import unknown_fallback_contract
+
+            fb = unknown_fallback_contract()
+            if fb.get("cache_mode") != "auto":
+                raise AssertionError(
+                    "unknown fallback must stay implicit (cache_mode=auto)"
+                )
+            # fallback rule 2: protocol stays openai-compatible — the payload
+            # must keep the OpenAI chat.completions shape (messages/model/stream)
+            if str(fb.get("protocol") or "") != "openai-compatible":
+                raise AssertionError(
+                    "unknown fallback protocol must stay openai-compatible"
+                )
+            if "messages" not in payload or "model" not in payload:
+                raise AssertionError(
+                    "unknown fallback payload must be OpenAI chat.completions "
+                    "shaped (openai-compatible)"
+                )
+            fb_variant = str(fb.get("prompt_variant") or "default")
+            if caps is not None:
+                from dataclasses import replace as _dc_replace
+
+                caps_variant = str(getattr(caps, "prompt_variant", "") or "")
+                if caps_variant != fb_variant:
+                    # fallback rule 1: force the default variant so an unknown
+                    # model never inherits a guessed variant
+                    caps = _dc_replace(caps, prompt_variant=fb_variant)
+                    self._capabilities = caps
         if tools:
-            caps = getattr(self, "_capabilities", None)
             if caps is not None and not caps.supports_function_calling:
                 raise ValueError(
                     f"model {self.model_config.get('model_name', '?')} does not support "
@@ -3039,24 +3188,13 @@ class AgentV2:
                     "capabilities.supports_function_calling is False"
                 )
             payload["tools"] = [self._tool_to_openai(t) for t in tools]
-            # B3 (CB2/CB3): Anthropic 系 tools 断点——tools 定义上注入
-            # cache_control ephemeral（分配序 tools 优先；OpenAI/DeepSeek 不注入）。
-            # 双条件与 _apply_cache_control 一致（luna 审计）：实际 provider
-            # 与 caps 都必须声明 anthropic，防止 caps 错误配置绕过 CB3。
-            provider = getattr(self, "_provider", None)
-            actual_provider = str(getattr(provider, "name", "") or "")
-            caps_provider = str(getattr(caps, "provider", "") if caps is not None else "")
-            anthropic_family = (
-                actual_provider == "anthropic" or caps_provider == "anthropic"
-            )
-            if (
-                anthropic_family
-                and caps is not None
-                and "tools" in getattr(caps, "cache_breakpoints", ())
-            ):
-                for tool_def in payload["tools"]:
-                    if isinstance(tool_def, dict):
-                        tool_def["cache_control"] = {"type": "ephemeral"}
+            # FXC2: 显式族只给最后一个 tool 打点；隐式/未知绝不打 cache_control。
+            from .catalog import injects_cache_control
+
+            if injects_cache_control(contract) and payload["tools"]:
+                last_tool = payload["tools"][-1]
+                if isinstance(last_tool, dict):
+                    last_tool["cache_control"] = {"type": "ephemeral"}
 
         # Keep provider latency diagnosable without logging prompt text,
         # credentials, workspace paths, or tool arguments.  An HTTP 200 can
@@ -3705,51 +3843,44 @@ class AgentV2:
             self._memory.load_session(append_only=True)
             self._session_loaded = True
 
-    def _prewarm_state(self):
-        """B5: 惰性初始化预热状态（PrewarmState）。"""
-        if self._prewarm is None:
-            from .cache_policy import PrewarmState
+    def _prewarm_state(self, kind: str = "agent"):  # noqa: ANN201
+        """B5: 惰性初始化预热状态（PrewarmState）。
 
+        FX4：每 session_id 两槽（chat/agent）。agent 槽默认落在 self._prewarm
+        （兼容旧注入形态），chat 槽独立为 self._prewarm_chat。
+        """
+        from .cache_policy import PrewarmState
+
+        if kind == "chat":
+            if getattr(self, "_prewarm_chat", None) is None:
+                self._prewarm_chat = PrewarmState()
+            return self._prewarm_chat
+        if self._prewarm is None:
             self._prewarm = PrewarmState()
         return self._prewarm
 
-    def _prewarm_signature(self) -> str:
-        """B5: 当前会话配置签名（模型/cwd/MCP；Cherry Studio 语义）。
+    def _prewarm_signature(self, kind: str = "agent") -> str:
+        """B5: 当前会话配置签名（FX4：模型/cwd/MCP/kind/thinking/tools）。"""
+        from .prewarm import prewarm_signature
 
-        luna 审计 R4：MCP 签名纳入完整配置（URL/参数等），不仅是 server 名。
-        """
-        from .cache_policy import build_prewarm_signature
+        return prewarm_signature(self, kind)
 
-        model = str(self.model_config.get("model_name") or "")
-        cwd = str(getattr(self, "_workspace_root", "") or "")
-        mcp = ""
-        try:
-            mcp = json.dumps(
-                self._cfg.get("mcpServers") or {},
-                sort_keys=True,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        except Exception:  # pragma: no cover
-            mcp = ""
-        return build_prewarm_signature(model=model, cwd=cwd, mcp=mcp)
-
-    def _maybe_rebuild_prewarm(self) -> bool:
+    def _maybe_rebuild_prewarm(self, kind: str = "agent") -> bool:
         """B5: 需不需要预热/重建（审计：True = 应发预热请求）。
 
         luna 审计 R7：未确认成功（warmed_at None）或签名不匹配 → 持续返回
         True（可重试）；只有 _confirm_prewarm 成功后才不再需要。
         """
-        state = self._prewarm_state()
-        sig = self._prewarm_signature()
+        state = self._prewarm_state(kind)
+        sig = self._prewarm_signature(kind)
         if state.signature is None or state.warmed_at is None:
             return True  # 从未预热/未确认成功 → 需要（可重试）
         return state.signature != sig
 
-    def _confirm_prewarm(self) -> None:
+    def _confirm_prewarm(self, kind: str = "agent") -> None:
         """B5: 预热请求成功后确认（提交 warmed 状态与时间戳）。"""
-        state = self._prewarm_state()
-        state.warm(self._prewarm_signature())
+        state = self._prewarm_state(kind)
+        state.warm(self._prewarm_signature(kind))
 
     def _schedule_prewarm(self) -> None:
         """B5: 预热非阻塞化（2026-08-13 修复）——后台调度，绝不让用户请求
@@ -3771,22 +3902,15 @@ class AgentV2:
             pass  # 无事件循环（同步上下文）——跳过预热，不阻塞
 
     async def _prewarm_async(self) -> None:
-        """B5: 后台预热——发一次最小请求写新前缀；成功 confirm，失败进冷却。
+        """B5: 后台预热——FX4 双槽（chat/agent）并行写新前缀；成功 confirm。
 
         完整消费流且成功后确认 warmed（失败不标记，冷却后重试）。
         """
+        from .prewarm import prewarm_all
+
         _logger.info("B5 prewarm scheduled (background)")
         try:
-            prewarm_msgs = self._session_prewarm_messages()
-            async for _chunk in self._raw_stream(
-                prewarm_msgs,
-                tools=self._get_core_tools()
-                if hasattr(self, "_get_core_tools")
-                else None,
-                max_tokens=1,
-            ):
-                pass  # 完整消费流（不提前 break）
-            self._confirm_prewarm()
+            await prewarm_all(self)
             _logger.info("B5 prewarm confirmed (background)")
         except asyncio.CancelledError:
             raise
@@ -3796,13 +3920,17 @@ class AgentV2:
             # 冷却窗口由 _prewarm_last_attempt_at 控制
 
     async def _keep_alive_async(self) -> None:
-        """B5: 后台保活——发 max_tokens=1 空请求保活前缀，不阻塞当前请求。"""
-        from langchain_core.messages import HumanMessage
+        """B5: 后台保活——发 max_tokens=1 空请求保活前缀，不阻塞当前请求。
+
+        FX5: keep-alive rides the frozen AgentPrefix (system + core tools +
+        keep-alive), never a bare HumanMessage body.
+        """
+        from .prewarm import core_tools_for, keepalive_messages
 
         try:
             async for _chunk in self._raw_stream(
-                [HumanMessage(content="keep-alive")],
-                tools=None,
+                keepalive_messages(self),
+                tools=core_tools_for(self, "agent"),
                 max_tokens=1,
             ):
                 break  # 只消费首个 chunk
@@ -3812,25 +3940,15 @@ class AgentV2:
         except Exception as exc:  # pragma: no cover - 保活失败不影响请求
             _logger.warning("B5 background keep-alive failed: %s", exc)
 
-    def _session_prewarm_messages(self) -> list:
-        """B5: 构造预热请求消息（复用真实会话前缀，Cherry Studio 同签名语义）。
+    def _session_prewarm_messages(self, kind: str = "agent") -> list:
+        """B5: 构造预热请求消息（FX4：按槽位 Profile 造消息——chat 无 tools、
+        agent 带核心 tools；system 与真实回合同构）。
 
         luna 审计 R8：预热必须包含 system prompt——否则预热的是另一种前缀。
         """
-        from langchain_core.messages import HumanMessage, SystemMessage
+        from .prewarm import session_prewarm_messages
 
-        system = ""
-        try:
-            from .prompts.registry import get_system_prompt
-
-            system = get_system_prompt(variant=getattr(self, "_prompt_variant", lambda: "default")())
-        except Exception:  # pragma: no cover
-            system = ""
-        msgs: list = []
-        if system:
-            msgs.append(SystemMessage(content=system))
-        msgs.append(HumanMessage(content="warm"))
-        return msgs
+        return session_prewarm_messages(self, kind)
 
     def _maybe_keep_alive(self, last_call_at: float) -> bool:
         """B5: 保活调度判定（默认关闭；启用 + ≥5m + 预算未耗尽）。
@@ -3882,13 +4000,53 @@ class AgentV2:
             return ""
         return self._get_memory_context(user_input, include_long_term=True)
 
+    def append_turn_context(self, blocks: Sequence[TurnContextBlock]) -> None:
+        """FX8: public seam for LinkAgent — EKO-style context can only
+        append to the user suffix after the prefix is frozen.
+
+        ``kind`` must be ``eko`` or ``note``; ``system``/``tools`` raise
+        ValueError (never splice into frozen sections). ChatPrefix turns
+        ignore the blocks entirely.
+        """
+        from .turn_context import validate_blocks
+
+        validate_blocks(blocks)
+        store = getattr(self, "_turn_context_blocks", None)
+        if store is None:
+            store = []
+            self._turn_context_blocks = store
+        store.extend(list(blocks))
+
+    def clear_turn_context(self) -> None:
+        """FX8: remove all appended turn-context blocks."""
+        self._turn_context_blocks = []
+
+    def _turn_context_suffix(self) -> str:
+        """FX8: serialized suffix (empty when no blocks / blank text)."""
+        from .turn_context import serialize_turn_context
+
+        return serialize_turn_context(getattr(self, "_turn_context_blocks", []) or [])
+
     def _application_cache_namespace(self) -> str:
-        """Isolate answer caches by provider endpoint, model, and credential."""
+        """Isolate answer caches by provider endpoint, model, credential,
+        and (FX9) optional agent namespace.
+
+        When ``_agent_namespace`` is unset/None the key stays byte-identical
+        to the legacy template so existing precise/semantic entries keep
+        working until Phase F assigns agent ids. The namespace is a cache
+        key only — never written into system/shared prefix sections.
+        """
         base_url = str(self.model_config.get("base_url") or "").rstrip("/")
         model_name = str(self.model_config.get("model_name") or "")
         api_key = str(self.model_config.get("api_key") or "")
         credential_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-        return f"{base_url}|{model_name}|{credential_digest}"
+        base = f"{base_url}|{model_name}|{credential_digest}"
+        ns = getattr(self, "_agent_namespace", None)
+        if ns is not None:
+            if not _AGENT_NAMESPACE_RE.fullmatch(ns):
+                raise ValueError(f"invalid agent namespace: {ns!r}")
+            return f"{base}|{ns}"
+        return base
 
     async def _fast_reply_with_tools(
         self,
@@ -3926,9 +4084,11 @@ class AgentV2:
             role_instruction = (
                 f"{role_instruction.strip()}\n\n{FAST_LOCAL_BUILD_INSTRUCTION}"
             ).strip()
-        allowed_tool_names = self._resolve_fast_reply_tool_allowlist(
-            user_input, allowed_tool_names
-        )
+        # FX6: the agent path NEVER resolves per-turn allowlists for schema
+        # shaping — tools are the frozen full core set. Explicit allowlists
+        # passed by callers (e.g. plan-only readonly) remain execution-layer
+        # contracts applied below; execution denials belong to orchestrator
+        # permissions, not user-text heuristics.
         if (
             allowed_tool_names is SOCIAL_CHAT_TOOL_NAMES
             and not role_instruction.strip()
@@ -3936,6 +4096,11 @@ class AgentV2:
             role_instruction = SOCIAL_CHAT_ROLE_INSTRUCTION
         # Social chat: skip all sticky memory (short + long + RAG).
         memory_ctx = self._memory_ctx_for_turn(user_input)
+        # FX8: appended turn context rides AFTER the base memory, BEFORE the
+        # user content — never merged into S1 / tool sections.
+        suffix = self._turn_context_suffix()
+        if suffix:
+            memory_ctx = f"{memory_ctx}\n{suffix}" if memory_ctx else suffix
         system = get_system_prompt(variant=self._prompt_variant())
         user_msg = build_user_message(role_instruction, user_input, memory_ctx)
         research_policy = get_research_policy(user_input)
@@ -4123,10 +4288,12 @@ class AgentV2:
                         "distinguish uncertainty, and cite only these exact source URLs:\n"
                         f"{source_list}"
                     )
-                    # B2 (CB1/CB7): research_contract 是每请求动态内容，绝不允许改写
-                    # messages[0]（system 前缀）——否则缓存前缀每请求逐字节变化、命中归零。
-                    # 作为独立 SystemMessage 追加到断点之后（system 保持头部不动）。
-                    messages.append(SystemMessage(content=research_contract))
+                    # FXC3: research_contract 是每请求动态内容，绝不允许改写
+                    # messages[0]（S1 前缀），也禁止第二条会变的 SystemMessage。
+                    # 作为 user 快照追加（system 保持头部不动）。
+                    messages.append(
+                        HumanMessage(content=get_system_s2(research_contract=research_contract))
+                    )
                     messages.append(AIMessage(
                         content="",
                         tool_calls=[call for call, _url, _content in verified_fetches],
@@ -4140,31 +4307,11 @@ class AgentV2:
                             tool_call_id=fetch_call["id"],
                         ))
 
-        # Get core tools for binding
+        # FX6: the tools schema is the frozen FULL core set — never cropped,
+        # not even by explicit allowlists. Per-turn schema mutation shatters
+        # the prefix archive; execution-layer denials (e.g. plan readonly)
+        # happen in _execute_tool / orchestrator permissions.
         core_tools = self._get_core_tools()
-        if not research_policy.requires_web:
-            # Keep the model from selecting the slow network path for a local
-            # task merely because the prompt contains generic words such as
-            # "current" or "sources". Explicit research requests still keep
-            # both tools available, and direct deterministic research above is
-            # unchanged.
-            core_tools = [
-                tool for tool in core_tools
-                if str(getattr(tool, "name", "")).lower()
-                not in {"websearch", "webfetch"}
-            ]
-        if allowed_tool_names is not None:
-            core_tools = [
-                tool for tool in core_tools
-                if str(getattr(tool, "name", "")).lower()
-                in allowed_tool_names
-            ]
-        core_tools = self._select_turn_tools(
-            core_tools,
-            user_input,
-            requires_web=research_policy.requires_web,
-            allowed_tool_names=allowed_tool_names,
-        )
 
         # API runs inject a request-correlated tracer; direct CLI usage creates
         # one lazily so tool spans still remain observable.
@@ -4938,10 +5085,19 @@ class AgentV2:
     ) -> str:
         """Execute a single tool by name with the given arguments.
 
-        Routes through the safety gate (阶段二): policy classification,
+        Routes through the safety gate (首段阶): policy classification,
         The Agent-local ToolOrchestrator remains the only execution entry;
         no direct-invocation fallback bypasses its policy or audit controls.
+
+        FX6: plan mode is globally read-only at the execution layer — the
+        tool schema is frozen full (never cropped per turn), so denials
+        live HERE, not in the API schema.
         """
+        if mode == "plan" and name not in PLAN_READONLY_TOOL_NAMES:
+            return (
+                f"[blocked: plan mode is read-only; "
+                f"{name} was not executed]"
+            )
         orchestrator = getattr(self, "_tool_orchestrator", None)
         if orchestrator is None or not callable(
             getattr(orchestrator, "execute_tool", None)
@@ -5282,7 +5438,9 @@ class AgentV2:
         incrementally. When stream=False (default), uses ainvoke()
         for complete token usage tracking.
         """
-        await self._ensure_session_loaded()
+        decision = getattr(self, "_turn_decision", None)
+        if decision is None or "session.load" not in decision.skip_await:
+            await self._ensure_session_loaded()
         memory_ctx = self._memory_ctx_for_turn(user_input)
         system = get_system_prompt(variant=self._prompt_variant())
         user_msg = build_user_message("", user_input, memory_ctx)
@@ -6212,30 +6370,43 @@ class AgentV2:
 
         routing_directive, user_input = parse_routing_directive(user_input)
         self._routing_directive = routing_directive
-        force_fast = routing_directive == RoutingDirective.FORCE_FAST
-        force_full = routing_directive == RoutingDirective.FORCE_FULL
 
         ToolOrchestrator.clear_live_dedup()
 
-        await self._memory.initialize()
-        _logger.info(
-            "run_stage=memory_initialize elapsed_ms=%d",
-            int((time.monotonic() - run_impl_started) * 1000),
-        )
-        await self._ensure_session_loaded()
-        _logger.info(
-            "run_stage=session_loaded elapsed_ms=%d",
-            int((time.monotonic() - run_impl_started) * 1000),
-        )
+        # Detect (but do NOT handle) file ops / download intents, then decide
+        # the route BEFORE any await: route() is a pure function and chat
+        # turns must skip memory.initialize / session.load (FX3).
+        file_op = self._detect_file_operation(user_input)
+        download_intent = self._detect_download_intent(user_input)
 
-        if mode == "plan":
-            return await self._run_plan_only(user_input)
+        decision = route(
+            user_input,
+            mode,
+            routing_directive,
+            file_op=file_op,
+            download=download_intent,
+        )
+        self._turn_decision = decision
+
+        if "memory.initialize" not in decision.skip_await:
+            await self._memory.initialize()
+            _logger.info(
+                "run_stage=memory_initialize elapsed_ms=%d",
+                int((time.monotonic() - run_impl_started) * 1000),
+            )
+        if "session.load" not in decision.skip_await:
+            await self._ensure_session_loaded()
+            _logger.info(
+                "run_stage=session_loaded elapsed_ms=%d",
+                int((time.monotonic() - run_impl_started) * 1000),
+            )
 
         research_policy = get_research_policy(user_input)
 
-        # Fast tool path for simple file operations (check BEFORE download intent)
-        file_op = self._detect_file_operation(user_input)
-        if file_op:
+        if decision.path == "plan":
+            return await self._run_plan_only(user_input)
+
+        if decision.path == "file_op":
             try:
                 result = await self._handle_file_operation(file_op, mode=mode)
                 self._memory.add_interaction(user_input, result)
@@ -6247,17 +6418,27 @@ class AgentV2:
                 if self._side_effecting_tool_attempted:
                     return side_effect_failure_notice(str(exc))
                 _logger.warning("direct file operation failed: %s", exc)
+                if download_intent:
+                    try:
+                        result = await self._handle_download_intent(download_intent)
+                        self._memory.add_interaction(user_input, result)
+                        self._memory.save_session()
+                        return result
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc2:
+                        if self._side_effecting_tool_attempted:
+                            return side_effect_failure_notice(str(exc2))
+                        _logger.warning("download path failed: %s", exc2)
+                decision = route(user_input, mode, routing_directive)
 
         # Check for download intent (after file operations). A create/build
         # product prompt must not collapse into download_skill just because it
         # mentions an isolated Skill directory (T03).
-        download_intent = self._detect_download_intent(user_input)
-        if download_intent and not self._has_creation_product_intent(user_input):
-            if mode == "plan":
-                result = "[blocked: plan mode is read-only; downloads were not executed]"
-                self._memory.add_interaction(user_input, result)
-                self._memory.save_session()
-                return result
+        if (
+            decision.path == "download"
+            and not self._has_creation_product_intent(user_input)
+        ):
             try:
                 result = await self._handle_download_intent(download_intent)
                 self._memory.add_interaction(user_input, result)
@@ -6269,18 +6450,16 @@ class AgentV2:
                 if self._side_effecting_tool_attempted:
                     return side_effect_failure_notice(str(exc))
                 _logger.warning("download path failed: %s", exc)
+            decision = route(user_input, mode, routing_directive)
 
-        # Fast path for simple queries (build AND plan modes) - tool-aware
-        # Social chat must not fall through into LangGraph on tool-path errors.
-        social = self._is_social_chat(user_input)
-        if (
-            mode in ("build", "plan")
-            and not force_full
-            and declines_tools(user_input)
-        ):
+        if decision.path == "chat":
             try:
-                _logger.info("route=declines_tools mode=%s -> fast_reply", mode)
-                return await self._fast_reply(user_input)
+                _logger.info("route=chat mode=%s -> fast_reply", mode)
+                result = await self._fast_reply(user_input)
+                if not self._session_loaded:
+                    self._memory.load_session(append_only=True)
+                    self._session_loaded = True
+                return result
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -6289,55 +6468,18 @@ class AgentV2:
                     "刚才没能完整回复你，我在这儿听着呢。"
                     "你可以再说一次，或者换个说法。"
                 )
-        if (
-            mode in ("build", "plan")
-            and not force_full
-            and social
-            and _PURE_SOCIAL_GREETING_RE.match(user_input.strip())
-        ):
-            try:
-                _logger.info("route=pure_greeting mode=%s -> fast_reply", mode)
-                return await self._fast_reply(user_input)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                _logger.warning("pure greeting fast path failed: %s", exc)
-                return (
-                    "刚才没能完整回复你，我在这儿听着呢。"
-                    "你可以再说一次，或者换个说法。"
-                )
-        if mode == "compose" and social:
-            try:
-                _logger.info("route=social_chat mode=compose -> fast_tools")
-                return await self._fast_reply_with_tools(user_input)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                _logger.warning("social chat compose path failed: %s", exc)
-                return (
-                    "刚才没能完整回复你，我在这儿听着呢。"
-                    "你可以再说一次，或者换个说法。"
-                )
 
-        if (
-            mode in ("build", "plan")
-            and not force_full
-        ):
+        if decision.path == "agent":
             try:
-                if social:
-                    _logger.info("route=social_chat mode=%s -> fast_tools", mode)
-                else:
-                    _logger.info(
-                        "route=stream_default mode=%s force_fast=%s -> fast_tools",
-                        mode,
-                        force_fast,
-                    )
+                _logger.info("route=agent mode=%s -> fast_tools", mode)
                 return await self._fast_reply_with_tools(user_input)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if social:
-                    _logger.warning("social chat fast path failed (no graph): %s", exc)
+                if decision.social:
+                    _logger.warning(
+                        "social chat fast path failed (no graph): %s", exc
+                    )
                     return (
                         "刚才没能完整回复你，我在这儿听着呢。"
                         "你可以再说一次，或者换个说法。"
@@ -6352,8 +6494,7 @@ class AgentV2:
                 )
                 return f"[error] {type(exc).__name__}: {str(exc)[:200]}"
 
-        # Compose 模式: Plan + Build 结合
-        if mode == "compose":
+        if decision.path == "compose":
             try:
                 return await self._run_compose(user_input)
             except asyncio.CancelledError:

@@ -211,7 +211,12 @@ def resolve_fast_reply_tool_allowlist(
     user_input: str,
     allowed_tool_names: frozenset[str] | None,
 ) -> frozenset[str] | None:
-    """Return tool allowlist for fast-reply (E6 social whitelist)."""
+    """Legacy execution-layer resolver (FX6): retained for callers that
+    still need an allowlist hint, but FORBIDDEN for API schema shaping —
+    TurnRouter/agent path never bind LLM tools from this. Per-turn schema
+    cropping shatters the prefix archive; denials belong to orchestrator
+    permissions.
+    """
     if allowed_tool_names is not None:
         return allowed_tool_names
     if declines_tools(user_input):
