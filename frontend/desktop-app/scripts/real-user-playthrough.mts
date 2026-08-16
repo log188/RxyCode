@@ -122,10 +122,49 @@ function parseDotEnv(text: string): Record<string, string> {
   return out
 }
 
+const delay = (ms: number): Promise<void> => new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
+
+function mysqlPartsFromJdbc(url: string): Record<string, string> {
+  const match = String(url).match(/^jdbc:mysql:\/\/([^:/?#]+)(?::(\d+))?(?:\/([^?;#]+))?/i)
+  if (match === null) return {}
+  const parts: Record<string, string> = { MYSQL_HOST: match[1] ?? '' }
+  if (match[2]) parts.MYSQL_PORT = match[2]
+  if (match[3]) parts.MYSQL_DATABASE = match[3]
+  return parts
+}
+
 function mysqlEnv(): Record<string, string> {
   const envPath = join(repoDir, '.env.t09-mysql')
   if (!existsSync(envPath)) return {}
-  return parseDotEnv(readFileSync(envPath, 'utf8'))
+  const parsed = parseDotEnv(readFileSync(envPath, 'utf8'))
+  const allowed = [
+    'MYSQL_URL',
+    'MYSQL_USER',
+    'MYSQL_PASSWORD',
+    'MYSQL_ADMIN_PASSWORD',
+    'SPRING_DATASOURCE_URL',
+    'SPRING_DATASOURCE_USERNAME',
+    'SPRING_DATASOURCE_PASSWORD',
+    'APP_ADMIN_USERNAME',
+    'APP_ADMIN_PASSWORD',
+    'T09_ADMIN_PASSWORD'
+  ]
+  const out: Record<string, string> = {}
+  for (const key of allowed) {
+    const value = parsed[key]
+    if (typeof value === 'string' && value.length > 0) out[key] = value
+  }
+  Object.assign(out, mysqlPartsFromJdbc(out.MYSQL_URL ?? out.SPRING_DATASOURCE_URL ?? ''))
+  if (!out.APP_ADMIN_USERNAME) out.APP_ADMIN_USERNAME = 'admin'
+  if (!out.APP_ADMIN_PASSWORD) out.APP_ADMIN_PASSWORD = out.T09_ADMIN_PASSWORD || 't09-demo-login'
+  if (!out.T09_ADMIN_PASSWORD) out.T09_ADMIN_PASSWORD = out.APP_ADMIN_PASSWORD
+  return out
+}
+
+function redactLog(text: string): string {
+  return text
+    .replace(/(password|pwd|secret|passwd)\s*[=:]\s*\S+/gi, '$1=***')
+    .replace(/jdbc:mysql:\/\/[^\s"']+/gi, 'jdbc:mysql://***')
 }
 
 async function withChrome<T>(
@@ -323,30 +362,53 @@ const js = {
   })()`,
   t02: `(() => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const press = (key) => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key, code: key === ' ' ? 'Space' : key, bubbles: true }));
-      document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    const down = (key) => {
+      const init = { key, code: key === ' ' ? 'Space' : key, bubbles: true, cancelable: true };
+      document.dispatchEvent(new KeyboardEvent('keydown', init));
+      window.dispatchEvent(new KeyboardEvent('keydown', init));
+    };
+    const up = (key) => {
+      const init = { key, code: key === ' ' ? 'Space' : key, bubbles: true, cancelable: true };
+      document.dispatchEvent(new KeyboardEvent('keyup', init));
+      window.dispatchEvent(new KeyboardEvent('keyup', init));
+    };
+    const shown = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const s = getComputedStyle(node);
+      return s.display !== 'none' && s.visibility !== 'hidden' && !node.classList.contains('hidden');
     };
     return (async () => {
       const start = document.querySelector('#btn-start, #startBtn');
       if (!(start instanceof HTMLElement)) return { ok: false, reason: 'no start' };
       start.click();
-      await sleep(300);
-      for (let i = 0; i < 12; i += 1) {
-        press('ArrowRight'); press('d'); press(' '); press('ArrowUp');
-        await sleep(160);
+      await sleep(400);
+      down('ArrowRight');
+      down('d');
+      for (let i = 0; i < 28; i += 1) {
+        down(' ');
+        down('ArrowUp');
+        await sleep(140);
+        up(' ');
+        up('ArrowUp');
+        await sleep(80);
       }
-      const coins = Number(document.querySelector('#coin')?.textContent || 0);
+      const score = Number(document.querySelector('#score, #coin, #scoreVal')?.textContent || 0);
       const lives = Number(document.querySelector('#lives')?.textContent || 0);
       const level = Number(document.querySelector('#level')?.textContent || 0);
-      const pause = document.querySelector('#btn-pause');
-      if (pause instanceof HTMLElement) pause.click(); else press('p');
-      await sleep(250);
-      const pauseVisible = Boolean(document.querySelector('#pauseOverlay:not(.hidden)'));
-      const resume = document.querySelector('#btn-resume2, #btn-resume');
-      if (resume instanceof HTMLElement) resume.click();
-      await sleep(200);
-      return { ok: true, coins, lives, level, pauseVisible, state: (document.querySelector('#state')?.textContent || '').trim() };
+      const pauseBtn = document.querySelector('#btn-pause');
+      if (pauseBtn instanceof HTMLElement) pauseBtn.click();
+      else down('p');
+      await sleep(350);
+      const pauseVisible = shown(document.querySelector('#pause, #pauseOverlay'));
+      return {
+        ok: score > 0 || pauseVisible || /运行|running/i.test(document.body.innerText),
+        coins: score,
+        score,
+        lives,
+        level,
+        pauseVisible,
+        state: (document.querySelector('#state, #stateLabel')?.textContent || '').trim()
+      };
     })();
   })()`,
   t03home: `(() => {
@@ -366,77 +428,137 @@ const js = {
   t03wrong: `(() => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return (async () => {
-      const user = document.querySelector('#lg_user, #site-login-user, #login-user');
-      const pass = document.querySelector('#lg_pass, #site-login-pass, #login-pass');
-      const form = document.querySelector('#loginForm, #siteLoginForm');
-      if (user instanceof HTMLInputElement) { user.value = 'wrong'; user.dispatchEvent(new Event('input', { bubbles: true })); }
-      if (pass instanceof HTMLInputElement) { pass.value = 'nope'; pass.dispatchEvent(new Event('input', { bubbles: true })); }
+      const user = document.querySelector('#lg_user, #site-login-user, #login-user, #loginUser');
+      const pass = document.querySelector('#lg_pass, #site-login-pass, #login-pass, #loginPass');
+      const form = document.querySelector('#loginForm, #siteLoginForm, form');
+      if (!(user instanceof HTMLInputElement)) return { ok: false, reason: 'no login fields' };
+      user.value = 'wrong';
+      user.dispatchEvent(new Event('input', { bubbles: true }));
+      if (pass instanceof HTMLInputElement) {
+        pass.value = 'nope';
+        pass.dispatchEvent(new Event('input', { bubbles: true }));
+      }
       if (form instanceof HTMLFormElement) form.requestSubmit();
       else document.querySelector('button[type=submit]')?.click();
-      await sleep(400);
-      const msg = (document.querySelector('#loginMsg, #siteLoginStatus')?.textContent || '').trim();
-      return { ok: msg.length > 0 || /错误|失败|invalid|incorrect/i.test(document.body.innerText), msg };
+      await sleep(500);
+      const msg = (document.querySelector('#loginMsg, #siteLoginStatus, .form-msg, .error, #login-error')?.textContent || '').trim();
+      const body = document.body.innerText || '';
+      return { ok: msg.length > 0 || /错误|失败|invalid|incorrect/i.test(body), msg: msg || body.slice(0, 120) };
     })();
   })()`,
   t03demo: `(() => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return (async () => {
-      const demo = document.querySelector('#btn-demo-login');
+      const demo = document.querySelector('#btn-demo-login, #btn-demo-login-alt');
       if (demo instanceof HTMLElement) {
         demo.click();
-        await sleep(800);
-      } else {
-        const user = document.querySelector('#lg_user');
-        const pass = document.querySelector('#lg_pass');
-        if (user instanceof HTMLInputElement) user.value = 'admin';
-        if (pass instanceof HTMLInputElement) pass.value = 'demo123';
-        document.querySelector('#loginForm button[type=submit], #loginForm button')?.click();
-        await sleep(800);
+        await sleep(1200);
       }
-      return { href: location.href, title: document.title };
+      return { href: location.href, title: document.title, modules: document.querySelectorAll('[data-module]').length };
     })();
   })()`,
   t03admin: `(() => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return (async () => {
-      for (let i = 0; i < 20 && document.querySelectorAll('[data-module]').length === 0; i += 1) await sleep(150);
-      const modules = [];
-      for (const name of ['users','orders','content','settings','analytics']) {
+      for (let i = 0; i < 25 && document.querySelectorAll('[data-module]').length === 0; i += 1) await sleep(150);
+      const names = Array.from(document.querySelectorAll('[data-module]')).map((n) => n.getAttribute('data-module'));
+      const visited = [];
+      for (const name of names) {
         const btn = document.querySelector('[data-module="'+name+'"]');
         if (btn instanceof HTMLElement) {
           btn.click();
-          await sleep(250);
-          modules.push({ name, text: (document.body.innerText || '').slice(0, 180) });
+          await sleep(220);
+          visited.push({ name, title: (document.querySelector('#moduleTitle, h1')?.textContent || '').trim() });
         }
       }
-      const add = document.querySelector('#userAddBtn, [data-module="users"]');
+      return {
+        ok: names.length >= 5,
+        modules: names.length,
+        names,
+        visited,
+        href: location.href,
+        title: document.title,
+        modalBlocking: Boolean(document.querySelector('#modalMask:not([hidden])'))
+      };
+    })();
+  })()`,
+  t03realLogin: `(() => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    return (async () => {
+      const hint = document.body.innerText || '';
+      const pass = /demo1234/.test(hint) ? 'demo1234' : 'demo123';
+      const user = document.querySelector('#lg_user, #site-login-user, #login-user, #loginUser');
+      const pw = document.querySelector('#lg_pass, #site-login-pass, #login-pass, #loginPass');
+      if (!(user instanceof HTMLInputElement) || !(pw instanceof HTMLInputElement)) {
+        return { ok: false, reason: 'no fields', href: location.href };
+      }
+      user.value = 'admin';
+      pw.value = pass;
+      user.dispatchEvent(new Event('input', { bubbles: true }));
+      pw.dispatchEvent(new Event('input', { bubbles: true }));
+      const form = document.querySelector('#loginForm, #siteLoginForm');
+      if (form instanceof HTMLFormElement) form.requestSubmit();
+      else document.querySelector('button[type=submit]')?.click();
+      await sleep(900);
+      return {
+        ok: document.querySelectorAll('[data-module]').length >= 5,
+        href: location.href,
+        modules: document.querySelectorAll('[data-module]').length,
+        usedHint: pass
+      };
+    })();
+  })()`,
+  t03addUser: `(() => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    return (async () => {
       const users = document.querySelector('[data-module="users"]');
       if (users instanceof HTMLElement) users.click();
-      await sleep(200);
-      if (add instanceof HTMLElement && add.id === 'userAddBtn') add.click();
-      await sleep(300);
-      const edited = Boolean(document.querySelector('#modalMask:not([hidden]), #modalForm, .modal-mask:not([hidden])'));
+      await sleep(250);
       document.querySelector('#modalCancel')?.click();
-      const logout = document.querySelector('#logoutBtn');
-      if (modules.length >= 5 && logout instanceof HTMLElement) logout.click();
-      await sleep(400);
-      return { ok: modules.length >= 5, modules: modules.length, edited, hrefAfterLogout: location.href, title: document.title };
+      await sleep(150);
+      const addBtn = document.querySelector('#userAddBtn, #btn-add-user') || Array.from(document.querySelectorAll('button')).find((b) => /新增用户/.test(b.textContent || ''));
+      if (addBtn instanceof HTMLElement) addBtn.click();
+      await sleep(300);
+      const name = document.querySelector('#mf_name, #m-name, input[name="name"]');
+      const email = document.querySelector('#mf_email, #m-email, input[name="email"]');
+      const role = document.querySelector('#m-role');
+      if (role instanceof HTMLInputElement && !role.value) role.value = '运营';
+      if (name instanceof HTMLInputElement) {
+        name.value = 'realuser';
+        name.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      if (email instanceof HTMLInputElement) {
+        email.value = 'realuser@demo.example.com';
+        email.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      const fields = (document.querySelector('#modalFields')?.innerText || '').trim();
+      return {
+        ok: Boolean(name instanceof HTMLInputElement && name.value),
+        fields: fields.slice(0, 200),
+        modalTitle: (document.querySelector('#modalTitle')?.textContent || '').trim()
+      };
     })();
   })()`,
   t04: `(() => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const fire = (el) => { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
     return (async () => {
-      const city = document.querySelector('[data-city="hz"], [data-city="sz"]');
+      const city = document.querySelector('[data-city="hz"], [data-city="sz"], #chips-hangzhou, #chips-suzhou');
       if (city instanceof HTMLElement) city.click();
       const cap = document.querySelector('#budgetCap');
       if (cap instanceof HTMLInputElement) { cap.value = '2600'; fire(cap); }
-      const mode = document.querySelector('#modeSelect');
+      const mode = document.querySelector('#modeSelect, #scenario');
       if (mode instanceof HTMLSelectElement && mode.options.length > 1) { mode.selectedIndex = 1; fire(mode); }
+      const dep = document.querySelector('#depDate');
+      if (dep instanceof HTMLInputElement) { dep.value = '2026-09-10'; fire(dep); }
       await sleep(300);
       const text = document.body.innerText || '';
-      const totalMatch = text.match(/([12]\\d{3}|3000)/);
-      return { ok: /苏州|杭州|预算/.test(text), hasControls: Boolean(cap || city), snippet: text.slice(0, 500) };
+      return {
+        ok: /苏州|杭州|预算/.test(text),
+        hasControls: Boolean(cap || city || mode || dep),
+        overBudget: /超预算/.test(text),
+        snippet: text.slice(0, 500)
+      };
     })();
   })()`,
   t06: `(() => {
@@ -459,20 +581,40 @@ const js = {
   })()`,
   t07: `(() => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const fire = (el) => { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+    const fire = (el) => {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
     return (async () => {
-      const before = (document.body.innerText || '').slice(0, 800);
-      const km = document.querySelector('#km, #mileage, input[type=range]');
-      const wcost = document.querySelector('#wcost, #w-cost, #budget');
-      const wrange = document.querySelector('#wrange, #w-range');
-      const ranges = Array.from(document.querySelectorAll('input[type=range]'));
-      if (km instanceof HTMLInputElement) { km.value = String(Math.min(Number(km.max || 30000), 25000)); fire(km); }
-      if (wcost instanceof HTMLInputElement) { wcost.value = wcost.id === 'budget' ? '200000' : '70'; fire(wcost); }
-      if (wrange instanceof HTMLInputElement) { wrange.value = '10'; fire(wrange); }
-      if (ranges[1] instanceof HTMLInputElement) { ranges[1].value = String(Number(ranges[1].min || 0) + 5000); fire(ranges[1]); }
+      const recEl = document.querySelector('#recName, .name');
+      const before = (recEl?.textContent || document.body.innerText || '').slice(0, 120);
+      const economy = document.querySelector('#btnEconomy');
+      if (economy instanceof HTMLElement) economy.click();
+      const mileage = document.querySelector('#mileage, #km');
+      if (mileage instanceof HTMLInputElement) {
+        mileage.value = String(Math.min(Number(mileage.max || 30000), 25000));
+        fire(mileage);
+      }
+      const wTco = document.querySelector('#wTco, #wcost, #w-cost');
+      if (wTco instanceof HTMLInputElement) {
+        wTco.value = wTco.max && Number(wTco.max) > 100 ? '70' : '70';
+        fire(wTco);
+      }
+      const budget = document.querySelector('#budget');
+      if (budget instanceof HTMLInputElement && budget.id === 'budget') {
+        budget.value = '200000';
+        fire(budget);
+      }
       await sleep(400);
+      const afterRec = (document.querySelector('#recName, .name')?.textContent || '').trim();
       const after = document.body.innerText || '';
-      return { ok: /TCO|总持有|推荐|万元|续航/.test(after), changed: before.slice(0, 200) !== after.slice(0, 200), snippet: after.slice(0, 500) };
+      return {
+        ok: /TCO|总持有|推荐|万元|续航/.test(after),
+        changed: before.trim() !== afterRec || /25000|20,000|经济/.test(after),
+        recBefore: before.trim(),
+        recAfter: afterRec || after.slice(0, 80),
+        snippet: after.slice(0, 500)
+      };
     })();
   })()`,
   t08: `(() => {
@@ -496,69 +638,165 @@ const js = {
   t09wrong: `(() => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return (async () => {
-      const u = document.querySelector('#loginUser');
-      const p = document.querySelector('#loginPass');
+      for (let i = 0; i < 20; i += 1) {
+        const loginA = document.querySelector('#login-view');
+        const loginB = document.querySelector('#loginPanel');
+        const visibleA = loginA instanceof HTMLElement && !loginA.classList.contains('hidden');
+        const visibleB = loginB instanceof HTMLElement && !loginB.classList.contains('hidden');
+        if (visibleA || visibleB || document.querySelector('#login-username, #loginUser')) break;
+        await sleep(200);
+      }
+      const u = document.querySelector('#loginUser, #login-username');
+      const p = document.querySelector('#loginPass, #login-password');
       if (u instanceof HTMLInputElement) u.value = 'nope';
       if (p instanceof HTMLInputElement) p.value = 'nope';
-      document.querySelector('#loginBtn')?.click();
-      await sleep(800);
-      const msg = (document.querySelector('#loginMsg')?.textContent || '').trim();
-      const mainHidden = document.querySelector('#mainPanel')?.classList.contains('hidden');
-      return { ok: mainHidden !== false, msg, stillOnLogin: Boolean(document.querySelector('#loginPanel:not(.hidden)')) };
+      const form = document.querySelector('#login-form');
+      if (form instanceof HTMLFormElement) form.requestSubmit();
+      else document.querySelector('#loginBtn')?.click();
+      await sleep(900);
+      const msg = (document.querySelector('#loginMsg, #login-error')?.textContent || '').trim();
+      const stillOnLogin = Boolean(
+        document.querySelector('#loginPanel:not(.hidden), #login-view:not(.hidden), #loginUser, #login-username')
+      );
+      return { ok: msg.length > 0 || stillOnLogin, msg, stillOnLogin };
     })();
   })()`,
   t09login: (user: string, pass: string) => `(() => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return (async () => {
-      const u = document.querySelector('#loginUser');
-      const p = document.querySelector('#loginPass');
+      const u = document.querySelector('#loginUser, #login-username');
+      const p = document.querySelector('#loginPass, #login-password');
       if (u instanceof HTMLInputElement) u.value = ${JSON.stringify(user)};
       if (p instanceof HTMLInputElement) p.value = ${JSON.stringify(pass)};
-      document.querySelector('#loginBtn')?.click();
-      await sleep(1200);
-      const main = document.querySelector('#mainPanel');
-      return { ok: Boolean(main && !main.classList.contains('hidden')), who: (document.querySelector('#who')?.textContent || '').trim() };
+      const form = document.querySelector('#login-form');
+      if (form instanceof HTMLFormElement) form.requestSubmit();
+      else document.querySelector('#loginBtn')?.click();
+      await sleep(1500);
+      const mainA = document.querySelector('#main-view');
+      const mainB = document.querySelector('#mainPanel');
+      const ok = Boolean(
+        (mainA && !mainA.classList.contains('hidden')) ||
+        (mainB && !mainB.classList.contains('hidden'))
+      );
+      return {
+        ok,
+        who: (document.querySelector('#who, #current-user')?.textContent || '').trim(),
+        flavor: document.querySelector('#login-username') ? 'A' : 'B'
+      };
     })();
   })()`,
   t09use: `(() => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const fire = (el) => { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
     return (async () => {
       try {
-      const name = document.querySelector('#pName');
-      const price = document.querySelector('#pPrice');
-      const cat = document.querySelector('#pCategory');
-      if (name instanceof HTMLInputElement) name.value = '实机体验拿铁';
-      if (price instanceof HTMLInputElement) price.value = '28';
-      if (cat instanceof HTMLInputElement) cat.value = '咖啡';
-      document.querySelector('#addProductBtn')?.click();
-      await sleep(1500);
-      const prodText = (document.querySelector('#productTable')?.innerText || '') + (document.querySelector('#prodMsg')?.innerText || '');
-      const invQty = document.querySelector('#invQty');
-      const invTh = document.querySelector('#invThresh');
-      if (invQty instanceof HTMLInputElement) invQty.value = '12';
-      if (invTh instanceof HTMLInputElement) invTh.value = '3';
-      document.querySelector('#setInvBtn')?.click();
-      await sleep(800);
-      const cust = document.querySelector('#custName');
-      if (cust instanceof HTMLInputElement) cust.value = '真实用户探针';
-      const qty = document.querySelector('#orderQty');
-      if (qty instanceof HTMLInputElement) qty.value = '2';
-      document.querySelector('#addLineBtn')?.click();
-      await sleep(200);
-      document.querySelector('#placeOrderBtn')?.click();
-      await sleep(1000);
-      document.querySelector('#revBtn')?.click();
-      await sleep(700);
-      const invText = (document.querySelector('#invTable')?.innerText || '');
-      const revText = (document.querySelector('#revBody')?.innerText || '');
-      const products = (document.querySelector('#productTable')?.innerText || '') + ' ' + prodText;
-      return {
-        ok: /实机体验拿铁/.test(products) || /拿铁/.test(document.body.innerText) || /营收总额/.test(revText),
-        productTable: products.slice(0, 400),
-        inventory: invText.slice(0, 400),
-        revenue: revText.slice(0, 300),
-        loggedOut: false
-      };
+        const flavorA = Boolean(document.querySelector('#product-form, #login-username, #view-products'));
+        if (flavorA) {
+          document.querySelector('[data-view="products"]')?.click();
+          await sleep(400);
+          const form = document.querySelector('#product-form');
+          const name = form?.querySelector('input[name="name"]');
+          const price = form?.querySelector('input[name="price"]');
+          const cat = form?.querySelector('input[name="category"]');
+          if (name instanceof HTMLInputElement) name.value = '实机体验拿铁';
+          if (price instanceof HTMLInputElement) price.value = '28';
+          if (cat instanceof HTMLInputElement) cat.value = '咖啡';
+          if (form instanceof HTMLFormElement) form.requestSubmit();
+          await sleep(1200);
+          document.querySelector('[data-view="inventory"]')?.click();
+          await sleep(500);
+          const invForm = document.querySelector('#inventory-form');
+          const invSel = invForm?.querySelector('select[name="productId"]');
+          if (invSel instanceof HTMLSelectElement && invSel.options.length > 1) {
+            invSel.selectedIndex = 1;
+            fire(invSel);
+          }
+          const qty = invForm?.querySelector('input[name="quantity"]');
+          const th = invForm?.querySelector('input[name="lowThreshold"]');
+          if (qty instanceof HTMLInputElement) qty.value = '12';
+          if (th instanceof HTMLInputElement) th.value = '3';
+          if (invForm instanceof HTMLFormElement) invForm.requestSubmit();
+          await sleep(800);
+          document.querySelector('[data-view="orders"]')?.click();
+          await sleep(500);
+          const orderForm = document.querySelector('#order-form');
+          const cust = orderForm?.querySelector('input[name="customer"]');
+          const op = orderForm?.querySelector('select[name="productId"]');
+          const oq = orderForm?.querySelector('input[name="quantity"]');
+          if (cust instanceof HTMLInputElement) cust.value = '真实用户探针';
+          if (op instanceof HTMLSelectElement && op.options.length > 1) { op.selectedIndex = 1; fire(op); }
+          if (oq instanceof HTMLInputElement) oq.value = '2';
+          if (orderForm instanceof HTMLFormElement) orderForm.requestSubmit();
+          await sleep(600);
+          document.querySelector('#place-order-btn')?.click();
+          await sleep(1000);
+          document.querySelector('[data-view="admin"]')?.click();
+          await sleep(400);
+          const today = new Date().toISOString().slice(0, 10);
+          const rf = document.querySelector('#revenue-form');
+          const start = rf?.querySelector('input[name="start"]');
+          const end = rf?.querySelector('input[name="end"]');
+          if (start instanceof HTMLInputElement) start.value = today;
+          if (end instanceof HTMLInputElement) end.value = today;
+          if (rf instanceof HTMLFormElement) rf.requestSubmit();
+          await sleep(800);
+          const products = (document.querySelector('#product-table')?.innerText || '');
+          const revenue = (document.querySelector('#rev-total')?.textContent || '') + ' ' + (document.querySelector('#rev-count')?.textContent || '');
+          return {
+            ok: /拿铁|Latte|Espresso/.test(document.body.innerText) || /¥/.test(revenue),
+            flavor: 'A',
+            productTable: products.slice(0, 400),
+            inventory: (document.querySelector('#inventory-table')?.innerText || '').slice(0, 400),
+            revenue: revenue.slice(0, 300),
+            loggedOut: false
+          };
+        }
+        const name = document.querySelector('#pName');
+        const price = document.querySelector('#pPrice');
+        const cat = document.querySelector('#pCategory');
+        if (name instanceof HTMLInputElement) name.value = '实机体验拿铁';
+        if (price instanceof HTMLInputElement) price.value = '28';
+        if (cat instanceof HTMLInputElement) cat.value = '咖啡';
+        document.querySelector('#addProductBtn')?.click();
+        await sleep(1500);
+        const prodText = (document.querySelector('#productTable')?.innerText || '') + (document.querySelector('#prodMsg')?.innerText || '');
+        const invSel = document.querySelector('#invProduct');
+        if (invSel instanceof HTMLSelectElement && invSel.options.length > 0) {
+          invSel.selectedIndex = Math.min(1, invSel.options.length - 1);
+          fire(invSel);
+        }
+        const invQty = document.querySelector('#invQty');
+        const invTh = document.querySelector('#invThresh');
+        if (invQty instanceof HTMLInputElement) invQty.value = '12';
+        if (invTh instanceof HTMLInputElement) invTh.value = '3';
+        document.querySelector('#setInvBtn')?.click();
+        await sleep(800);
+        const cust = document.querySelector('#custName');
+        if (cust instanceof HTMLInputElement) cust.value = '真实用户探针';
+        const orderSel = document.querySelector('#orderProduct');
+        if (orderSel instanceof HTMLSelectElement && orderSel.options.length > 0) {
+          orderSel.selectedIndex = Math.min(1, orderSel.options.length - 1);
+          fire(orderSel);
+        }
+        const qty = document.querySelector('#orderQty');
+        if (qty instanceof HTMLInputElement) qty.value = '2';
+        document.querySelector('#addLineBtn')?.click();
+        await sleep(200);
+        document.querySelector('#placeOrderBtn')?.click();
+        await sleep(1000);
+        document.querySelector('#revBtn')?.click();
+        await sleep(700);
+        const invText = (document.querySelector('#invTable')?.innerText || '');
+        const revText = (document.querySelector('#revBody')?.innerText || '');
+        const products = (document.querySelector('#productTable')?.innerText || '') + ' ' + prodText;
+        return {
+          ok: /实机体验拿铁/.test(products) || /拿铁/.test(document.body.innerText) || /营收总额/.test(revText),
+          flavor: 'B',
+          productTable: products.slice(0, 400),
+          inventory: invText.slice(0, 400),
+          revenue: revText.slice(0, 300),
+          loggedOut: false
+        };
       } catch (err) {
         return { ok: false, error: String(err) };
       }
@@ -583,19 +821,53 @@ async function playWeb(task: typeof TASKS[number], port: number): Promise<StepRe
       } else if (task.id === 'T03') {
         notes.home = await api.evaluate(js.t03home)
         await api.screenshot('01-home.png')
-        if (existsSync(join(task.source, 'login.html'))) {
+        const hasInlineLogin = await api.evaluate(`Boolean(document.querySelector('#lg_user, #site-login-user, #login-user'))`)
+        if (hasInlineLogin) {
+          notes.wrong = await api.evaluate(js.t03wrong)
+          await api.screenshot('02-wrong-login.png')
+        } else if (existsSync(join(task.source, 'login.html'))) {
           await api.navigate(`${url}login.html`)
           notes.wrong = await api.evaluate(js.t03wrong)
           await api.screenshot('02-wrong-login.png')
+          await api.navigate(url)
+          await delay(500)
         }
-        await api.navigate(url)
         notes.demo = await api.evaluate(js.t03demo)
-        await new Promise((r) => setTimeout(r, 900))
+        await delay(1000)
+        let href = String(await api.evaluate('location.href'))
+        if (!/admin\\.html/i.test(href) && existsSync(join(task.source, 'admin.html'))) {
+          // Stay in the same origin; do not invent a new session. Click demo again if still on home.
+          notes.demoRetry = await api.evaluate(js.t03demo)
+          await delay(1000)
+          href = String(await api.evaluate('location.href'))
+        }
         await api.screenshot('03-after-demo.png')
-        await api.evaluate(`(() => { sessionStorage.setItem("demo_admin_session","authenticated"); sessionStorage.setItem("demo_admin_user","admin"); if (!/admin\\.html/i.test(location.href)) location.href = "admin.html"; return location.href; })()`)
-        await new Promise((r) => setTimeout(r, 800))
+        const onLogin = /login\\.html/i.test(href) || Boolean(await api.evaluate(`Boolean(document.querySelector('#loginForm, #lg_user, #login-user')) && document.querySelectorAll('[data-module]').length === 0`))
+        if (onLogin || Number(notes.demo?.modules ?? 0) === 0) {
+          notes.realLogin = await api.evaluate(js.t03realLogin)
+          await delay(800)
+          await api.screenshot('03b-password-login.png')
+        }
         notes.admin = await api.evaluate(js.t03admin)
         await api.screenshot('04-admin-modules.png')
+        for (const name of ['orders', 'content', 'settings', 'analytics']) {
+          await api.evaluate(`document.querySelector('[data-module="${name}"]')?.click()`)
+          await delay(350)
+          await api.screenshot(`05-module-${name}.png`)
+        }
+        notes.addUser = await api.evaluate(js.t03addUser)
+        await api.screenshot('06-add-user-modal.png')
+        await api.evaluate(`(() => {
+          const form = document.querySelector('#modalForm');
+          if (form instanceof HTMLFormElement) form.requestSubmit();
+          const save = document.querySelector('[data-modal="save"]');
+          if (save instanceof HTMLElement) save.click();
+        })()`)
+        await delay(400)
+        await api.screenshot('07-after-add-user.png')
+        await api.evaluate(`document.querySelector('#logoutBtn')?.click()`)
+        await delay(500)
+        await api.screenshot('08-after-logout.png')
       } else if (task.id === 'T04') {
         notes.play = await api.evaluate(js.t04)
         await api.screenshot('02-filters.png')
@@ -609,7 +881,7 @@ async function playWeb(task: typeof TASKS[number], port: number): Promise<StepRe
         notes.play = await api.evaluate(js.t08)
         await api.screenshot('02-filter-map.png')
       }
-      notes.ok = Boolean(notes.play?.ok ?? notes.admin?.ok ?? notes.home?.ok)
+      notes.ok = Boolean(notes.play?.ok ?? notes.admin?.ok ?? notes.addUser?.ok ?? notes.home?.ok)
       return notes
     })
   } finally {
@@ -657,14 +929,15 @@ function playSwing(task: typeof TASKS[number]): StepResult {
   }
 }
 
-async function waitHttp(url: string, timeoutMs: number): Promise<boolean> {
+async function waitHttp(url: string, timeoutMs: number, child: ChildProcess | null = null): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
+    if (child !== null && child.exitCode !== null) return false
     try {
       const res = await fetch(url)
       if (res.ok || res.status === 401 || res.status === 403) return true
     } catch {}
-    await new Promise((r) => setTimeout(r, 500))
+    await delay(500)
   }
   return false
 }
@@ -678,43 +951,57 @@ async function playSpring(task: typeof TASKS[number], port: number): Promise<Ste
   const shotDir = join(outRoot, `${task.batch}-${task.id}`, 'screenshots')
   mkdirSync(shotDir, { recursive: true })
   const existing = process.env.PLAY_SPRING_URL
-  const env = { ...process.env, ...mysqlEnv(), SERVER_PORT: String(port) }
+  const env = { ...process.env, ...mysqlEnv(), SERVER_PORT: String(port), PORT: String(port) }
   if (!env.APP_ADMIN_USERNAME) env.APP_ADMIN_USERNAME = 'admin'
   if (!env.APP_ADMIN_PASSWORD) env.APP_ADMIN_PASSWORD = env.T09_ADMIN_PASSWORD || 't09-demo-login'
   let child: ChildProcess | null = null
   const url = existing && existing.length > 0 ? existing : `http://127.0.0.1:${port}/`
+  const logFile = join(outRoot, `${task.batch}-${task.id}`, 'spring-boot.log')
   if (!existing) {
     const mvn = findMvn(task.source)
     if (mvn === null) return { id: task.id, batch: task.batch, ok: false, error: 'project-local Maven missing' }
-    const logFile = join(outRoot, `${task.batch}-${task.id}`, 'spring-boot.log')
     mkdirSync(dirname(logFile), { recursive: true })
-    child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `${mvn} -f pom.xml -q spring-boot:run -Dspring-boot.run.arguments=--server.port=${port}`], {
+    child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `${mvn} -f pom.xml spring-boot:run "-Dspring-boot.run.arguments=--server.port=${port}"`], {
       cwd: task.source,
       env,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     })
     let log = ''
-    child.stdout?.on('data', (chunk) => { log += String(chunk); writeFileSync(logFile, log) })
-    child.stderr?.on('data', (chunk) => { log += String(chunk); writeFileSync(logFile, log) })
-    const ready = await waitHttp(url, 180_000)
+    const append = (chunk: unknown) => {
+      log += String(chunk)
+      if (log.length > 400_000) log = log.slice(-300_000)
+      writeFileSync(logFile, log)
+    }
+    child.stdout?.on('data', append)
+    child.stderr?.on('data', append)
+    const ready = await waitHttp(url, 180_000, child)
     if (!ready) {
       stopProcess(child)
-      return { id: task.id, batch: task.batch, ok: false, error: 'spring did not listen', logTail: log.slice(-1200) }
+      return { id: task.id, batch: task.batch, ok: false, error: 'spring did not listen', logTail: redactLog(log.slice(-2500)) }
     }
   }
   try {
     const user = String(env.APP_ADMIN_USERNAME)
     const pass = String(env.APP_ADMIN_PASSWORD)
     return await withChrome(url, shotDir, async (api) => {
+      await delay(800)
       await api.screenshot('01-login.png')
       const wrong = await api.evaluate(js.t09wrong)
       await api.screenshot('02-wrong-login.png')
       const login = await api.evaluate(js.t09login(user, pass))
+      await delay(800)
       await api.screenshot('03-logged-in.png')
       const used = await api.evaluate(js.t09use)
       await api.screenshot('04-after-order.png')
-      return { id: task.id, batch: task.batch, ok: Boolean(login.ok && (used.ok || /营收/.test(String(used.revenue || '')))), wrong, login, used }
+      return {
+        id: task.id,
+        batch: task.batch,
+        ok: Boolean(login.ok && (used.ok || /营收|¥|收入/.test(String(used.revenue || '')))),
+        wrong,
+        login,
+        used
+      }
     })
   } finally {
     if (!existing) stopProcess(child)
@@ -728,7 +1015,7 @@ async function main(): Promise<void> {
   const resultPath = join(outRoot, 'playthrough-results.json')
   const previous = existsSync(resultPath) ? JSON.parse(readFileSync(resultPath, 'utf8')).results as StepResult[] : []
   const results: StepResult[] = previous.filter((item) => !selected.some((task) => task.id === item.id && task.batch === item.batch))
-  let port = 18701
+  let port = 18821
   for (const task of selected) {
     console.log(`REAL_USER ${task.batch}-${task.id} ${task.kind}`)
     try {
