@@ -154,6 +154,14 @@ async function main(): Promise<void> {
       await waitFor(async () => (await harness.has('.settings-page')) ? null : true, 2_000, 'settings close')
       await waitFor(async () => (await pendingRpc()) === 0 ? true : null, 5_000, 'settings RPC reconciliation')
     })
+    await check('UX-06b goal dialog closes with Escape', async () => {
+      await harness.evaluate(`document.querySelector('[data-testid="composer-plus"]')?.click()`)
+      await harness.waitForSelector('[data-testid="composer-plus-menu"]', 2_000)
+      await harness.evaluate(`document.querySelector('[data-testid="plus-goal"]')?.click()`)
+      await harness.waitForSelector('[data-testid="goal-dialog"]', 2_000)
+      await harness.pressKey('Escape')
+      await waitFor(async () => (await harness.has('[data-testid="goal-dialog"]')) ? null : true, 2_000, 'goal dialog Escape close')
+    })
     await check('UX-07 delete is optimistic', async () => {
       await harness.evaluate(`document.querySelector('.nav-toggle')?.click()`)
       await harness.waitForSelector('.nav-sheet.open', 2_000)

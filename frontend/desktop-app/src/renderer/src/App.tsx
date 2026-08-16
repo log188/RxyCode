@@ -101,7 +101,6 @@ function App(): React.JSX.Element {
   const showPlanActions =
     latestPlan !== null &&
     skippedPlanIds[latestPlan.itemId] !== true &&
-    agentMode === 'plan' &&
     !running
 
   const setAgentMode = (next: AgentRunMode): void => {
@@ -111,8 +110,9 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
+    document.documentElement.lang = language
     saveDesktopPreferences(preferences, window.localStorage)
-  }, [preferences, theme])
+  }, [preferences, theme, language])
 
   const setTheme = (next: ThemePreference): void => {
     setPreferences((current) => ({ ...current, theme: next }))
@@ -193,6 +193,18 @@ function App(): React.JSX.Element {
     window.addEventListener('keydown', closeNavigationOnEscape, true)
     return () => window.removeEventListener('keydown', closeNavigationOnEscape, true)
   }, [navOpen])
+
+  useEffect(() => {
+    if (!pendingFullAuto) return
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setPendingFullAuto(false)
+    }
+    window.addEventListener('keydown', closeOnEscape, true)
+    return () => window.removeEventListener('keydown', closeOnEscape, true)
+  }, [pendingFullAuto])
 
   const persistGoal = (sessionId: string, value: string): void => {
     setSessionGoals((current) => {
@@ -580,16 +592,22 @@ function App(): React.JSX.Element {
         }}
       />
       {pendingFullAuto && (
-        <div className="confirm-overlay" role="presentation">
+        <div
+          className="confirm-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setPendingFullAuto(false)
+          }}
+        >
           <div className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="full-auto-title">
-            <h2 id="full-auto-title">Enable Full access?</h2>
-            <p>This task may run write and command tools without asking each time. You can switch back from the composer.</p>
+            <h2 id="full-auto-title">启用完全访问？</h2>
+            <p>此任务可能在不逐次询问的情况下运行写入和命令工具。你可以随时从输入框切回。</p>
             <div className="confirm-actions">
-              <button type="button" onClick={() => setPendingFullAuto(false)}>Cancel</button>
+              <button type="button" onClick={() => setPendingFullAuto(false)}>取消</button>
               <button type="button" className="danger-action" onClick={() => {
                 setPreferences((current) => ({ ...current, permissionMode: 'full_auto' }))
                 setPendingFullAuto(false)
-              }}>Enable Full access</button>
+              }}>启用完全访问</button>
             </div>
           </div>
         </div>

@@ -12,9 +12,10 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DesktopCdpHarness, desktopAppDir, repositoryDir, selectRendererTarget, waitFor, type CleanupProof } from './cdp-harness.mts'
+import { CliAppserverHarness } from './real-business-cli-harness.mts'
 import { buildBatchPrompts, buildMissingFileRepairPrompt, buildSpringMysqlRepairInstructions, selectMissingFileRepair, realBusinessScenarios, type RealBusinessScenario } from './real-business-scenarios.mts'
 import {
   aggregateUsage,
@@ -213,6 +214,8 @@ const only = new Set((process.argv.find((arg) => arg.startsWith('--only='))?.sli
 const fromId = process.argv.find((arg) => arg.startsWith('--from='))?.slice('--from='.length)
 const batchArg = (process.argv.find((arg) => arg.startsWith('--batch='))?.slice('--batch='.length) ?? 'both').toUpperCase()
 const batches: Batch[] = batchArg === 'A' || batchArg === 'B' ? [batchArg as Batch] : ['A', 'B']
+const surfaceArg = (process.argv.find((arg) => arg.startsWith('--surface='))?.slice('--surface='.length) ?? 'gui').toLowerCase()
+const surface: 'gui' | 'cli' = surfaceArg === 'cli' ? 'cli' : 'gui'
 const selected = scenariosFrom(
   realBusinessScenarios.filter((scenario) => only.size === 0 || only.has(scenario.id)),
   fromId
@@ -384,6 +387,11 @@ function listFiles(root: string): string[] {
   }
   walk(root)
   return output.sort()
+}
+
+function hasScenarioDoc(source: string, name: string): boolean {
+  if (existsSync(join(source, name))) return true
+  return existsSync(join(source, basename(source), name))
 }
 
 async function selectOpenCodeGoModelInSettings(harness: DesktopCdpHarness): Promise<void> {
@@ -720,14 +728,17 @@ function chromeBinary(): string {
 
 const gamePlayExpression = `(() => {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const startSelector = '#startBtn, #btn-start, #start-btn, [data-action="start"], [data-action="newgame"], button.big, button.primary, .btn-primary, #screen-start button.btn:not(.alt)';
-  const findStart = () => document.querySelector(startSelector)
-    || Array.from(document.querySelectorAll('button')).find((button) => /开始|start|play|new\\s*game/i.test(button.textContent || '') && !/mute|help|pause|resume|restart|静音|帮助|暂停|继续|重新/.test(button.textContent || ''));
+  const startSelector = '#btn-start, #startBtn, #start-btn, [data-action="start"], [data-action="newgame"], button.big, button.primary, .btn-primary, #screen-start button.btn:not(.alt)';
   const isShown = (node) => {
     if (!(node instanceof HTMLElement)) return false;
     const style = getComputedStyle(node);
     const box = node.getBoundingClientRect();
     return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0 && box.width > 1 && box.height > 1;
+  };
+  const findStart = () => {
+    const labeled = Array.from(document.querySelectorAll('button')).filter((button) => /开始|start|play|new\\s*game/i.test(button.textContent || '') && !/mute|help|pause|resume|restart|静音|帮助|暂停|继续|重新/.test(button.textContent || ''));
+    const nodes = [...document.querySelectorAll(startSelector), ...labeled].filter((node) => node instanceof HTMLElement);
+    return nodes.find((node) => isShown(node)) || nodes[0] || null;
   };
   const readScore = () => {
     const el = document.querySelector('#score, #scoreVal, #hud-score, #hud-coins, #stat-score, [data-testid="score"]');
@@ -932,9 +943,21 @@ async function evaluateInChrome(
     const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>()
     let pageReady = false
     let pageReadyResolve: (() => void) | undefined
+    const pageExceptions: string[] = []
     const attachSocket = (next: WebSocket): void => {
       next.onmessage = (event) => {
-        const message = JSON.parse(String(event.data)) as { id?: number; method?: string; params?: { name?: string }; error?: unknown; result?: unknown }
+        const message = JSON.parse(String(event.data)) as {
+          id?: number
+          method?: string
+          params?: { name?: string; exceptionDetails?: { text?: string; exception?: { description?: string } } }
+          error?: unknown
+          result?: unknown
+        }
+        if (message.method === 'Runtime.exceptionThrown') {
+          const details = message.params?.exceptionDetails
+          const text = String(details?.exception?.description ?? details?.text ?? '').trim()
+          if (text.length > 0) pageExceptions.push(text.slice(0, 800))
+        }
         if (message.method === 'Page.loadEventFired' || (message.method === 'Page.lifecycleEvent' && (message.params?.name === 'DOMContentLoaded' || message.params?.name === 'load'))) {
           pageReady = true
           pageReadyResolve?.()
@@ -1030,6 +1053,9 @@ async function evaluateInChrome(
       const image = await send('Page.captureScreenshot', { format: 'png' }, 10_000)
       if (typeof image.data === 'string') writeFileSync(screenshotFile, Buffer.from(image.data, 'base64'))
     } catch {}
+    if (pageExceptions.length > 0) {
+      return { ...value, pageExceptions: [...new Set(pageExceptions)].slice(0, 8) }
+    }
     return value
   } finally {
     try { socket?.close() } catch {}
@@ -1052,13 +1078,14 @@ async function playGeneratedWebPage(source: string, port: number, mode: 'game' |
       mode === 'company' ? companyPagePlayExpression : mode === 'page' ? pagePlayExpression : gamePlayExpression,
       screenshotFile,
       mode === 'company' ? companyPagePlayExpression : undefined
-    ) as { ok?: boolean; score?: number; state?: string; reason?: string; overlayHidden?: boolean; startVisible?: boolean; demoClicked?: boolean; navigated?: boolean; adminModules?: number; adminText?: string }
+    ) as { ok?: boolean; score?: number; state?: string; reason?: string; overlayHidden?: boolean; startVisible?: boolean; demoClicked?: boolean; navigated?: boolean; adminModules?: number; adminText?: string; pageExceptions?: string[] }
     writeFileSync(join(source, '.rxy-play-probe.json'), JSON.stringify(parsed, null, 2))
     if (mode === 'company') {
       const probeIssue = companyLoginProbeIssue(parsed)
       if (probeIssue !== null) return probeIssue
     } else if (parsed.ok !== true) {
-      return `generated page is not playable: ${parsed.reason ?? 'unknown'} (state=${String(parsed.state ?? '')}, score=${String(parsed.score ?? 0)})`
+      const exceptions = Array.isArray(parsed.pageExceptions) ? parsed.pageExceptions.join('; ') : ''
+      return `generated page is not playable: ${parsed.reason ?? 'unknown'} (state=${String(parsed.state ?? '')}, score=${String(parsed.score ?? 0)})${exceptions ? `; page JS exception: ${exceptions}` : ''}`
     }
     if (mode === 'game' && gameMenuStillBlockingPlay({
       overlayHidden: parsed.overlayHidden === true,
@@ -1066,7 +1093,8 @@ async function playGeneratedWebPage(source: string, port: number, mode: 'game' |
       state: String(parsed.state ?? ''),
       score: Number(parsed.score ?? 0)
     })) {
-      return `generated page did not enter a running/playable state (state=${String(parsed.state ?? '')}, score=${String(parsed.score ?? 0)})`
+      const exceptions = Array.isArray(parsed.pageExceptions) ? parsed.pageExceptions.join('; ') : ''
+      return `generated page did not enter a running/playable state (state=${String(parsed.state ?? '')}, score=${String(parsed.score ?? 0)})${exceptions ? `; page JS exception: ${exceptions}` : ''}`
     }
     return null
   } catch (caught) {
@@ -1350,7 +1378,7 @@ async function smokeArtifact(scenario: RealBusinessScenario, source: string): Pr
     const javaFiles = listFiles(source).filter((file) => file.endsWith('.java'))
     if (javaFiles.length === 0) return 'Java artifact has no .java source'
     const required = ['README.md', 'DEVELOPMENT.md', 'TEST-REPORT.md']
-    const missing = required.filter((file) => !existsSync(join(source, file)))
+    const missing = required.filter((file) => !hasScenarioDoc(source, file))
     if (missing.length > 0) return `Java artifact is incomplete; missing ${missing.join(', ')}`
     const classOut = join(source, '.rxy-javac-out')
     mkdirSync(classOut, { recursive: true })
@@ -1383,13 +1411,13 @@ function buildArtifactRepairPrompt(scenario: RealBusinessScenario, validationErr
     scenario.artifactKind === 'web'
       ? (
         scenario.id === 'T01' || scenario.id === 'T02'
-          ? 'For this game artifact, create a complete index.html entry point plus README.md and TEST-REPORT.md, start a local static server, and actually play the page. Fix JavaScript syntax/runtime errors so Start hides the menu overlay, #btn-start is no longer visible, a DOM #score/#stateLabel updates, score can increase, collision or game-over can occur, and restart works. A painted canvas behind a still-visible Start button is not playing. Do not claim success if the page stays on a menu or throws Uncaught SyntaxError.'
+          ? 'For this game artifact, create a complete index.html entry point plus README.md and TEST-REPORT.md, start a local static server, and actually play the page. Fix JavaScript syntax/runtime errors so Start hides the menu overlay, #btn-start is no longer visible, a DOM #score/#stateLabel updates, score can increase, collision or game-over can occur, and restart works. A painted canvas behind a still-visible Start button is not playing. Do not claim success if the page stays on a menu or throws Uncaught SyntaxError. If the probe reports Identifier has already been declared (for example TILE in two classic scripts), rename or share one global and keep Start working.'
           : scenario.id === 'T03'
             ? 'For T03, call the write tool. The no-websearch rule does not forbid write, ls, or edit. If README.md or TEST-REPORT.md are missing, write those two files immediately and do not only re-read admin.js. If login redirects to admin.html, that file must exist with visible 用户管理, 订单管理, 内容管理, 设置, and 分析 navigation. Required: PLAN.md, public home/products/team/cases/contact, #btn-open-login, failed-login status, #btn-demo-login, localStorage admin CRUD, README.md, and TEST-REPORT.md. Java, Spring, Maven, pom.xml, or a /api backend is a hard failure. A three-file stub without a real company site is a hard failure; README.md and TEST-REPORT.md are still required once the site exists. A department/employee CRUD page is not the product.'
             : scenario.id === 'T04'
               ? 'For T04, call the write tool. Do not emit a three-file index.html/README.md/TEST-REPORT.md stub. Required: PLAN.md, sources.md, a budget CSV, an interactive index.html with daily timetable, city switch, cost categories, total-budget validation (hard cap CNY 3000), rain plan, alternatives, price-change warnings, and one makeup/styling session, plus README.md and TEST-REPORT.md. Record source URLs and uncertainty; do not invent live inventory. A static table without select/input/button controls is a hard failure.'
               : scenario.id === 'T06'
-                ? 'For T06, call the write tool immediately. Do not call bash, python, or node, and do not write _probe.py. Do not emit a three-file stub. Required: sources.md, raw and cleaned CSVs, an interactive BI index.html with date/asset/metric filters, tooltips or a detail table, data-gap warnings, and a risk disclaimer covering gold, silver, Nasdaq, and S&P 500, plus README.md and TEST-REPORT.md. Mark inaccessible data unavailable; do not fabricate prices.'
+                ? 'For T06, call the write tool immediately. Do not call bash, python, node, or download_file, and do not write _probe.py. Do not emit a three-file stub or a static table-only snapshot. index.html must contain literal <select> or <input> and <button> tags for date range, asset, and metric. Required: sources.md, raw and cleaned CSVs, that interactive BI index.html, plus README.md and TEST-REPORT.md. Mark inaccessible data unavailable; do not fabricate prices.'
                 : scenario.id === 'T07'
                   ? 'For T07, call the write tool immediately. Do not call bash, python, or node, and do not write _probe.py. Do not emit a three-file stub. Do not load Chart.js or any CDN. Close every HTML tag. Draw charts with native canvas. Required: sources.md, data CSV, an interactive EV TCO index.html with Guangzhou family coverage, CNY 150k-250k budget, five-year TCO, mileage and weight controls, recommendation, and risk disclosure, plus README.md and TEST-REPORT.md. Mark inaccessible prices unavailable; do not fabricate live promotions.'
                   : scenario.id === 'T08'
@@ -1655,13 +1683,242 @@ async function runScenario(
   }
 }
 
+async function runCliScenario(
+  harness: CliAppserverHarness,
+  scenario: RealBusinessScenario,
+  batch: Batch,
+  prompt: string,
+  sessionId: string,
+  model: string,
+  gateway: string,
+  batchDir: string,
+  permissionMode: 'auto_edit' | 'full_auto'
+): Promise<RealBusinessResult> {
+  const startedAt = Date.now()
+  const outputSource = join(harness.workspaceDir, scenario.outputDir)
+  const outputTarget = join(batchDir, 'outputs', scenario.outputDir)
+  let error: string | null = null
+  let files: string[] = []
+  let finalAnswer = ''
+  let status = 'unknown'
+  let visibleFeedbackMs: number | null = null
+  let promptSentAt: number | null = null
+  let runAbortedByWatchdog = false
+  const repairAttempts: string[] = []
+  const promptBudgetMs = 15 * 60 * 1000
+  try {
+    const sent = await harness.prompt(sessionId, prompt, promptBudgetMs, permissionMode)
+    promptSentAt = sent.sentAt
+    visibleFeedbackMs = sent.visibleFeedbackMs
+    finalAnswer = sent.text
+    status = sent.status
+  } catch (caught) {
+    error = caught instanceof Error ? caught.message : String(caught)
+    runAbortedByWatchdog = /RPC timeout|timed out|stalled|degraded|wall clock/i.test(error)
+    try { await harness.interrupt(sessionId) } catch {}
+  }
+  files = copyTree(outputSource, outputTarget)
+  let artifactError = await smokeArtifact(scenario, outputSource)
+  files = copyTree(outputSource, outputTarget)
+  persistPlayProbe(outputSource, batchDir, scenario.id)
+  let terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
+  let validationError = artifactError ?? terminalIssue
+  const maxRepairAttempts = scenario.id === 'T03' ? 3 : (/missing /i.test(artifactError ?? '') || /output directory was not created/i.test(artifactError ?? '')) ? 2 : 1
+  if (validationError !== null) error = error ?? validationError
+  for (let attempt = 1; validationError !== null && attempt <= maxRepairAttempts; attempt += 1) {
+    if (taskWallClockIssue(Date.now() - startedAt) !== null) break
+    if (runAbortedByWatchdog && attempt > 1) break
+    const missingFiles = (() => {
+      const selectedFiles = selectMissingFileRepair(scenario.id, validationError ?? '', files)
+      if (selectedFiles.length > 0) return selectedFiles
+      if (/output directory was not created/i.test(validationError ?? '')) {
+        if (scenario.id === 'T03') return ['index.html', 'admin.html', 'PLAN.md', 'README.md', 'TEST-REPORT.md']
+        if (scenario.id === 'T04') return ['index.html', 'README.md', 'TEST-REPORT.md', 'sources.md', 'budget.csv']
+        if (scenario.id === 'T06') return ['index.html', 'README.md', 'TEST-REPORT.md', 'sources.md', 'data.csv']
+        if (scenario.id === 'T07') return ['index.html', 'README.md', 'TEST-REPORT.md', 'sources.md', 'tco.csv']
+        if (scenario.id === 'T08') return ['index.html', 'README.md', 'TEST-REPORT.md', 'sources.md', 'areas.csv']
+        return scenario.artifactKind === 'web' ? ['index.html', 'README.md', 'TEST-REPORT.md'] : ['README.md', 'TEST-REPORT.md']
+      }
+      return []
+    })()
+    const repairBody = missingFiles.length > 0
+      ? buildMissingFileRepairPrompt(scenario.outputDir, missingFiles, validationError ?? '')
+      : buildArtifactRepairPrompt(scenario, validationError)
+    const repairPrompt = `Repair attempt ${attempt} of ${maxRepairAttempts}.\n\n${repairBody}`
+    repairAttempts.push(repairPrompt)
+    try {
+      const repaired = await harness.prompt(sessionId, repairPrompt, Math.min(promptBudgetMs, 8 * 60 * 1000), permissionMode)
+      finalAnswer = repaired.text
+      status = repaired.status
+      files = copyTree(outputSource, outputTarget)
+      artifactError = await smokeArtifact(scenario, outputSource)
+      files = copyTree(outputSource, outputTarget)
+      persistPlayProbe(outputSource, batchDir, scenario.id)
+      terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
+      validationError = artifactError ?? terminalIssue
+      error = validationError
+    } catch (caught) {
+      const stopped = caught instanceof Error ? caught.message : String(caught)
+      if (/RPC timeout|timed out|stalled|degraded|wall clock/i.test(stopped)) runAbortedByWatchdog = true
+      error = error ?? stopped
+      break
+    }
+  }
+  files = copyTree(outputSource, outputTarget)
+  try {
+    artifactError = await smokeArtifact(scenario, outputSource)
+    files = copyTree(outputSource, outputTarget)
+    persistPlayProbe(outputSource, batchDir, scenario.id)
+    terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
+    validationError = artifactError ?? terminalIssue
+  } catch {}
+  if (runAbortedByWatchdog) error = error ?? validationError
+  else if (validationError !== null) error = validationError
+  else error = null
+  const messages = parseProtocol(harness.protocolLines)
+  const timing = eventTiming(messages, promptSentAt ?? startedAt, sessionId)
+  timing.visible_feedback_ms = visibleFeedbackMs
+  const defects: string[] = []
+  if (timing.first_event_ms !== null && timing.first_event_ms > 15_000) defects.push(`first event ${timing.first_event_ms}ms exceeds 15s performance gate`)
+  if (timing.first_event_ms !== null && timing.first_event_ms > 30_000) defects.push(`first event ${timing.first_event_ms}ms exceeds 30s hard-fail gate`)
+  if (timing.first_token_ms !== null && timing.first_token_ms > 8_000) defects.push(`first token ${timing.first_token_ms}ms exceeds 8s target`)
+  if (timing.first_token_ms !== null && timing.first_token_ms > 15_000) defects.push(`first token ${timing.first_token_ms}ms exceeds 15s performance gate`)
+  if (timing.first_token_ms !== null && timing.first_token_ms > 30_000) defects.push(`first token ${timing.first_token_ms}ms exceeds 30s hard-fail gate`)
+  for (const gap of timing.silent_gaps_ms) defects.push(`silent interval ${gap}ms exceeds 10s observation threshold`)
+  const tools = messages
+    .filter((message) => String(message.method ?? '') === 'event/tool_begin')
+    .map((message) => String(message.params?.tool_name ?? ''))
+    .filter(Boolean)
+  const skillEvents = messages.filter((message) => String(message.method ?? '').toLowerCase().includes('skill') || String(message.params?.tool_name ?? '').toLowerCase().includes('skill')).map((message) => String(message.method ?? message.params?.tool_name ?? ''))
+  const mcpEvents = messages.filter((message) => String(message.method ?? '').toLowerCase().includes('mcp')).map((message) => String(message.method))
+  if (scenario.id === 'T03' && skillEvents.length === 0 && !tools.some((tool) => tool.toLowerCase().includes('skill'))) defects.push('T03 did not expose a Skill search/load event')
+  if (timing.first_token_ms !== null && firstTokenHardFail(timing.first_token_ms, timing.first_event_ms)) error = error ?? 'first token exceeded 30s hard-fail gate'
+  if (timing.silent_gaps_ms.some((gap) => gap > 30_000) && (timing.first_event_ms === null || timing.first_event_ms > 30_000)) {
+    error = error ?? 'silent interval exceeded 30s hard-fail gate'
+  }
+  const storm = approvalStormIssue(harness.approvals.length)
+  if (storm !== null) {
+    defects.push(storm)
+    error = error ?? storm
+  }
+  const wallIssue = taskWallClockIssue(timing.wall_ms)
+  if (wallIssue !== null) {
+    defects.push(wallIssue)
+    error = error ?? wallIssue
+  }
+  const protocolFile = join(batchDir, 'events', `${scenario.id}.ndjson`)
+  mkdirSync(dirname(protocolFile), { recursive: true })
+  writeFileSync(protocolFile, harness.protocolLines.join('\n') + '\n')
+  const domFile = join(batchDir, 'dom', `${scenario.id}.json`)
+  mkdirSync(dirname(domFile), { recursive: true })
+  writeFileSync(domFile, JSON.stringify({ surface: 'cli', stderr: harness.stderr.slice(-80) }, null, 2))
+  return {
+    id: scenario.id,
+    batch,
+    title: scenario.title,
+    prompt,
+    model,
+    provider: REAL_BUSINESS_PROVIDER,
+    gateway,
+    session_id: sessionId,
+    status,
+    final_answer: finalAnswer,
+    output_dir: outputTarget,
+    files,
+    artifact_kind: scenario.artifactKind,
+    usage: protocolUsage(messages),
+    timing,
+    approvals: [...harness.approvals],
+    tools,
+    skill_events: skillEvents,
+    mcp_events: mcpEvents,
+    layout: { issues: [] },
+    layout_snapshot: null,
+    screenshots: [],
+    protocol_file: protocolFile,
+    dom_file: domFile,
+    cleanup: null,
+    defects,
+    repair_attempts: repairAttempts,
+    error
+  }
+}
+
+async function runCliBatch(batch: Batch): Promise<{ results: RealBusinessResult[]; cleanup: CleanupProof[] }> {
+  const batchDir = join(artifactRoot, `batch-${batch}`)
+  mkdirSync(batchDir, { recursive: true })
+  const results: RealBusinessResult[] = []
+  const cleanups: CleanupProof[] = []
+  const permissionMode: 'auto_edit' | 'full_auto' = batch === 'B' ? 'full_auto' : 'auto_edit'
+  const promptMap = new Map(
+    (batch === 'A' ? prompts.independent : prompts.sequential).map((item) => [item.id, item.prompt])
+  )
+  if (batch === 'A') {
+    for (const scenario of selected) {
+      console.error(`[real-business] cli ${batch} ${scenario.id} start`)
+      const harness = new CliAppserverHarness({ artifactDir: batchDir, extraEnv: desktopSuiteEnv() })
+      const prompt = promptMap.get(scenario.id) ?? scenario.prompt
+      let sessionId = ''
+      let selectedModel = { model: REAL_BUSINESS_MODEL_ID, gateway: REAL_BUSINESS_GATEWAY }
+      try {
+        await harness.start()
+        selectedModel = await harness.selectOpenCodeGoModel()
+        sessionId = await harness.createSession(selectedModel.model)
+        results.push(await runCliScenario(harness, scenario, batch, prompt, sessionId, selectedModel.model, selectedModel.gateway, batchDir, permissionMode))
+      } catch (caught) {
+        results.push(failureResult(scenario, batch, prompt, sessionId, selectedModel.model, selectedModel.gateway, batchDir, caught))
+      } finally {
+        const cleanup = await harness.cleanup()
+        cleanups.push(cleanup)
+        const last = results.at(-1)
+        if (last !== undefined && last.id === scenario.id) last.cleanup = cleanup
+        console.error(`[real-business] cli ${batch} ${scenario.id} done status=${last?.status ?? 'unknown'} error=${last?.error ?? 'null'}`)
+      }
+    }
+    writeFileSync(join(batchDir, 'results.json'), JSON.stringify({ batch, surface: 'cli', results, cleanup: cleanups }, null, 2))
+    return { results, cleanup: cleanups }
+  }
+  const harness = new CliAppserverHarness({ artifactDir: batchDir, extraEnv: desktopSuiteEnv() })
+  let sessionId = ''
+  let selectedModel = { model: REAL_BUSINESS_MODEL_ID, gateway: REAL_BUSINESS_GATEWAY }
+  try {
+    await harness.start()
+    selectedModel = await harness.selectOpenCodeGoModel()
+    sessionId = await harness.createSession(selectedModel.model)
+    for (const scenario of selected) {
+      const prompt = promptMap.get(scenario.id) ?? scenario.prompt
+      console.error(`[real-business] cli ${batch} ${scenario.id} start`)
+      try {
+        results.push(await runCliScenario(harness, scenario, batch, prompt, sessionId, selectedModel.model, selectedModel.gateway, batchDir, permissionMode))
+      } catch (caught) {
+        results.push(failureResult(scenario, batch, prompt, sessionId, selectedModel.model, selectedModel.gateway, batchDir, caught))
+      }
+      const last = results.at(-1)
+      console.error(`[real-business] cli ${batch} ${scenario.id} done status=${last?.status ?? 'unknown'} error=${last?.error ?? 'null'}`)
+    }
+  } catch (caught) {
+    for (const scenario of selected) {
+      const prompt = promptMap.get(scenario.id) ?? scenario.prompt
+      results.push(failureResult(scenario, batch, prompt, sessionId, selectedModel.model, selectedModel.gateway, batchDir, caught))
+    }
+  } finally {
+    const cleanup = await harness.cleanup()
+    cleanups.push(cleanup)
+    for (const result of results) result.cleanup = cleanup
+  }
+  writeFileSync(join(batchDir, 'results.json'), JSON.stringify({ batch, surface: 'cli', results, cleanup: cleanups }, null, 2))
+  return { results, cleanup: cleanups }
+}
+
 async function runBatch(batch: Batch): Promise<{ results: RealBusinessResult[]; cleanup: CleanupProof[] }> {
+  if (surface === 'cli') return runCliBatch(batch)
   const batchDir = join(artifactRoot, `batch-${batch}`)
   mkdirSync(batchDir, { recursive: true })
   const results: RealBusinessResult[] = []
   const cleanups: CleanupProof[] = []
   if (batch === 'A') {
     for (const scenario of selected) {
+      console.error(`[real-business] ${batch} ${scenario.id} start`)
       const harness = new DesktopCdpHarness({
         artifactDir: batchDir,
         fakeAppserver: false,
@@ -1693,6 +1950,7 @@ async function runBatch(batch: Batch): Promise<{ results: RealBusinessResult[]; 
         cleanups.push(cleanup)
         const last = results.at(-1)
         if (last !== undefined && last.id === scenario.id) last.cleanup = cleanup
+        console.error(`[real-business] ${batch} ${scenario.id} done status=${last?.status ?? 'unknown'} error=${last?.error ?? 'null'}`)
       }
     }
   } else {
@@ -1716,11 +1974,14 @@ async function runBatch(batch: Batch): Promise<{ results: RealBusinessResult[]; 
       await setPermission(harness, 'full_auto')
       for (const scenario of selected) {
         const prompt = sequentialPrompts.get(scenario.id) ?? scenario.prompt
+        console.error(`[real-business] ${batch} ${scenario.id} start`)
         try {
           results.push(await runScenario(harness, scenario, batch, prompt, sessionId, selectedModel.model, selectedModel.gateway, batchDir))
         } catch (caught) {
           results.push(failureResult(scenario, batch, prompt, sessionId, selectedModel.model, selectedModel.gateway, batchDir, caught))
         }
+        const last = results.at(-1)
+        console.error(`[real-business] ${batch} ${scenario.id} done status=${last?.status ?? 'unknown'} error=${last?.error ?? 'null'}`)
       }
     } catch (caught) {
       for (const scenario of selected) {

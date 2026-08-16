@@ -33,8 +33,8 @@ function ComposerPlusMenu({
       <button type="button" role="menuitem" data-testid="plus-workspace" onClick={() => { onPickWorkspace(); onClose() }}>
         <Folder aria-hidden="true" size={16} />
         <span>
-          <strong>在项目中使用 Work</strong>
-          <small>为新聊天选择项目</small>
+          <strong>在项目中使用</strong>
+          <small>选择工作区并开新聊天</small>
         </span>
       </button>
       <button type="button" role="menuitem" data-testid="plus-goal" onClick={() => { onOpenGoal(); onClose() }}>

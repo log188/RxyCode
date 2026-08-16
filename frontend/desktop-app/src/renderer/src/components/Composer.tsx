@@ -4,7 +4,7 @@ import type { ModelEntry } from '../hooks/useModels'
 import { groupModelsByProvider } from '../lib/modelPresentation.mts'
 import type { PermissionMode } from '../lib/desktopPreferences.mts'
 import type { AgentRunMode } from '../lib/planDocument.mts'
-import { canSubmitComposer, shouldSubmitOnKey } from '../lib/composerBehavior.mts'
+import { canSubmitComposer, promptWithAttachment, shouldSubmitOnKey } from '../lib/composerBehavior.mts'
 import ComposerPlusMenu from './ComposerPlusMenu'
 
 interface ComposerProps {
@@ -27,9 +27,18 @@ interface ComposerProps {
 }
 
 const MODE_LABELS: Record<PermissionMode, string> = {
-  confirm_all: 'Ask before changes',
-  auto_edit: 'Auto-edit',
+  confirm_all: '更改前询问',
+  auto_edit: '自动编辑',
   full_auto: '完全访问'
+}
+
+type FileWithPath = File & { path?: string }
+
+function attachmentFromFile(file: File): { name: string; path: string } {
+  const path = typeof (file as FileWithPath).path === 'string' && (file as FileWithPath).path !== ''
+    ? (file as FileWithPath).path as string
+    : file.name
+  return { name: file.name, path }
 }
 
 function Composer({
@@ -51,18 +60,19 @@ function Composer({
   onRequestPermissionModeChange
 }: ComposerProps): React.JSX.Element {
   const [text, setText] = useState('')
-  const [attachment, setAttachment] = useState<string | null>(null)
+  const [attachment, setAttachment] = useState<{ name: string; path: string } | null>(null)
   const [plusOpen, setPlusOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const plusRef = useRef<HTMLDivElement | null>(null)
-  const canSend = canSubmitComposer({ disabled, running, text })
+  const canSend = canSubmitComposer({ disabled, running, text, hasAttachment: attachment !== null })
   const groups = groupModelsByProvider(models)
   const planMode = agentMode === 'plan'
 
   const submit = (): void => {
     if (!canSend) return
-    onSend(text.trim())
+    onSend(promptWithAttachment(text, attachment))
     setText('')
+    setAttachment(null)
   }
 
   useEffect(() => {
@@ -89,7 +99,7 @@ function Composer({
       <form className="composer-surface" data-testid="composer-surface" onSubmit={(event) => { event.preventDefault(); submit() }}>
         {attachment !== null && (
           <div className="composer-attachment" data-testid="composer-attachment">
-            <span>{attachment}</span>
+            <span title={attachment.path}>{attachment.name}</span>
             <button
               type="button"
               className="composer-attachment-remove"
@@ -132,7 +142,11 @@ function Composer({
           className="composer-file-input"
           aria-hidden="true"
           tabIndex={-1}
-          onChange={(event) => setAttachment(event.target.files?.[0]?.name ?? null)}
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            setAttachment(file === undefined ? null : attachmentFromFile(file))
+            event.target.value = ''
+          }}
         />
         <div className="composer-toolbar">
           <div className="composer-toolbar-left">

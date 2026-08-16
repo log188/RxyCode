@@ -322,9 +322,9 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               <div className="settings-option-row">
                 <div><strong>Approval mode</strong><p className="settings-hint">The mode applies to this task window. Full access always requires confirmation.</p></div>
                 <select aria-label="Approval mode" value={props.permissionMode} onChange={(event) => props.onPermissionModeChange(event.target.value as PermissionMode)}>
-                  <option value="confirm_all">Ask before changes</option>
-                  <option value="auto_edit">Auto-edit</option>
-                  <option value="full_auto">Full access</option>
+                  <option value="confirm_all">更改前询问</option>
+                  <option value="auto_edit">自动编辑</option>
+                  <option value="full_auto">完全访问</option>
                 </select>
               </div>
               <div className="settings-option-row">
