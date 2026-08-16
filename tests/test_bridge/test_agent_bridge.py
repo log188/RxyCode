@@ -46,6 +46,7 @@ class _FakeACPProcess:
         self._responses = responses
         self._written: list[str] = []
         self.returncode: int | None = None
+        self.pid = 12345
         self.killed = False
         self.stdin = _FakeStdin(self._written)
         self.stdout = _FakeStdout(self._responses)

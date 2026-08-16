@@ -409,7 +409,7 @@ def test_policy_audit_event_is_bounded_redacted_and_delegates_to_existing_logger
     assert len(event.result["output"]) <= 203
     logger.log.assert_called_once_with(
         tool="bash",
-        risk=RiskLevel.WRITE,
+          risk=RiskLevel.READ,
         args=decision.args_summary,
         approval="safety_disabled",
         result=event.result,

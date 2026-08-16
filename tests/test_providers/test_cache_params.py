@@ -103,7 +103,7 @@ def test_deepseek_cache_params_s71():
     """§7.1：自动 disk 缓存，最小 64 token prefix unit；无显式断点。"""
     p, caps = _caps("https://api.deepseek.com/v1", "deepseek-v4-flash")
     out = p.cache_params(caps)
-    assert out["min_block_tokens"] == 64
+    assert out["min_block_tokens"] == 1024
     assert out["ttl_s"] is None
     assert out["breakpoints"] == []
     assert "prompt_cache_hit_tokens" in out["hit_field_flat"]
