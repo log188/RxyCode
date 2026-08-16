@@ -2040,6 +2040,21 @@ python -m pytest tests/test_core/test_catalog_contract_official.py tests/test_ca
 python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
 ```
 
+**实施记录**（Grok 填写）
+
+```
+commits: docs(core): document cache families, S1/S2, and TurnRouter（fix 分支）
+pytest 验收（15 文件）: 206 passed
+evals: GATE PASS（89.5% == 基线 89.5%，不下降）。两处 regression 非本 Phase：
+  readcode-usage-tracking 单独重跑 PASS（全量偶发）；websearch-save-report 在他人
+  未提交改动区（tools/websearch.py DDGS）+ 网络依赖。Improvement: refactor-extract-
+  function + websearch-summary FAIL→PASS；tokens -687k / duration -2369s
+文档：docs/modules/core.md（Key Files 6 个新文件 + Phase Fix invariants 段）、
+  docs/modules/config.md（model_catalog → §16 已纠字段 + 未知模型 fallback）、
+  AGENTS.md（core Phase-Fix 行）、README 已含 PHASE-FIX 索引（Part 1+2+3 + Grok 执行/GPT-5.6 审计）
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
 - [ ] core.md 列出：契约三族、禁止模型名启发式、S1 冻结、禁止在 agent_v2 加路由 if
