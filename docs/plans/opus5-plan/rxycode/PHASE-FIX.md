@@ -1900,6 +1900,18 @@ def _application_cache_namespace(self) -> str:
 - ns 正则：`^[a-z0-9_.-]{1,64}$`；非法则 ValueError（仅当非 None）。
 - 禁止把 ns 写进 system / SharedReadonlySegment（本卡只做应用缓存键）。
 
+**实施记录**（Grok 填写）
+
+```
+commits: feat(cache): optional agent namespace（fix 分支）
+pytest: test_cache_namespace 11（新）+ 全量 7789 passed（基线 8 不变）
+ruff: All checks passed
+实现：_application_cache_namespace 在 _agent_namespace 非 None 时追加 |ns；ns 正则
+  ^[a-z0-9_.-]{1,64}$（非法 ValueError）；无 ns 与改造前逐字节相同（测试钉死模板）；
+  不写 system/SharedReadonlySegment
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
 - [ ] 无 `_agent_namespace` 时字符串与改造前格式相同（测试钉死拼接模板）
