@@ -7,6 +7,7 @@
 | Module | Location | Purpose |
 |--------|----------|---------|
 | [core](docs/modules/core.md) | core/ | Agent brain - AgentV2, LangGraph pipeline, prompts, state |
+| core Phase-Fix files | core/turn_router.py, prefix_profile.py, prewarm.py, turn_context.py, handoff.py, catalog.py | Routing/prewarm/keep-alive decision tables and reserved seams — read core.md Phase Fix invariants before touching agent_v2 |
 | [protocol](docs/modules/protocol.md) | protocol/ | Typed JSON-RPC protocol - pydantic models, JSON Schema, TS codegen |
 | [appserver](docs/modules/appserver.md) | appserver/ | Stdio JSON-RPC server - headless core transport for OpenTUI/Desktop |
 | [config](docs/modules/config.md) | config/ | Configuration management - models, API keys, preferences |

@@ -24,6 +24,12 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | governance.py | Provider/model rate limits, role-aware model routing, and sensitive-action policy contracts |
 | tracing.py | Node-level tracing - span collection, JSONL persistence, replay, p50/p99 stats |
 | config.py | Legacy config (superseded by config/settings.py) |
+| catalog.py | Cache-contract catalog — three families via `injects_cache_control` / `injects_prompt_cache_key`; unknown models get a five-point fallback (`unknown_fallback_contract`), never model-name heuristics |
+| prefix_profile.py | Frozen prefix fingerprints — `PrefixProfile`, `digest_tools`, `identity()`, `profiles_compatible` (chat vs agent archives) |
+| turn_router.py | THE single turn router — `route()` owns all fast-path decisions; do NOT add routing ifs to agent_v2._run_impl |
+| prewarm.py | Isomorphic prewarm archives (chat + agent slots) and keep-alive that rides the frozen AgentPrefix |
+| turn_context.py | Public `append_turn_context` seam (LinkAgent/EKO suffix) — never spliced into S1 |
+| handoff.py | `HandoffEnvelope` reserved type — rejects messages/history/thinking keys (NoHistoryCopy) |
 
 ### Session Runtime Persistence
 
@@ -318,3 +324,25 @@ Dispatch entry points: `tools/subagent_task_tool.py` (`task` tool),
 - [evals](evals.md): `evals/` - reuses `core/prompts` registry for judge prompt version management
 - [rag](rag.md): `rag/` - code_search tool auto-registers into the tool registry
 - [governance](governance.md): `core/governance.py` - rate limits, model routing, and sensitive-action decisions
+
+## Phase Fix invariants (PHASE-FIX.md)
+
+- **Cache contracts live in the catalog, in three families**: implicit /
+  explicit / unknown. `injects_cache_control(contract)` and
+  `injects_prompt_cache_key(contract)` are the only allowed gate keepers.
+  Model-name heuristics (e.g. "id contains claude") are forbidden.
+- **S1 is frozen**: the system prompt head never contains per-turn dates or
+  dynamic research contracts (`get_system_s1` vs `get_system_s2`).
+- **No new routing ifs inside `agent_v2._run_impl`**: `core/turn_router.py`
+  `route()` is the single decision table (path, profile_kind, skip_await).
+  `_run_impl` must not contain `is_social_chat(` / `PURE_SOCIAL_GREETING_RE`
+  / `declines_tools(` probes.
+- **ChatPrefix vs AgentPrefix**: greetings/social ride the frozen empty-tool
+  chat archive (thinking off, session load skipped); encoding turns keep the
+  frozen full core tool list and live reasoning. Tool schema must never be
+  cropped per turn (FX6 ToolsFreeze).
+- **Prewarm/keep-alive are isomorphic** to the archive they serve
+  (`core/prewarm.py`); keep-alive always carries system + core tools.
+- **Turn context** (`append_turn_context`) only appends to the user suffix
+  after the memory context; `system`/`tools` kinds are rejected.
+- **Handoff** may never carry transcripts (`HandoffEnvelope`).

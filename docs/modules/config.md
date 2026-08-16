@@ -10,6 +10,7 @@ Manages all RxyCode configuration: model settings, API keys, active model select
 | credential_store.py | Atomic owner-only credential storage; DPAPI protection on Windows |
 | model_manager.py | Model CRUD plus persisted and unsaved connection probes |
 | model_catalog.py + model_catalog.json | Static model catalog (nickname/provider/model mapping) with `catalog_max_age_days` staleness handling |
+| core/catalog.py | **Cache-contract catalog (PHASE-FIX §16 已纠字段)** — per-model cache_mode/breakpoints/reasoning contract. Unknown models (no record) get the five-point `unknown_fallback_contract` (cache_mode=auto, no cache_control, no prompt_cache_key, default variant, openai-compatible). Only `injects_cache_control` / `injects_prompt_cache_key` decide injection — never model-name heuristics |
 | model_limits.py | Output-limit resolution (`unknown_model_max_tokens=32768`, `context_safety_margin_tokens`, `resolve_max_tokens`) |
 | model_capabilities.py | `ModelCapabilities`/`UsageFieldMap`/`ModelPricing` dataclasses consumed by every provider |
 | agents/ | Built-in subagent definition files (`explore.json`, `general.json`, `reviewer.md`, `scout.yaml`) loaded by `core/subagents/config_loader.py` |
