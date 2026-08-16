@@ -5238,13 +5238,19 @@ class AgentV2:
     async def _run_plan_only(self, user_input: str) -> str:
         """Produce a plan with an explicit read-only tool allowlist."""
         plan_contract = (
-            "You are in PLAN-ONLY mode. Analyze the request and return an "
-            "ordered implementation plan with assumptions, risks, and "
-            "verification steps. You may inspect context using the exposed "
-            "read-only tools. Never execute commands, write or open files, "
-            "download resources, or claim that a mutating action was performed. "
-            "Do not say you will start implementing after confirmation — "
-            "plan mode cannot execute; the user must switch modes themselves."
+            "You are in PLAN-ONLY mode. Analyze the request and return ONLY a "
+            "Markdown plan document with this exact structure:\n"
+            "# <short title>\n"
+            "## Summary\n"
+            "<one paragraph of intent and constraints>\n"
+            "## Steps\n"
+            "1. ...\n"
+            "2. ...\n"
+            "You may inspect context using the exposed read-only tools. "
+            "Never execute commands, write or open files, download resources, "
+            "or claim that a mutating action was performed. "
+            "Do not start implementing. The user will click "
+            "「是，实施此计划」 / Build when they want execution."
         )
         answer = await self._fast_reply_with_tools(
             user_input,
@@ -5257,14 +5263,14 @@ class AgentV2:
         if locale.lower().startswith("zh"):
             hint = (
                 "\n\n---\n"
-                "**下一步**：按 Tab 切换到 **Build** 模式，然后输入「开始」"
-                "（或「按计划执行」）即可开始编写。"
+                "**下一步**：在计划文档下方选择 **是，实施此计划**"
+                "（或切换到 **Build** 模式后按计划执行）。"
             )
         else:
             hint = (
                 "\n\n---\n"
-                "**Next**: press Tab to switch to **Build** mode, then type "
-                "`start` (or `go ahead`) to begin implementing this plan."
+                "**Next**: choose **Yes, implement this plan** under the plan "
+                "document (or switch to **Build** mode, then type `start`)."
             )
         if "切换到 **Build**" in answer or "switch to **Build**" in answer:
             return answer

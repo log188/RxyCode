@@ -1,15 +1,23 @@
-import { ArrowUp, ChevronDown, Mic, Paperclip, Plus, Square } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { ArrowUp, ChevronDown, Mic, Plus, Square } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import type { ModelEntry } from '../hooks/useModels'
 import { groupModelsByProvider } from '../lib/modelPresentation.mts'
 import type { PermissionMode } from '../lib/desktopPreferences.mts'
+import type { AgentRunMode } from '../lib/planDocument.mts'
 import { canSubmitComposer, shouldSubmitOnKey } from '../lib/composerBehavior.mts'
+import ComposerPlusMenu from './ComposerPlusMenu'
 
 interface ComposerProps {
   disabled: boolean
   running: boolean
+  agentMode: AgentRunMode
+  goal: string
+  hasPlan: boolean
   onSend: (text: string) => void
   onStop: () => void
+  onTogglePlanMode: () => void
+  onOpenGoal: () => void
+  onPickWorkspace: () => void
   models: ModelEntry[]
   modelsLoading?: boolean
   selectedModelId: string
@@ -21,14 +29,20 @@ interface ComposerProps {
 const MODE_LABELS: Record<PermissionMode, string> = {
   confirm_all: 'Ask before changes',
   auto_edit: 'Auto-edit',
-  full_auto: 'Full access'
+  full_auto: '完全访问'
 }
 
 function Composer({
   disabled,
   running,
+  agentMode,
+  goal,
+  hasPlan,
   onSend,
   onStop,
+  onTogglePlanMode,
+  onOpenGoal,
+  onPickWorkspace,
   models,
   modelsLoading = false,
   selectedModelId,
@@ -38,9 +52,12 @@ function Composer({
 }: ComposerProps): React.JSX.Element {
   const [text, setText] = useState('')
   const [attachment, setAttachment] = useState<string | null>(null)
+  const [plusOpen, setPlusOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const plusRef = useRef<HTMLDivElement | null>(null)
   const canSend = canSubmitComposer({ disabled, running, text })
   const groups = groupModelsByProvider(models)
+  const planMode = agentMode === 'plan'
 
   const submit = (): void => {
     if (!canSend) return
@@ -48,12 +65,30 @@ function Composer({
     setText('')
   }
 
+  useEffect(() => {
+    if (!plusOpen) return
+    const onPointer = (event: MouseEvent): void => {
+      if (plusRef.current !== null && !plusRef.current.contains(event.target as Node)) {
+        setPlusOpen(false)
+      }
+    }
+    window.addEventListener('mousedown', onPointer)
+    return () => window.removeEventListener('mousedown', onPointer)
+  }, [plusOpen])
+
+  const placeholder = disabled
+    ? 'Waiting for appserver…'
+    : running
+      ? 'Running — press Stop to cancel'
+      : planMode
+        ? (hasPlan ? '请你补充说明哪里需要改进' : '描述你想规划的任务…')
+        : '随心输入'
+
   return (
     <footer className="composer" data-testid="composer">
       <form className="composer-surface" data-testid="composer-surface" onSubmit={(event) => { event.preventDefault(); submit() }}>
         {attachment !== null && (
           <div className="composer-attachment" data-testid="composer-attachment">
-            <Paperclip aria-hidden="true" size={13} />
             <span>{attachment}</span>
             <button
               type="button"
@@ -65,20 +100,22 @@ function Composer({
             </button>
           </div>
         )}
+        {goal !== '' && (
+          <button type="button" className="composer-goal-chip" data-testid="composer-goal-chip" onClick={onOpenGoal}>
+            目标 · {goal}
+          </button>
+        )}
         <textarea
           aria-label="Task prompt"
           data-testid="composer-input"
           value={text}
-          placeholder={
-            disabled
-              ? 'Waiting for appserver…'
-              : running
-                ? 'Running — press Stop to cancel'
-                : 'Describe the task…'
-          }
+          placeholder={placeholder}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Escape' && running) {
+            if (event.key === 'Escape' && plusOpen) {
+              event.preventDefault()
+              setPlusOpen(false)
+            } else if (event.key === 'Escape' && running) {
               event.preventDefault()
               onStop()
             } else if (shouldSubmitOnKey({ key: event.key, shiftKey: event.shiftKey, running })) {
@@ -99,16 +136,40 @@ function Composer({
         />
         <div className="composer-toolbar">
           <div className="composer-toolbar-left">
-            <button
-              type="button"
-              className="composer-icon-button"
-              aria-label="Add attachment"
-              title="Add attachment"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={disabled || running}
-            >
-              <Plus aria-hidden="true" size={18} />
-            </button>
+            <div className="composer-plus" ref={plusRef}>
+              <button
+                type="button"
+                className={'composer-icon-button' + (plusOpen ? ' is-open' : '')}
+                aria-label="添加"
+                aria-expanded={plusOpen}
+                data-testid="composer-plus"
+                title="添加"
+                onClick={() => setPlusOpen((open) => !open)}
+                disabled={disabled || running}
+              >
+                <Plus aria-hidden="true" size={18} />
+              </button>
+              <ComposerPlusMenu
+                open={plusOpen}
+                planMode={planMode}
+                onClose={() => setPlusOpen(false)}
+                onAttachFile={() => fileInputRef.current?.click()}
+                onPickWorkspace={onPickWorkspace}
+                onOpenGoal={onOpenGoal}
+                onTogglePlanMode={onTogglePlanMode}
+              />
+            </div>
+            {planMode && (
+              <button
+                type="button"
+                className="composer-mode-chip"
+                data-testid="composer-plan-chip"
+                title="关闭计划模式"
+                onClick={onTogglePlanMode}
+              >
+                计划
+              </button>
+            )}
             <label className="composer-permission-control">
               <span className="sr-only">Permission mode for this task</span>
               <select

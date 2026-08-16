@@ -456,7 +456,99 @@ async function runApprovalPrompt(requestId, sessionId, text) {
   })
 }
 
-async function runPrompt(requestId, sessionId, text) {
+function isPlanPrompt(text, mode) {
+  if (isImplementPrompt(text)) return false
+  return mode === 'plan' || /请只输出计划文档|改写上一份计划文档/.test(text)
+}
+
+function isImplementPrompt(text) {
+  return /严格按照以下计划实施/.test(text)
+}
+
+function planMarkdown(text) {
+  const revised = /改写上一份计划|需要改进/.test(text)
+  const wantsSum = /1\s*\+\s*1|计算/.test(text)
+  const title = wantsSum || /1\+1 计算演示/.test(text) ? '1+1 计算演示' : '任务计划'
+  const summary = revised
+    ? (wantsSum
+      ? '计算两个整数 1 和 1 的和，并按补充说明增加验证。'
+      : '根据补充说明修订后的实施计划。')
+    : (wantsSum ? '计算两个整数 1 和 1 的和。' : '为当前任务给出可执行的分步计划。')
+  const steps = [
+    '1. 确认输入为整数 1 和 1',
+    '2. 相加得到 2',
+    '3. 向用户报告结果'
+  ]
+  if (revised) steps.push('4. 按补充说明增加验证或测试')
+  return [`# ${title}`, '', '## Summary', summary, '', '## Steps', ...steps].join('\n')
+}
+
+async function finishPrompt(requestId, sessionId, runId, text) {
+  notify('event/final', {
+    method: 'event/final',
+    session_id: sessionId,
+    run_id: runId,
+    text
+  })
+  notify('event/done', {
+    method: 'event/done',
+    session_id: sessionId,
+    run_id: runId,
+    status: 'succeeded'
+  })
+  ensureTask(sessionId, { status: 'succeeded' })
+  respond(requestId, { run_id: runId, status: 'succeeded', text })
+}
+
+async function runPlanPrompt(requestId, sessionId, text) {
+  const runId = `plan-${++sessionCounter}`
+  ensureTask(sessionId, { title: text.slice(0, 80) || 'Plan', status: 'running' })
+  const document = planMarkdown(text)
+  notify('event/message_delta', {
+    method: 'event/message_delta',
+    session_id: sessionId,
+    text: document
+  })
+  await sleep(180)
+  await finishPrompt(requestId, sessionId, runId, document)
+}
+
+async function runImplementPrompt(requestId, sessionId, text) {
+  const runId = `build-${++sessionCounter}`
+  ensureTask(sessionId, { title: text.slice(0, 80) || 'Build', status: 'running' })
+  notify('event/message_delta', {
+    method: 'event/message_delta',
+    session_id: sessionId,
+    text: '开始按计划实施…'
+  })
+  await sleep(160)
+  notify('event/tool_begin', {
+    method: 'event/tool_begin',
+    session_id: sessionId,
+    call_id: 'build-1',
+    tool_name: 'bash',
+    arguments: { command: 'python -c "print(1+1)"' }
+  })
+  await sleep(220)
+  notify('event/tool_end', {
+    method: 'event/tool_end',
+    session_id: sessionId,
+    call_id: 'build-1',
+    ok: true,
+    summary: '2',
+    status: 'succeeded'
+  })
+  const answer = '已按计划完成：1 + 1 = 2。'
+  notify('event/message_delta', {
+    method: 'event/message_delta',
+    session_id: sessionId,
+    text: answer
+  })
+  await sleep(120)
+  await finishPrompt(requestId, sessionId, runId, answer)
+}
+
+async function runPrompt(requestId, sessionId, text, mode = 'build') {
   const runId = `demo-${++sessionCounter}`
   ensureTask(sessionId, { title: text.slice(0, 80) || 'New task', status: 'running' })
   if (text.includes('startup demo')) {
@@ -480,6 +572,16 @@ async function runPrompt(requestId, sessionId, text) {
     // intermediate recovery, not a terminal task error.
     await sleep(80)
     respondError(requestId, -32004, 'appserver degraded: job stalled >120.0s (session ' + sessionId + ')')
+    return
+  }
+
+  if (isImplementPrompt(text)) {
+    await runImplementPrompt(requestId, sessionId, text)
+    return
+  }
+
+  if (isPlanPrompt(text, mode)) {
+    await runPlanPrompt(requestId, sessionId, text)
     return
   }
 
@@ -757,7 +859,8 @@ rl.on('line', (line) => {
   if (method === 'session/prompt') {
     const sessionId = String(params.session_id ?? '')
     const text = String(params.text ?? '')
-    void runPrompt(id, sessionId, text).catch((error) => {
+    const mode = String(params.mode ?? 'build')
+    void runPrompt(id, sessionId, text, mode).catch((error) => {
       respondError(id, -32000, String(error))
       notify('event/done', {
         method: 'event/done',
