@@ -1970,6 +1970,18 @@ class HandoffEnvelope:
 - 本卡 **不** 实现翻译器、不接 Coordinator
 - 另写 `test_child_must_not_copy_primary_history` 作为 **文档测试**：断言 `HandoffEnvelope` 没有 `messages` 字段（`hasattr` / `dataclasses.fields`）
 
+**实施记录**（Grok 填写）
+
+```
+commits: feat(agent): reserve HandoffEnvelope（fix 分支）
+pytest: test_handoff_envelope 8（新）+ 全量 7797 passed（基线 8 不变）
+ruff: All checks passed
+实现：core/handoff.py（frozen+slots dataclass，5 字段）；from_dict 拒绝 messages/
+  history/thinking/reasoning_content/tool_calls（TypeError）+ 缺字段 TypeError；
+  文档测试 test_child_must_not_copy_primary_history；不实现翻译器、不接 Coordinator
+未勾完成判据。
+```
+
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
 - [ ] 含 history 的 dict 构造失败
