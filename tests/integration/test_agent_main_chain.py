@@ -170,7 +170,9 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
 
     agent._graph = CapturingGraph()
 
-    result = await agent.run("Produce the verified calculator artifact", mode="build")
+    result = await agent.run(
+        "/pipeline Produce the verified calculator artifact", mode="build"
+    )
     recording_tui.finish(result, "succeeded")
     stream_recorder.finish_success(result, agent._last_thinking)
 
