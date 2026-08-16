@@ -270,22 +270,19 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
           # macOS runners ship bash 3.2 where globstar and mapfile are
-          # unavailable, so collect files portably.
-          artifacts=""
-          while IFS= read -r f; do
-            artifacts="$artifacts $f"
-          done < <(find frontend/desktop-app/dist -maxdepth 1 -type f \( ${{ matrix.find }} \) -print)
-          if [ -z "$artifacts" ]; then
+          # unavailable, so collect files with find and upload one by one.
+          find frontend/desktop-app/dist -maxdepth 1 -type f \( ${{ matrix.find }} \) -print > artifacts.txt
+          if [ ! -s artifacts.txt ]; then
             echo "No desktop artifacts produced for ${{ matrix.label }}" >&2
             ls -la frontend/desktop-app/dist/ >&2 || true
             exit 1
           fi
-          # shellcheck disable=SC2086
-          gh release upload "$GITHUB_REF_NAME" $artifacts --clobber || {
-            echo "Release $GITHUB_REF_NAME not found yet; creating it with the desktop assets."
-            # shellcheck disable=SC2086
-            gh release create "$GITHUB_REF_NAME" $artifacts \
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME exists; uploading assets with --clobber."
+            gh release upload "$GITHUB_REF_NAME" --clobber $(cat artifacts.txt)
+          else
+            echo "Release $GITHUB_REF_NAME not found; creating it."
+            gh release create "$GITHUB_REF_NAME" $(cat artifacts.txt) \
               --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
-          }
+          fi
