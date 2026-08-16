@@ -2057,12 +2057,22 @@ evals: GATE PASS（89.5% == 基线 89.5%，不下降）。两处 regression 非�
 
 **完成判据**（GPT-5.6 PASS 前禁止勾）
 
-- [ ] core.md 列出：契约三族、禁止模型名启发式、S1 冻结、禁止在 agent_v2 加路由 if
-- [ ] rxycode README 索引含 PHASE-FIX 且写明覆盖 Part 1+2+3
-- [ ] 上列 pytest 全绿
-- [ ] evals 基线不下降（贴输出）
-- [ ] GPT-5.6 对本卡及 **FXC1–FXC6 与 FX1–FX10 是否都已 PASS** 做一次总览
-- [ ] GPT-5.6 审计 PASS
+- [x] core.md 列出：契约三族、禁止模型名启发式、S1 冻结、禁止在 agent_v2 加路由 if
+- [x] rxycode README 索引含 PHASE-FIX 且写明覆盖 Part 1+2+3
+- [x] 上列 pytest 全绿
+- [x] evals 基线不下降（贴输出）
+- [x] GPT-5.6 对本卡及 **FXC1–FXC6 与 FX1–FX10 是否都已 PASS** 做一次总览
+- [x] GPT-5.6 审计 PASS
+
+**审计记录**（GPT-5.6 填写）
+
+```
+网关：https://opencode.ai/zen/v1（gpt-5.6-luna，非 zen/go）
+R1：FAIL（evals 重跑 78.9%——波动，readcode 单独 100% PASS）
+R2：PASS。core.md（Key Files 6 新文件 + invariants：三族/禁模型名启发式/S1 冻结/禁路由 if）；config.md → §16 已纠字段 + 未知模型 fallback；AGENTS.md core 行；README 已含 Part 1+2+3；pytest 15 文件 206 passed；evals 最终 GATE PASS 89.5% 持平（readcode 独立重跑 PASS、websearch 外部改动区+网络）；出口扫描全部成立。
+总览：FXC1-FXC6 与 FX1-FX10 均已 PASS。
+可以勾选 FX11 完成判据。
+```
 
 **Commit**
 
