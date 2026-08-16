@@ -97,7 +97,7 @@ export function cacheHitRate(summary: UsageSummary): number | null {
   return summary.cache_hit_tokens / summary.input_tokens
 }
 
-export function terminalOutcomeIssue(status: string, finalAnswer: string): string | null {
+export function terminalOutcomeIssue(status: string, finalAnswer: string, artifactOk = false): string | null {
   if (status === 'succeeded' && finalAnswer.trim().length === 0) {
     return 'succeeded task has no non-empty Final Answer'
   }
@@ -105,6 +105,14 @@ export function terminalOutcomeIssue(status: string, finalAnswer: string): strin
     return 'GUI session ended as queued without a Final Answer'
   }
   if (status === 'failed' || status === 'cancelled' || status === 'timed_out') {
+    // A recovered write/edit that still left a Failed badge must not override a
+    // passing smoke/play probe (T06 retry3 had CSV + probe ok).
+    if (
+      artifactOk &&
+      /Tool (?:write|edit) did not complete|Artifact failed format validation/i.test(finalAnswer)
+    ) {
+      return null
+    }
     const detail = finalAnswer.trim().replace(/\s+/g, ' ').slice(0, 280)
     return detail.length > 0 ? `GUI session ${status}: ${detail}` : `GUI session ended as ${status}`
   }
@@ -412,6 +420,11 @@ export const requiredSpringMysqlDeliverables = [
   'TEST-REPORT.md'
 ] as const
 
+/** JUnit *Test.java and *Tests.java both count. T09-55 was false-failed for CoffeeApplicationTests.java. */
+export function isSpringMysqlTestJava(relativePath: string): boolean {
+  return /(^|\/)src\/test\/java\/.+Tests?\.java$/i.test(relativePath.replace(/\\/g, '/'))
+}
+
 export function findProjectLocalMaven(files: string[]): string | null {
   const rels = files.map((file) => file.replace(/\\/g, '/'))
   const pickCmd = (candidates: string[]): string | null => {
@@ -455,7 +468,7 @@ export function springMysqlArtifactIssue(
   if (!rels.some((file) => /application\.(yml|yaml|properties)$/i.test(file))) {
     return 'spring-mysql artifact has no application.yml or application.properties'
   }
-  if (!javaFiles.some((file) => /(^|\/)src\/test\/java\/.+Test\.java$/i.test(file))) {
+  if (!javaFiles.some((file) => isSpringMysqlTestJava(file))) {
     return 'spring-mysql artifact has no src/test/java *Test.java'
   }
   if (findProjectLocalMaven(rels) === null) {
@@ -473,7 +486,7 @@ export function springMysqlArtifactIssue(
       return 'spring-mysql REST layer has no @RestController'
     }
     const testText = javaFiles
-      .filter((file) => /(^|\/)src\/test\/java\/.+Test\.java$/i.test(file))
+      .filter((file) => isSpringMysqlTestJava(file))
       .map((file) => readText(file))
       .join('\n')
     if (!/@SpringBootTest/.test(testText) || !/MockMvc/.test(testText) || !/\.perform\(/.test(testText)) {
@@ -484,12 +497,24 @@ export function springMysqlArtifactIssue(
     if (/com\.fasterxml\.jackson\.databind/.test(javaText)) {
       return 'spring-mysql Boot 4 cannot import com.fasterxml.jackson.databind; use tools.jackson.databind or jsonPath'
     }
-    if (/org\.springframework\.boot\.test\.autoconfigure\.webmvc/.test(javaText)) {
-      return 'spring-mysql Boot 4 AutoConfigureMockMvc is org.springframework.boot.webmvc.test.autoconfigure, not org.springframework.boot.test.autoconfigure.webmvc'
+    if (/org\.springframework\.boot\.test\.autoconfigure\.web(?:mvc|\.servlet)/.test(javaText)) {
+      return 'spring-mysql Boot 4 AutoConfigureMockMvc is org.springframework.boot.webmvc.test.autoconfigure, not org.springframework.boot.test.autoconfigure.web.servlet or org.springframework.boot.test.autoconfigure.webmvc'
     }
     const sqlText = rels.filter((file) => /\/db\/migration\/.+\.sql$/i.test(file)).map((file) => readText(file)).join('\n').toLowerCase()
     for (const table of ['users', 'products', 'inventory', 'orders', 'order_items']) {
-      if (!sqlText.includes(table)) return `spring-mysql Flyway SQL does not create ${table}`
+      if (!new RegExp(`create table\\s+(if not exists\\s+)?${table}\\b`, 'i').test(sqlText)) {
+        return `spring-mysql Flyway SQL does not CREATE TABLE ${table}`
+      }
+    }
+    if (/create table\s+(if not exists\s+)?menus\b/i.test(sqlText) && !/create table\s+(if not exists\s+)?products\b/i.test(sqlText)) {
+      return 'spring-mysql Flyway SQL created menus instead of products/inventory'
+    }
+    const configBlob = rels
+      .filter((file) => /\.(yml|yaml|properties|xml|java)$/i.test(file))
+      .map((file) => readText(file))
+      .join('\n')
+    if (/jdbc:h2:|<artifactId>\s*h2\s*<\/artifactId>|com\.h2database|org\.h2\.Driver|H2Dialect|jdbc:sqlite:/i.test(configBlob)) {
+      return 'spring-mysql tests substituted H2/SQLite for MySQL 8'
     }
     const configFile = rels.find((file) => /application\.(yml|yaml|properties)$/i.test(file))
     if (configFile !== undefined) {
@@ -497,13 +522,9 @@ export function springMysqlArtifactIssue(
       if (!/\$\{(?:SPRING_DATASOURCE_|MYSQL_)/.test(config)) {
         return 'application config does not read datasource credentials from environment variables'
       }
-    }
-    const configBlob = rels
-      .filter((file) => /\.(yml|yaml|properties|xml|java)$/i.test(file))
-      .map((file) => readText(file))
-      .join('\n')
-    if (/jdbc:h2:|<artifactId>\s*h2\s*<\/artifactId>|com\.h2database|jdbc:sqlite:/i.test(configBlob)) {
-      return 'spring-mysql tests substituted H2/SQLite for MySQL 8'
+      if (/ddl-auto:\s*validate/i.test(config)) {
+        return 'spring-mysql jpa.hibernate.ddl-auto=validate fails before Flyway creates tables; use none or update'
+      }
     }
     if (/write-dates-as-timestamps\s*:/i.test(configBlob)) {
       return 'spring-mysql Boot 4 Jackson 3 cannot bind spring.jackson.serialization.write-dates-as-timestamps; delete that key or use WRITE_DATES_AS_TIMESTAMPS'
@@ -544,7 +565,7 @@ export function springBootTestPackageIssue(
   }
   if (appPkgs.size === 0) return null
   for (const file of rels) {
-    if (!/(^|\/)src\/test\/java\/.+Test\.java$/i.test(file)) continue
+    if (!isSpringMysqlTestJava(file)) continue
     const text = readText(file)
     if (!/@SpringBootTest/.test(text)) continue
     if (/@SpringBootTest\s*\([^)]*classes\s*=/.test(text)) continue

@@ -43,6 +43,36 @@ export function electronViteNodeOptions(existing?: string): string {
   return current.length > 0 ? `${current} ${extra}` : extra
 }
 
+export async function captureScreenshotWithRetry(
+  send: (method: string, params?: unknown, timeoutMs?: number) => Promise<any>,
+  attempts = 3
+): Promise<{ data: string }> {
+  let lastError: Error | null = null
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      try {
+        await send('Page.bringToFront', {}, 5_000)
+      } catch {
+        // Screenshot itself is still useful when bringToFront is unsupported.
+      }
+      const image = await send(
+        'Page.captureScreenshot',
+        attempt === 1 ? { format: 'png' } : { format: 'png', optimizeForSpeed: true },
+        10_000
+      )
+      if (typeof image?.data !== 'string' || image.data.length === 0) {
+        throw new Error('captureScreenshot returned no data')
+      }
+      return image
+    } catch (caught) {
+      lastError = caught instanceof Error ? caught : new Error(String(caught))
+      if (attempt >= attempts) break
+      await delay(200)
+    }
+  }
+  throw lastError ?? new Error('captureScreenshot failed')
+}
+
 export async function waitFor<T>(
   probe: () => Promise<T | null>,
   timeoutMs: number,
@@ -400,15 +430,9 @@ export class DesktopCdpHarness {
   async screenshot(relativePath: string): Promise<string> {
     const path = screenshotPath(this.artifactDir, relativePath)
     mkdirSync(dirname(path), { recursive: true })
-    // A real Electron window may be behind another window during a long
-    // scenario. Bring the page forward before capture, but keep both calls
-    // bounded by `send()` so a blocked renderer cannot stall cleanup.
-    try {
-      await this.send('Page.bringToFront', {}, 5_000)
-    } catch {
-      // Screenshot itself is still useful when bringToFront is unsupported.
-    }
-    const image = await this.send('Page.captureScreenshot', { format: 'png' }, 10_000)
+    // A long T09 transcript can stall one 10s capture. Retry at the same
+    // bound instead of raising it; a blocked renderer still fails the run.
+    const image = await captureScreenshotWithRetry((method, params, timeoutMs) => this.send(method, params, timeoutMs))
     writeFileSync(path, Buffer.from(image.data, 'base64'))
     return path
   }

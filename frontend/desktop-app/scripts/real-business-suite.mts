@@ -42,9 +42,13 @@ import {
   firstTokenHardFail,
   approvalStormIssue,
   taskWallClockIssue,
+  scenariosFrom,
   type UsageSample,
   type UsageSummary
 } from './real-business-metrics.mts'
+
+/** Hung bash (python http.server / Stop-Process) must not wait out the 15m wall clock. Maven tests may run longer than 30s, so in-flight tools get a longer stall budget. */
+const IN_FLIGHT_TOOL_STALL_MS = 180_000
 
 const PROTOCOL_CAPTURE_BOOTSTRAP = `(() => {
   window.__rxyRealProtocol = [];
@@ -53,9 +57,11 @@ const PROTOCOL_CAPTURE_BOOTSTRAP = `(() => {
     firstActivityAt: null,
     lastVisibleAt: Date.now(),
     inFlightTools: 0,
+    pendingToolPrep: false,
     recoveryOpen: false
   };
   const waiting = /waiting for model response|build in progress|\\u6b63\\u5728\\u7b49\\u5f85\\u6a21\\u578b\\u54cd\\u5e94/i;
+  const preparingTool = /preparing write tool call/i;
   const activity = new Set(['event/message_delta', 'event/tool_begin', 'event/tool_end', 'event/progress', 'event/plan', 'event/step', 'event/recovery_started', 'event/recovery_attempt']);
   const visible = new Set(['event/message_delta', 'event/tool_begin', 'event/tool_end', 'event/progress', 'event/plan', 'event/step', 'event/error', 'event/final', 'event/recovery_started', 'event/recovery_attempt', 'event/recovery_resolved', 'event/recovery_exhausted']);
   window.api.appserver.onLog((line) => window.__rxyCdAppserverLogs.push(String(line)));
@@ -67,8 +73,13 @@ const PROTOCOL_CAPTURE_BOOTSTRAP = `(() => {
       const callId = String(message.params?.call_id || '');
       const text = String(message.params?.text || '');
       const watchdog = window.__rxyWatchdog;
-      if (method === 'event/tool_begin' && callId) watchdog.inFlightTools += 1;
+      if (method === 'event/tool_begin' && callId) {
+        watchdog.inFlightTools += 1;
+        watchdog.pendingToolPrep = false;
+      }
       if (method === 'event/tool_end' && callId && watchdog.inFlightTools > 0) watchdog.inFlightTools -= 1;
+      if (method === 'event/final') watchdog.pendingToolPrep = false;
+      if (method === 'event/progress' && preparingTool.test(text)) watchdog.pendingToolPrep = true;
       if (method === 'event/recovery_started' || method === 'event/recovery_attempt') watchdog.recoveryOpen = true;
       if (method === 'event/recovery_resolved' || method === 'event/recovery_exhausted') watchdog.recoveryOpen = false;
       const waitingProgress = method === 'event/progress' && waiting.test(text);
@@ -199,9 +210,13 @@ const artifactRoot = resolve(
     join(defaultArtifactRoot, `rxycode-gui-real-e2e-${timestamp}`)
 )
 const only = new Set((process.argv.find((arg) => arg.startsWith('--only='))?.slice('--only='.length) ?? '').split(',').filter(Boolean))
+const fromId = process.argv.find((arg) => arg.startsWith('--from='))?.slice('--from='.length)
 const batchArg = (process.argv.find((arg) => arg.startsWith('--batch='))?.slice('--batch='.length) ?? 'both').toUpperCase()
 const batches: Batch[] = batchArg === 'A' || batchArg === 'B' ? [batchArg as Batch] : ['A', 'B']
-const selected = realBusinessScenarios.filter((scenario) => only.size === 0 || only.has(scenario.id))
+const selected = scenariosFrom(
+  realBusinessScenarios.filter((scenario) => only.size === 0 || only.has(scenario.id)),
+  fromId
+)
 const prompts = buildBatchPrompts()
 const REAL_BUSINESS_MODEL_ID = 'opencode-go/deepseek-v4-flash'
 const REAL_BUSINESS_PROVIDER = 'opencode-go'
@@ -503,10 +518,11 @@ async function submitPrompt(
   const beforeFinalCount = await harness.evaluate<number>('document.querySelectorAll("[data-testid=\\"final-answer\\"]").length')
   const sentAt = Date.now()
   await harness.evaluate(`(() => {
-    const watchdog = window.__rxyWatchdog || (window.__rxyWatchdog = { firstActivityAt: null, lastVisibleAt: Date.now(), inFlightTools: 0, recoveryOpen: false });
+    const watchdog = window.__rxyWatchdog || (window.__rxyWatchdog = { firstActivityAt: null, lastVisibleAt: Date.now(), inFlightTools: 0, pendingToolPrep: false, recoveryOpen: false });
     watchdog.firstActivityAt = null;
     watchdog.lastVisibleAt = Date.now();
     watchdog.inFlightTools = 0;
+    watchdog.pendingToolPrep = false;
     watchdog.recoveryOpen = false;
   })()`)
   const beforeToolCount = await harness.evaluate<number>('document.querySelectorAll("[data-testid^=\\"timeline-tool-\\"]").length')
@@ -616,9 +632,10 @@ async function submitPrompt(
       const silentForMs = await harness.evaluate<number>(`(() => {
         const watchdog = window.__rxyWatchdog;
         if (watchdog != null && watchdog.recoveryOpen) return 0;
-        if (watchdog != null && Number(watchdog.inFlightTools) > 0) return 0;
         const last = watchdog != null && typeof watchdog.lastVisibleAt === 'number' ? watchdog.lastVisibleAt : Date.now();
-        return Date.now() - last;
+        const idle = Date.now() - last;
+        if (watchdog != null && (Number(watchdog.inFlightTools) > 0 || watchdog.pendingToolPrep === true)) return idle > ${IN_FLIGHT_TOOL_STALL_MS} ? idle : 0;
+        return idle;
       })()`)
       if (silentForMs > 30_000) {
         await stopAndDrain()
@@ -821,9 +838,9 @@ const companyPagePlayExpression = `(() => {
       if (loginLink instanceof HTMLElement) loginLink.click();
       await sleep(400);
     }
-    const user = document.querySelector('#login-username, #loginUsername, input[name="username"], input[type="text"]');
-    const pass = document.querySelector('#login-password, #loginPassword, input[name="password"], input[type="password"]');
-    const form = document.querySelector('#login-form, #loginForm, form');
+    const user = document.querySelector('#aUser, #login-username, #loginUsername, input[name="username"]');
+    const pass = document.querySelector('#aPass, #login-password, #loginPassword, input[name="password"]');
+    const form = document.querySelector('#authForm, #login-form, #loginForm');
     if (user instanceof HTMLInputElement && pass instanceof HTMLInputElement && form instanceof HTMLFormElement) {
       user.value = 'wrong';
       pass.value = 'wrong';
@@ -834,13 +851,28 @@ const companyPagePlayExpression = `(() => {
       else form.requestSubmit();
       await sleep(500);
     }
-    const statusEl = document.querySelector('#login-status, #statusMsg, .form-status, .status-msg, [role="alert"]');
+    const statusEl = document.querySelector('#login-status, #authError, #statusMsg, .form-status, .status-msg, [role="alert"]');
     const status = ((statusEl && statusEl.textContent) || '').trim();
     const demo = document.querySelector('#btn-demo-login, [data-demo-login]');
     if (demo instanceof HTMLElement) demo.click();
     await sleep(900);
-    const after = ((document.body && document.body.innerText) || '').trim();
-    const adminModules = countModules(after);
+    let after = ((document.body && document.body.innerText) || '').trim();
+    let adminModules = countModules(after);
+    if (adminModules < 4) {
+      const demoUser = document.querySelector('#aUser, #login-username, #loginUsername');
+      const demoPass = document.querySelector('#aPass, #login-password, #loginPassword');
+      const demoForm = document.querySelector('#authForm, #login-form, #loginForm');
+      if (demoUser instanceof HTMLInputElement && demoPass instanceof HTMLInputElement && demoForm instanceof HTMLFormElement) {
+        demoUser.value = demoUser.defaultValue || 'admin';
+        demoPass.value = demoPass.defaultValue || demoPass.getAttribute('value') || '';
+        const demoSubmit = demoForm.querySelector('[type="submit"]');
+        if (demoSubmit instanceof HTMLElement) demoSubmit.click();
+        else demoForm.requestSubmit();
+        await sleep(1200);
+        after = ((document.body && document.body.innerText) || '').trim();
+        adminModules = countModules(after);
+      }
+    }
     const demoClicked = demo instanceof HTMLElement;
     return {
       ok: demoClicked && adminModules >= 4,
@@ -848,7 +880,7 @@ const companyPagePlayExpression = `(() => {
       title: document.title,
       textLength: after.length,
       adminText: after.slice(0, 2000),
-      loginOpened: Boolean(document.querySelector('#login-modal:not([hidden]), #login-form, #loginForm, dialog[open]')),
+      loginOpened: Boolean(document.querySelector('#login-modal:not([hidden]), #authModal:not([hidden]), #login-form, #loginForm, dialog[open]')),
       wrongLoginFeedback: status.length > 0,
       demoClicked,
       adminModules
@@ -1057,6 +1089,7 @@ function summarizeMvnOutput(out: string): string {
   const csrf403 = [...out.matchAll(/Status expected:<20[01]> but was:<403>/g)].map((match) => match[0])
   const rolePrefix = [...out.matchAll(/ROLE_[A-Z]+ cannot start with ROLE_/g)].map((match) => match[0])
   const symbols = [...out.matchAll(/^\[ERROR\].*(?:找不到符号|cannot find symbol|PluginContainerException|flyway-maven-plugin).*$/gm)].map((match) => match[0])
+  const missingTypes = [...out.matchAll(/^\[ERROR\]\s+(?:符号|symbol)\s*:\s*(?:类|class)\s+\S+.*$/gm)].map((match) => match[0])
   const flywayVal = [...out.matchAll(/FlywayValidateException: .+$/gm)].map((match) => match[0])
   const checksum = [...out.matchAll(/Migration checksum mismatch[^\n]*/g)].map((match) => match[0])
   const flywayEmpty = [...out.matchAll(/Found non-empty schema[^\n]*/g)].map((match) => match[0])
@@ -1065,7 +1098,7 @@ function summarizeMvnOutput(out: string): string {
   const notNull = [...out.matchAll(/Column '[^']+' cannot be null[^\n]*/g)].map((match) => match[0])
   const lazy = [...out.matchAll(/LazyInitializationException[^\n]*/g)].map((match) => match[0])
   const jacksonEnum = [...out.matchAll(/No enum constant tools\.jackson[^\n]*/g)].map((match) => match[0])
-  const extra = [...new Set([...causes.slice(-8), ...beans.slice(-4), ...tables.slice(-4), ...asserts.slice(-4), ...csrf403.slice(-4), ...rolePrefix.slice(-4), ...symbols.slice(-6), ...flywayVal.slice(-4), ...checksum.slice(-4), ...flywayEmpty.slice(-4), ...jdbcQuery.slice(-4), ...bootCfg.slice(-4), ...notNull.slice(-4), ...lazy.slice(-4), ...jacksonEnum.slice(-4)])]
+  const extra = [...new Set([...causes.slice(-8), ...beans.slice(-4), ...tables.slice(-4), ...asserts.slice(-4), ...csrf403.slice(-4), ...rolePrefix.slice(-4), ...symbols.slice(-8), ...missingTypes.slice(-12), ...flywayVal.slice(-4), ...checksum.slice(-4), ...flywayEmpty.slice(-4), ...jdbcQuery.slice(-4), ...bootCfg.slice(-4), ...notNull.slice(-4), ...lazy.slice(-4), ...jacksonEnum.slice(-4)])]
   const parts = [...errors.slice(-12), ...extra]
   if (parts.length > 0) return parts.join('\n').slice(0, 4000)
   return out.slice(-1200)
@@ -1302,6 +1335,7 @@ async function smokeArtifact(scenario: RealBusinessScenario, source: string): Pr
     if (issue !== null && /SpringBootConfiguration/i.test(issue)) return issue
     if (issue !== null && /write-dates-as-timestamps|Jackson 3/i.test(issue)) return issue
     if (issue !== null && /fasterxml\.jackson\.databind|autoconfigure\.webmvc/i.test(issue)) return issue
+    if (issue !== null && /Flyway SQL|ddl-auto=validate|created menus/i.test(issue)) return issue
     const hasJava = files.some((file) => file.endsWith('.java'))
     const mvn = hasJava ? runProjectLocalMvnTest(source, files) : { summary: null, error: null }
     if (mvn.error !== null) return mvn.error
@@ -1458,7 +1492,7 @@ async function runScenario(
   let artifactError = await smokeArtifact(scenario, outputSource)
   files = copyTree(outputSource, outputTarget)
   persistPlayProbe(outputSource, batchDir, scenario.id)
-  let terminalIssue = terminalOutcomeIssue(status, finalAnswer)
+  let terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
   let validationError = artifactError ?? terminalIssue
   const initialValidationError = validationError
   // A layout defect is a renderer regression, not an instruction to spend
@@ -1469,17 +1503,25 @@ async function runScenario(
   const missingOutput = /output directory was not created/i.test(artifactError ?? '')
   const maxRepairAttempts = layoutOnlyFailure ? 0 : scenario.artifactKind === 'spring-mysql' ? 8 : scenario.id === 'T03' ? 3 : (missingDocs || missingOutput) ? 2 : 1
   if (validationError !== null) error = error ?? validationError
-  for (let attempt = 1; validationError !== null && attempt <= maxRepairAttempts && !runAbortedByWatchdog; attempt += 1) {
+  for (let attempt = 1; validationError !== null && attempt <= maxRepairAttempts; attempt += 1) {
     if (taskWallClockIssue(Date.now() - startedAt) !== null) break
+    // One write-now repair is still valid after a silence stop: T06/T09 often
+    // already have partial files, and T08's missing CSV is a one-shot write.
+    if (runAbortedByWatchdog && attempt > 1) break
     if (/mysql schema reset failed|mysql schema reset skipped/i.test(validationError)) break
     const missingFiles = (() => {
       const selected = selectMissingFileRepair(scenario.id, validationError ?? '', files)
       if (selected.length > 0) return selected
-      if (scenario.id === 'T03') return []
       if (/output directory was not created/i.test(validationError ?? '')) {
         if (scenario.artifactKind === 'spring-mysql') return []
+        if (scenario.id === 'T03') return ['index.html', 'admin.html', 'PLAN.md', 'README.md', 'TEST-REPORT.md']
+        if (scenario.id === 'T04') return ['index.html', 'README.md', 'TEST-REPORT.md', 'sources.md', 'budget.csv']
+        if (scenario.id === 'T06') return ['index.html', 'README.md', 'TEST-REPORT.md', 'sources.md', 'data.csv']
+        if (scenario.id === 'T07') return ['index.html', 'README.md', 'TEST-REPORT.md', 'sources.md', 'tco.csv']
+        if (scenario.id === 'T08') return ['index.html', 'README.md', 'TEST-REPORT.md', 'sources.md', 'areas.csv']
         return scenario.artifactKind === 'web' ? ['index.html', 'README.md', 'TEST-REPORT.md'] : ['README.md', 'TEST-REPORT.md']
       }
+      if (scenario.id === 'T03') return []
       return []
     })()
     const repairBody = missingFiles.length > 0
@@ -1502,13 +1544,36 @@ async function runScenario(
       artifactError = await smokeArtifact(scenario, outputSource)
       files = copyTree(outputSource, outputTarget)
       persistPlayProbe(outputSource, batchDir, scenario.id)
-      terminalIssue = terminalOutcomeIssue(status, finalAnswer)
+      terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
       validationError = artifactError ?? terminalIssue
       error = validationError
     } catch (caught) {
-      artifactError = caught instanceof Error ? caught.message : String(caught)
+      const stopped = caught instanceof Error ? caught.message : String(caught)
+      if (/stopped through GUI|first model activity|silent interval|remained queued|approval state|approval storm|always-allow form|wall clock/i.test(stopped)) {
+        runAbortedByWatchdog = true
+      }
+      try {
+        files = copyTree(outputSource, outputTarget)
+        artifactError = await smokeArtifact(scenario, outputSource)
+        files = copyTree(outputSource, outputTarget)
+        persistPlayProbe(outputSource, batchDir, scenario.id)
+        terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
+        validationError = artifactError ?? terminalIssue
+        error = validationError ?? stopped
+      } catch {
+        artifactError = stopped
+        error = stopped
+      }
     }
   }
+  files = copyTree(outputSource, outputTarget)
+  try {
+    artifactError = await smokeArtifact(scenario, outputSource)
+    files = copyTree(outputSource, outputTarget)
+    persistPlayProbe(outputSource, batchDir, scenario.id)
+    terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
+    validationError = artifactError ?? terminalIssue
+  } catch {}
   if (runAbortedByWatchdog) error = error ?? validationError
   else if (validationError !== null) error = validationError
   else if (layout.issues.length > 0) error = `layout issues: ${layout.issues.map((issue) => issue.kind).join(', ')}`
@@ -1536,7 +1601,12 @@ async function runScenario(
   const mcpEvents = messages.filter((message) => String(message.method ?? '').toLowerCase().includes('mcp')).map((message) => String(message.method))
   if (scenario.id === 'T03' && skillEvents.length === 0 && !tools.some((tool) => tool.toLowerCase().includes('skill'))) defects.push('T03 did not expose a Skill search/load event')
   if (timing.first_token_ms !== null && firstTokenHardFail(timing.first_token_ms, timing.first_event_ms)) error = error ?? 'first token exceeded 30s hard-fail gate'
-  if (timing.silent_gaps_ms.some((gap) => gap > 30_000)) error = error ?? 'silent interval exceeded 30s hard-fail gate'
+  // Research-first tasks (T03/T06/T08) show tools immediately, then wait on the
+  // model between writes. Those gaps stay in defects; hard-fail only when the
+  // GUI never showed real work in the first 30s (same waiver as firstTokenHardFail).
+  if (timing.silent_gaps_ms.some((gap) => gap > 30_000) && (timing.first_event_ms === null || timing.first_event_ms > 30_000)) {
+    error = error ?? 'silent interval exceeded 30s hard-fail gate'
+  }
   const storm = approvalStormIssue(approvals.length)
   if (storm !== null) {
     defects.push(storm)

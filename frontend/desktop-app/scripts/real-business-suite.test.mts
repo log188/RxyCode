@@ -76,13 +76,19 @@ test('real business prompts preserve the required implementation boundaries', ()
   const byId = Object.fromEntries(realBusinessScenarios.map((scenario) => [scenario.id, scenario.prompt]))
   assert.match(byId.T01, /localStorage|HTML|JavaScript|T01-runner/)
   assert.match(byId.T01, /write tool|TEST-REPORT/)
+  assert.match(byId.T01, /http\.server/)
   assert.match(byId.T02, /HTML|JavaScript|T02-platformer|two|T02/)
   assert.match(byId.T02, /README.md|TEST-REPORT/)
   assert.match(byId.T02, /Playable-game contract|#stateLabel|#score/)
+  assert.match(byId.T02, /http\.server/)
   assert.match(byId.T03, /websearch|webfetch|Skill|T03-company/)
   assert.match(byId.T03, /skill tool|Do not call download_skill/)
   assert.match(byId.T03, /Java, Spring, Maven, or a backend substitute is a hard failure/)
+  assert.match(byId.T03, /http\.server/)
   assert.match(byId.T03, /admin\.html/)
+  assert.match(byId.T03, /#btn-demo-login must immediately navigate/)
+  assert.match(byId.T03, /immediately write README.md and TEST-REPORT.md/)
+  assert.match(byId.T03, /next tool call must be write of T03-company\/PLAN.md/)
   assert.match(byId.T04, /datetime|3000|T04-travel|sources/)
   assert.match(byId.T05, /Java 17|Swing|javac|T05-number-bomb/)
   assert.match(byId.T06, /CSV|BI|T06-market-bi|websearch/)
@@ -90,6 +96,8 @@ test('real business prompts preserve the required implementation boundaries', ()
   assert.match(byId.T06, /Do not write _probe\.py/)
   assert.match(byId.T06, /no CDN/)
   assert.match(byId.T06, /Do not call workflow/)
+  assert.match(byId.T06, /At least one \.csv file must exist/)
+  assert.match(byId.T06, /webfetch returns 403/)
   assert.match(byId.T07, /TCO|T07-ev|websearch/)
   assert.match(byId.T07, /Do not probe pandas/)
   assert.match(byId.T07, /Do not write _probe\.py/)
@@ -103,7 +111,11 @@ test('real business prompts preserve the required implementation boundaries', ()
   assert.match(byId.T08, /no CDN/)
   assert.match(byId.T08, /Java, Spring, Maven/)
   assert.match(byId.T08, /合同与风险/)
+  assert.match(byId.T08, /inline SVG map|the word 地图/)
+  assert.match(byId.T08, /areas\.csv/)
   assert.match(byId.T09, /Spring Boot 4.1.0|Maven 3.9.16|MySQL 8|Flyway/)
+  assert.match(byId.T09, /first tool call must be write of T09-coffee\/pom\.xml/)
+  assert.match(byId.T09, /Do not call websearch or webfetch/)
   assert.match(byId.T09, /already injected into the process environment/)
   assert.match(byId.T09, /Python, Flask, Django, or SQLite substitute is a hard failure/)
   assert.match(byId.T09, /write tool first|src\/main\/java/)
@@ -112,6 +124,7 @@ test('real business prompts preserve the required implementation boundaries', ()
   assert.match(byId.T09, /待验证/)
   assert.match(byId.T09, /Tests run: N/)
   assert.match(byId.T09, /Failures: 0, Errors: 0/)
+  assert.match(byId.T09, /Listing MIGRATION-ROLLBACK\.md or TEST-REPORT\.md in README does not create them/)
   assert.match(byId.T09, /do not wait for Maven download/)
   assert.match(byId.T09, /do not rename or relocate/)
   assert.match(byId.T09, /BigDecimal/)
@@ -126,6 +139,7 @@ test('real business prompts preserve the required implementation boundaries', ()
   assert.match(byId.T09, /starter-flyway/)
   assert.match(byId.T09, /flyway-mysql|baseline-on-migrate/)
   assert.match(byId.T09, /static\/index\.html/)
+  assert.match(byId.T09, /ProductService\.java/)
   assert.match(byId.T09, /T09-coffee with a hyphen|T09_coffee is a hard failure/)
   assert.match(byId.T09, /_probe/)
 })
@@ -169,6 +183,22 @@ test('missing-file repair prompt writes documents instead of re-reading source',
   assert.deepEqual(
     selectMissingFileRepair('T04', 'travel website is incomplete; missing PLAN.md, sources.md', ['index.html', 'README.md']),
     ['PLAN.md', 'sources.md']
+  )
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T08',
+      'rental decision website is incomplete; missing data CSV',
+      ['index.html', 'README.md', 'TEST-REPORT.md', 'sources.md']
+    ),
+    ['areas.csv']
+  )
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T06',
+      'market BI website is incomplete; missing data CSV',
+      ['index.html', 'README.md', 'TEST-REPORT.md', 'sources.md']
+    ),
+    ['data.csv']
   )
   assert.deepEqual(
     selectMissingFileRepair(
@@ -267,9 +297,43 @@ test('missing-file repair prompt writes documents instead of re-reading source',
   const bootCfgRepair = buildSpringMysqlRepairInstructions('spring-mysql *Test.java package cannot find @SpringBootConfiguration; put tests in the application package or set @SpringBootTest(classes=...)')
   assert.match(bootCfgRepair, /same package|classes=/)
   assert.match(bootCfgRepair, /\$\.token|form username/)
+  assert.match(bootCfgRepair, /Delete ONLY|do not delete every/i)
+  assert.match(bootCfgRepair, /Tests\.java is a valid filename/)
+  const missingTestRepair = buildSpringMysqlRepairInstructions('spring-mysql artifact has no src/test/java *Test.java')
+  assert.match(missingTestRepair, /CoffeeApplicationTests\.java already exists/)
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T09',
+      'spring-mysql artifact has no src/test/java *Test.java',
+      ['src/test/java/com/rxycode/t09/coffee/CoffeeApplicationTests.java']
+    ),
+    []
+  )
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T09',
+      'spring-mysql artifact has no src/test/java *Test.java',
+      ['src/main/java/com/rxycode/t09/coffee/CoffeeApplication.java']
+    ),
+    ['src/test/java/com/rxycode/t09/coffee/CoffeeApplicationTests.java']
+  )
   const h2Repair = buildSpringMysqlRepairInstructions('spring-mysql tests substituted H2/SQLite for MySQL 8')
-  assert.match(h2Repair, /Delete the H2|SPRING_DATASOURCE_/)
+  assert.match(h2Repair, /Delete the H2|SPRING_DATASOURCE_|src\/test\/resources\/application\.yml/)
   assert.doesNotMatch(h2Repair, /Call the write tool once for each path/)
+  const h2DriverRepair = buildSpringMysqlRepairInstructions('mvn test failed:\nCannot load driver class: org.h2.Driver')
+  assert.match(h2DriverRepair, /src\/test\/resources\/application\.yml/)
+  assert.doesNotMatch(h2DriverRepair, /orElseThrow belongs on Optional/)
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T09',
+      'spring-mysql tests substituted H2/SQLite for MySQL 8',
+      ['pom.xml', 'src/test/resources/application.yml', 'src/main/java/com/coffee/controller/AuthController.java']
+    ),
+    ['src/test/resources/application.yml']
+  )
+  const h2Write = buildMissingFileRepairPrompt('T09-coffee', ['src/test/resources/application.yml'], 'spring-mysql tests substituted H2/SQLite for MySQL 8')
+  assert.match(h2Write, /SPRING_DATASOURCE_URL/)
+  assert.match(h2Write, /org\.h2\.Driver/)
   const classLoadRepair = buildSpringMysqlRepairInstructions('spring-mysql tests do not start Spring or MockMvc; a class-load or empty contextLoads smoke is not enough')
   assert.match(classLoadRepair, /@SpringBootTest/)
   assert.match(classLoadRepair, /getSimpleName/)
@@ -316,7 +380,7 @@ test('missing-file repair prompt writes documents instead of re-reading source',
       'src/main/java/com/coffee/controller/RevenueController.java',
       'src/main/resources/static/index.html',
       'src/main/resources/db/migration/V1__init.sql',
-      'src/test/java/com/coffee/CoffeeApplicationTest.java'
+      'src/test/java/com/coffee/CoffeeApplicationTests.java'
     ]
   )
   assert.deepEqual(
@@ -404,6 +468,14 @@ test('successful GUI runs must expose a non-empty Final Answer', () => {
   assert.equal(terminalOutcomeIssue('queued', ''), 'GUI session ended as queued without a Final Answer')
   assert.match(String(terminalOutcomeIssue('failed', '')), /ended as failed/)
   assert.match(String(terminalOutcomeIssue('failed', 'tool_calls mismatch')), /GUI session failed/)
+  assert.equal(
+    terminalOutcomeIssue('failed', '[evidence failed: Tool write did not complete: failed]', true),
+    null
+  )
+  assert.match(
+    String(terminalOutcomeIssue('failed', '[evidence failed: Tool write did not complete: failed]', false)),
+    /GUI session failed/
+  )
 })
 
 test('web artifacts cannot pass with only an index.html', () => {
@@ -692,6 +764,43 @@ test('spring-mysql artifacts reject a Python substitute', () => {
     springMysqlArtifactIssue(complete, (rel) => contents[rel] ?? ''),
     null
   )
+  assert.match(
+    String(springMysqlArtifactIssue(complete, (rel) => {
+      if (rel.endsWith('V1__init.sql')) {
+        return 'create table menus(id int); create table users(id int); create table orders(id int); create table order_items(id int);'
+      }
+      return contents[rel] ?? ''
+    })),
+    /CREATE TABLE products|created menus/
+  )
+  assert.match(
+    String(springMysqlArtifactIssue(complete, (rel) => {
+      if (rel.endsWith('application.yml')) return `${contents[rel] ?? ''}\n    ddl-auto: validate\n`
+      return contents[rel] ?? ''
+    })),
+    /ddl-auto=validate|use none or update/
+  )
+  assert.match(
+    String(springMysqlArtifactIssue(complete.concat(['src/test/resources/application.yml']), (rel) => {
+      if (rel.endsWith('src/test/resources/application.yml')) {
+        return 'spring:\n  datasource:\n    driver-class-name: org.h2.Driver\n'
+      }
+      return contents[rel] ?? ''
+    })),
+    /H2\/SQLite/
+  )
+  const pluralTests = complete
+    .filter((file) => file !== 'src/test/java/com/rxycode/t09coffee/CoffeeShopApplicationTest.java')
+    .concat(['src/test/java/com/rxycode/t09/coffee/CoffeeApplicationTests.java'])
+  assert.equal(
+    springMysqlArtifactIssue(pluralTests, (rel) => {
+      if (rel.endsWith('CoffeeApplicationTests.java')) {
+        return contents['src/test/java/com/rxycode/t09coffee/CoffeeShopApplicationTest.java'] ?? ''
+      }
+      return contents[rel] ?? ''
+    }),
+    null
+  )
   const nestedMaven = complete.filter((file) => file !== 'mvnw.cmd').concat([
     '.tools/apache-maven-3.9.16/apache-maven-3.9.16/bin/mvn.cmd'
   ])
@@ -780,6 +889,11 @@ test('spring-mysql artifacts reject a Python substitute', () => {
     String(springMysqlArtifactIssue(complete, (rel) => contents[rel] ?? '')),
     /autoconfigure\.webmvc/
   )
+  contents['src/test/java/com/rxycode/t09coffee/CoffeeShopApplicationTest.java'] = 'import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc; @SpringBootTest @AutoConfigureMockMvc class CoffeeShopApplicationTest { MockMvc mockMvc; void api() { mockMvc.perform(get("/api/health")); } }'
+  assert.match(
+    String(springMysqlArtifactIssue(complete, (rel) => contents[rel] ?? '')),
+    /autoconfigure\.web\.servlet/
+  )
   contents['src/test/java/com/rxycode/t09coffee/CoffeeShopApplicationTest.java'] = goodTest
   assert.equal(mavenTestCountsIssue('Tests run: 2, Failures: 0, Errors: 0'), null)
   assert.match(String(mavenTestCountsIssue('Tests run: 2, Failures: 0, Errors: 2 <<< FAILURE!')), /Errors: 2/)
@@ -862,6 +976,94 @@ test('web play probe prefers explicit start buttons over the first button on the
   assert.doesNotMatch(suite, /api\.deepseek\.com\/v1/)
   assert.doesNotMatch(suite, /assertOfficialModel|selectOfficialModelInSettings/)
   assert.match(suite, /buildSpringMysqlRepairInstructions/)
+  const authBeanRepair = buildSpringMysqlRepairInstructions("mvn test failed:\nNo qualifying bean of type 'org.springframework.security.authentication.AuthenticationManager'")
+  assert.match(authBeanRepair, /ProviderManager\(daoAuthenticationProvider\)/)
+  assert.doesNotMatch(authBeanRepair, /Do not rewrite the whole tree/)
+  const duplicateSecurityRepair = buildSpringMysqlRepairInstructions('mvn test failed:\nCaused by: org.springframework.context.annotation.ConflictingBeanDefinitionException: Annotation-specified bean name \'securityConfig\'')
+  assert.match(duplicateSecurityRepair, /single SecurityConfig/)
+  assert.doesNotMatch(duplicateSecurityRepair, /Do not rewrite the whole tree/)
+  const unauthorizedRepair = buildSpringMysqlRepairInstructions('mvn test failed:\nStatus expected:<200> but was:<401>')
+  assert.match(unauthorizedRepair, /@WithMockUser is ignored/)
+  assert.match(unauthorizedRepair, /\.with\(user\("admin"\)\.roles\("ADMIN"\)\)/)
+  assert.doesNotMatch(unauthorizedRepair, /Do not rewrite the whole tree/)
+  const login400Repair = buildSpringMysqlRepairInstructions('mvn test failed:\nStatus expected:<401> but was:<400>')
+  assert.match(login400Repair, /@Valid/)
+  assert.match(login400Repair, /401/)
+  assert.doesNotMatch(login400Repair, /Do not rewrite the whole tree/)
+  const backtickRepair = buildSpringMysqlRepairInstructions("mvn test failed:\n非法字符: '`'")
+  assert.match(backtickRepair, /backtick|markdown fence/)
+  assert.doesNotMatch(backtickRepair, /Do not rewrite the whole tree/)
+  const sessionCastRepair = buildSpringMysqlRepairInstructions('mvn test failed:\n不兼容的类型: jakarta.servlet.http.HttpSession无法转换为org.springframework.mock.web.MockHttpSession')
+  assert.match(sessionCastRepair, /Do not cast getSession/)
+  assert.doesNotMatch(sessionCastRepair, /Do not rewrite the whole tree/)
+  const lazyRepair = buildSpringMysqlRepairInstructions('mvn test failed:\norg.hibernate.LazyInitializationException: Cannot lazily initialize collection')
+  assert.match(lazyRepair, /@Transactional|FetchType\.EAGER/)
+  assert.doesNotMatch(lazyRepair, /Do not rewrite the whole tree/)
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T09',
+      'mvn test failed:\nHttpSession无法转换为org.springframework.mock.web.MockHttpSession',
+      ['src/test/java/com/rxycode/t09coffee/CoffeeApiTest.java']
+    ),
+    ['src/test/java/com/rxycode/t09coffee/CoffeeApiTest.java']
+  )
+  const forbiddenRepair = buildSpringMysqlRepairInstructions('mvn test failed:\nStatus expected:<200> but was:<403>')
+  assert.match(forbiddenRepair, /permitAll "\/api\/auth\/login"/)
+  assert.match(forbiddenRepair, /APP_ADMIN_PASSWORD or T09_ADMIN_PASSWORD/)
+  assert.doesNotMatch(forbiddenRepair, /Do not rewrite the whole tree/)
+  const jacksonRefRepair = buildSpringMysqlRepairInstructions('mvn test failed:\n找不到符号\n  符号:   类 JsonBackReference')
+  assert.match(jacksonRefRepair, /Delete @JsonManagedReference and @JsonBackReference/)
+  assert.doesNotMatch(jacksonRefRepair, /put @JsonIgnore/)
+  assert.doesNotMatch(jacksonRefRepair, /Do not rewrite the whole tree/)
+  const jacksonAnnoRepair = buildSpringMysqlRepairInstructions('mvn test failed:\n[ERROR] 程序包tools.jackson.annotation不存在')
+  assert.match(jacksonAnnoRepair, /tools\.jackson\.annotation does not exist/)
+  assert.doesNotMatch(jacksonAnnoRepair, /Do not rewrite the whole tree/)
+  const schemaRepair = buildSpringMysqlRepairInstructions('mvn test failed:\nCaused by: org.hibernate.tool.schema.spi.SchemaManagementException: Schema validation: missing table [inventory]')
+  assert.match(schemaRepair, /CREATE TABLE users, products, inventory/)
+  assert.match(schemaRepair, /ddl-auto/)
+  assert.doesNotMatch(schemaRepair, /orElseThrow belongs on Optional/)
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T09',
+      'mvn test failed:\nCaused by: org.hibernate.tool.schema.spi.SchemaManagementException: Schema validation: missing table [inventory]',
+      ['pom.xml', 'src/main/resources/db/migration/V1__init.sql', 'src/main/java/com/rxycode/t09/coffee/controller/AuthController.java']
+    ),
+    ['src/main/resources/db/migration/V1__init.sql']
+  )
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T09',
+      'spring-mysql jpa.hibernate.ddl-auto=validate fails before Flyway creates tables; use none or update',
+      ['src/main/resources/application.yml']
+    ),
+    ['src/main/resources/application.yml']
+  )
+  const missingServiceRepair = buildSpringMysqlRepairInstructions('mvn test failed:\n[ERROR]   符号:   类 RevenueService\n[ERROR]   位置: 类 com.rxycode.t09coffee.controller.RevenueController')
+  assert.match(missingServiceRepair, /under src\/main\/java\/\.\.\.\/service/)
+  assert.match(missingServiceRepair, /Do not only add imports/)
+  assert.doesNotMatch(missingServiceRepair, /Do not rewrite the whole tree/)
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T09',
+      'mvn test failed:\n[ERROR] ProductController.java:[14,19] 找不到符号\n[ERROR]   符号:   类 RevenueService\n[ERROR]   符号:   类 RevenueDto',
+      [
+        'src/main/java/com/rxycode/t09coffee/controller/ProductController.java',
+        'src/main/java/com/rxycode/t09coffee/controller/RevenueController.java',
+        'src/main/java/com/rxycode/t09coffee/dto/ProductDto.java'
+      ]
+    ).sort(),
+    [
+      'src/main/java/com/rxycode/t09coffee/dto/RevenueDto.java',
+      'src/main/java/com/rxycode/t09coffee/service/ProductService.java',
+      'src/main/java/com/rxycode/t09coffee/service/RevenueService.java'
+    ].sort()
+  )
+  const serviceWrite = buildMissingFileRepairPrompt('T09-coffee', ['src/main/java/com/rxycode/t09coffee/service/RevenueService.java'])
+  assert.match(serviceWrite, /compilable class/)
+  assert.match(serviceWrite, /RevenueService\.java/)
+  const orderStatusRepair = buildSpringMysqlRepairInstructions('mvn test failed:\nNo value at JSON path "$.status"')
+  assert.match(orderStatusRepair, /jsonPath\("\$\.id"\)/)
+  assert.doesNotMatch(orderStatusRepair, /Do not rewrite the whole tree/)
   assert.doesNotMatch(suite, /t09coffee\/web\/AuthController/)
   assert.match(suite, /MYSQL_PASSWORD/)
   assert.match(suite, /artifactKind === 'spring-mysql' \? 8/)
@@ -883,6 +1085,7 @@ test('web play probe prefers explicit start buttons over the first button on the
   assert.match(suite, /jdbc:h2/)
   assert.match(suite, /write-dates-as-timestamps|Jackson 3/)
   assert.match(suite, /fasterxml\\.jackson\\.databind|autoconfigure\\.webmvc/)
+  assert.match(suite, /Flyway SQL\|ddl-auto=validate\|created menus/)
   assert.match(suite, /executeQuery/)
   assert.match(suite, /mysql schema reset failed/)
   assert.match(suite, /Migration checksum mismatch/)
@@ -899,6 +1102,18 @@ test('web play probe prefers explicit start buttons over the first button on the
   assert.match(scenarios, /SpringBootConfiguration/)
   assert.match(scenarios, /WRITE_DATES_AS_TIMESTAMPS|write-dates-as-timestamps/)
   assert.match(scenarios, /tools\.jackson\.databind/)
+  assert.match(scenarios, /ProviderManager\(daoAuthenticationProvider\)/)
+  assert.match(scenarios, /config\.SecurityConfig and security\.SecurityConfig/)
+  assert.match(scenarios, /Do not use @WithMockUser/)
+  assert.match(scenarios, /Do not add com\.h2database/)
+  assert.match(scenarios, /org\.h2\.Driver/)
+  assert.match(scenarios, /permitAll "\/api\/auth\/login"/)
+  assert.match(scenarios, /not a hardcoded password/)
+  assert.match(scenarios, /JsonManagedReference, @JsonBackReference/)
+  assert.match(scenarios, /CREATE TABLE users, products, inventory/)
+  assert.match(scenarios, /menus\/customers in place of products/)
+  assert.match(scenarios, /ddl-auto to none or update/)
+  assert.match(scenarios, /must not Integer\.parseInt/)
   assert.match(suite, /output directory was not created/)
   assert.match(suite, /missingOutputDirIssue/)
   assert.match(suite, /artifactKind === 'spring-mysql'\) return \[\]/)
@@ -907,6 +1122,8 @@ test('web play probe prefers explicit start buttons over the first button on the
   assert.match(suite, /a\[href\^="#"\]/)
   assert.match(suite, /companyPagePlayExpression|#btn-open-login/)
   assert.match(suite, /a\.btn-login|#loginUsername/)
+  assert.match(suite, /#authForm/)
+  assert.match(suite, /scenariosFrom/)
   assert.match(suite, /webServeRoot/)
   assert.match(suite, /travelWebsiteArtifactIssue/)
   assert.match(suite, /marketBiArtifactIssue/)
@@ -924,6 +1141,11 @@ test('web play probe prefers explicit start buttons over the first button on the
   assert.match(suite, /__rxyWatchdog/)
   assert.match(suite, /lastVisibleAt/)
   assert.match(suite, /inFlightTools/)
+  assert.match(suite, /IN_FLIGHT_TOOL_STALL_MS/)
+  assert.match(suite, /idle > \$\{IN_FLIGHT_TOOL_STALL_MS\}/)
+  assert.match(suite, /pendingToolPrep/)
+  assert.match(suite, /preparing write tool call/)
+  assert.match(suite, /runAbortedByWatchdog && attempt > 1/)
   assert.doesNotMatch(suite, /tool-activity\.running/)
   assert.match(suite, /sawActive/)
   assert.match(suite, /PROTOCOL_CAPTURE_BOOTSTRAP/)
@@ -940,6 +1162,7 @@ test('web play probe prefers explicit start buttons over the first button on the
   assert.match(suite, /selectMissingFileRepair/)
   assert.match(suite, /no-websearch rule does not forbid write/)
   assert.match(suite, /if \(scenario\.id === 'T03'\) return \[\]/)
+  assert.match(suite, /T03'\) return \['index.html', 'admin.html'/)
   assert.match(suite, /navigated or closed/)
   assert.match(suite, /headless=new/)
   assert.match(suite, /Chrome may keep the profile directory locked/)
