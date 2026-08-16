@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 from typing import Optional, Sequence
+import re as _re
 from urllib.parse import urlsplit
 
 import httpx
@@ -255,6 +256,9 @@ from RxyCode.RxyCode1_1_0.core.request_routing import (
 )
 from RxyCode.RxyCode1_1_0.core.turn_router import route
 from RxyCode.RxyCode1_1_0.core.turn_context import TurnContextBlock
+_AGENT_NAMESPACE_RE = _re.compile(r"[a-z0-9_.-]{1,64}")
+
+
 CODE_MUTATING_TOOL_NAMES = frozenset({
     "write",
     "edit",
@@ -3304,12 +3308,25 @@ class AgentV2:
         return serialize_turn_context(getattr(self, "_turn_context_blocks", []) or [])
 
     def _application_cache_namespace(self) -> str:
-        """Isolate answer caches by provider endpoint, model, and credential."""
+        """Isolate answer caches by provider endpoint, model, credential,
+        and (FX9) optional agent namespace.
+
+        When ``_agent_namespace`` is unset/None the key stays byte-identical
+        to the legacy template so existing precise/semantic entries keep
+        working until Phase F assigns agent ids. The namespace is a cache
+        key only — never written into system/shared prefix sections.
+        """
         base_url = str(self.model_config.get("base_url") or "").rstrip("/")
         model_name = str(self.model_config.get("model_name") or "")
         api_key = str(self.model_config.get("api_key") or "")
         credential_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-        return f"{base_url}|{model_name}|{credential_digest}"
+        base = f"{base_url}|{model_name}|{credential_digest}"
+        ns = getattr(self, "_agent_namespace", None)
+        if ns is not None:
+            if not _AGENT_NAMESPACE_RE.fullmatch(ns):
+                raise ValueError(f"invalid agent namespace: {ns!r}")
+            return f"{base}|{ns}"
+        return base
 
     async def _fast_reply_with_tools(
         self,
