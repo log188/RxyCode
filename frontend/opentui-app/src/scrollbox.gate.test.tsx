@@ -48,7 +48,11 @@ function GateScrollFixture({
         style={{
           rootOptions: { flexGrow: 1, border: false },
           viewportOptions: { flexGrow: 1 },
-          contentOptions: { flexGrow: 1 },
+          contentOptions: {
+            flexGrow: 1,
+            flexDirection: "column",
+            justifyContent: "flex-end",
+          },
         }}
       >
         {Array.from({ length: LINE_COUNT }, (_, i) => (

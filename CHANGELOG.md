@@ -41,6 +41,9 @@ Protocol version stays `1.1.0`.
 - Attached file paths are written into the prompt (`promptWithAttachment`).
 - Permission mode labels in the Desktop UI are Chinese: 更改前询问 /
   自动编辑 / 完全访问.
+- **OpenTUI composer gap** — chat ScrollBox packs messages against the
+  input box (`justifyContent: flex-end`) so tool output is not stranded
+  at the top of the pane (“命令与输出分离”).
 
 ### Changed
 

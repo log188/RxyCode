@@ -33,6 +33,7 @@ import { APP_VERSION, formatHeaderLine, formatInputHint, formatMessageLine, mess
 import { CHAT_PROMPT_KEY_BINDINGS } from "./promptKeyBindings.ts";
 import { isPromptSubmitKey, normalizePromptSubmitText } from "./promptSubmitKey.ts";
 import { buildStatusSegments, formatStatusBarText } from "./statusBar.ts";
+import { CHAT_SCROLLBOX_STYLE } from "./chatLayout.ts";
 import {
   createStickyState,
   onSendMessage,
@@ -1184,9 +1185,7 @@ export default function App() {
         flexGrow={1}
         scrollAcceleration={scrollAccel}
         style={{
-          rootOptions: { flexGrow: 1, border: false, backgroundColor: C.bg },
-          viewportOptions: { flexGrow: 1, backgroundColor: C.bg, paddingRight: 1 },
-          contentOptions: { flexGrow: 1, backgroundColor: C.bg },
+          ...CHAT_SCROLLBOX_STYLE,
           verticalScrollbarOptions: {
             showArrows: false,
             paddingLeft: 1,
