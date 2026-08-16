@@ -15,13 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Highlights
 
-Desktop GUI release. The Electron app (`rxycode gui`) now has Plan mode, a
-Goal dialog, a plan card with Build / Revise / Skip, and a Composer `+`
-menu (attach files, pick a workspace, set a goal, toggle plan). CLI gained
-a real-business harness over `python -m appserver` and ProtocolClient
-(`frontend/desktop-app/scripts/real-business-cli-harness.mts`). Local
-GUI/CLI real-business suite **T01–T08** was run on this tree; **T09 was
-skipped**. Product version is **1.2.10**. Protocol version stays `1.1.0`.
+Desktop GUI release. RxyCode now ships a real Electron app (`rxycode gui`)
+with Codex-style Plan mode, a standing Goal dialog, a plan card
+(Build / Revise / Skip), and a Composer `+` menu for attachments,
+workspace, goal, and plan. OpenTUI remains the default CLI: type
+`rxycode` in cmd (or any terminal). Product version is **1.2.10**.
+Protocol version stays `1.1.0`.
 
 ### Added
 
@@ -32,7 +31,8 @@ skipped**. Product version is **1.2.10**. Protocol version stays `1.1.0`.
   (`ComposerPlusMenu.tsx`).
 - **CLI real-business harness** — stdio JSON-RPC client that starts
   `python -m appserver`, creates a workspace session, and prompts through
-  ProtocolClient (`real-business-cli-harness.mts`).
+  ProtocolClient (`real-business-cli-harness.mts`). Test/ops tool, not an
+  extra user command.
 
 ### Fixed
 

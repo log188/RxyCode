@@ -1,13 +1,13 @@
-﻿<!-- README_SYNC: source=working-tree; updated=2026-08-16 -->
+﻿<!-- README_SYNC: source=working-tree; updated=2026-08-17 -->
 <div align="center">
 
 **English** · [简体中文](./README.zh-CN.md)
 
 # RxyCode
 
-**A local plan-and-execute coding agent for developers — OpenTUI, Desktop GUI, and a safety gate in front of every tool call.**
+**A local plan-and-execute coding agent for developers — type `rxycode` in cmd to open OpenTUI; Desktop GUI is optional. Every tool call goes through a safety gate.**
 
-[⭐ Star this repo](https://github.com/xin-yi33/RxyCode) if you want to keep a local coding agent that plans, runs tools, and asks before risky writes.
+[⭐ Star this repo](https://github.com/xin-yi33/RxyCode) if you want a local agent that plans, runs tools, and asks before risky writes.
 
 [![Version](https://img.shields.io/badge/version-1.2.10-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
@@ -16,26 +16,32 @@
 [![Issues](https://img.shields.io/github/issues/xin-yi33/RxyCode)](https://github.com/xin-yi33/RxyCode/issues)
 [![Stars](https://img.shields.io/github/stars/xin-yi33/RxyCode?style=social)](https://github.com/xin-yi33/RxyCode/stargazers)
 
+<p>
+  <img src="docs/assets/cli-demo.gif" alt="RxyCode OpenTUI: type rxycode in cmd, then /help and a live task" width="800">
+</p>
+
 </div>
 
-<div align="center">
-  <img src="docs/images/gui-shell.png" alt="RxyCode Desktop chat shell" width="800">
-</div>
+Default CLI is **OpenTUI**. In `cmd` (or any terminal):
 
-RxyCode is a Python coding agent with a headless core (`Session` over `AgentV2`) and three frontends: **OpenTUI** (default terminal UI), **Desktop** (`rxycode gui`), and an **Ink** fallback. Complex work goes through a LangGraph plan → decompose → execute → validate → synthesize pipeline. Simple questions take a fast path. Isolated child agents, MCP, and 30+ tools sit behind a risk-classified safety gate.
+```bat
+rxycode
+```
 
-## Why this instead of a linear ReAct loop
+The GIF above is that interface. GitHub plays it when you scroll to it. Desktop GUI screenshots are further down.
 
-These are the differences that change how you work, each pointing at code:
+RxyCode is a Python coding agent. The core is headless: `Session` (`core/session.py`) wraps `AgentV2`. Frontends: **OpenTUI** (default), **Desktop** (`rxycode gui`), and **Ink** fallback. Complex work goes through LangGraph: plan → decompose → execute → validate → synthesize. Simple questions take a fast path. Isolated child agents, MCP, and 30+ tools sit behind a risk-classified safety gate.
 
-| Difference | What you get | Where |
+## Features and advantages
+
+| Feature | What you get | Where |
 |---|---|---|
-| Verification before “done” | A validator checks tool results against the original goal before the agent reports success | `validation/` |
-| Plan-and-execute, not a single tool loop | Hierarchical decomposition, dependency-aware parallel execution, then synthesis | `planning/`, `execution/`, `synthesis/`, `core/graph.py` |
-| Safety gate on every tool | READ / WRITE / DANGER classification, write whitelist, approval dialogs, audit log | `core/safety/` |
-| Two real surfaces | OpenTUI over stdio JSON-RPC, plus Desktop Plan / Goal / `+` menu | `frontend/opentui-app/`, `frontend/desktop-app/`, `appserver/` |
-| Isolated child agents | Independent session, tools, permissions, and budget — not a recursive call of the primary agent | `core/subagents/` |
-| Headless core | `Session.prompt()` has no I/O of its own; TUI and GUI only subscribe to protocol events | `core/session.py` |
+| Verify before “done” | A validator checks tool results against the original goal | `validation/` |
+| Plan then execute | Hierarchical decomposition, dependency-aware parallel runs, then synthesis | `planning/`, `execution/`, `synthesis/`, `core/graph.py` |
+| Safety gate on every tool | READ / WRITE / DANGER, write whitelist, approval dialogs, audit log | `core/safety/` |
+| Two real surfaces | OpenTUI over stdio JSON-RPC; Desktop Plan / Goal / `+` menu | `frontend/opentui-app/`, `frontend/desktop-app/`, `appserver/` |
+| Isolated child agents | Own session, tools, permissions, and budget | `core/subagents/` |
+| Headless core | `Session.prompt()` has no UI of its own; TUI and GUI only subscribe to protocol events | `core/session.py` |
 
 ## Quick start
 
@@ -102,45 +108,18 @@ docker compose run --rm tui    # Interactive TUI (needs TTY)
 
 | Command | What opens |
 |---------|------------|
-| `rxycode` or `python -m RxyCode` | Default **OpenTUI** (Bun + `frontend/opentui-app/`) |
+| `rxycode` or `python -m RxyCode` | Default **OpenTUI** |
 | `rxycode --version` | Package version, no runtime init |
-| `rxycode gui` | **Desktop** Electron app (`frontend/desktop-app/`) |
-| `rxycode --api` | API server only (`api_server.py`, HTTP + SSE) |
+| `rxycode gui` | **Desktop** Electron app |
+| `rxycode --api` | API server only (`api_server.py`) |
 | `RXYCODE_TUI=ink rxycode` | Ink fallback TUI |
 
 1. Run `rxycode`. The TUI opens even with no model configured.
 2. If the model list is empty, OpenTUI shows a welcome hint and opens `/addmodel` (credentials are masked).
 3. If at least one model is already in `~/.RxyCode/config.yaml`, there is no extra hint.
-4. Type a natural-language task. For Desktop, use `rxycode gui` and the Composer at the bottom.
+4. Type a natural-language task. Example: write a single-file `click-counter.html` in the current folder.
 
-## How the CLI works
-
-OpenTUI is the default CLI. It talks to the core over **stdio JSON-RPC**: the frontend spawns `python -m appserver`, which hosts `Session` → `AgentV2`. You type a task; the agent streams tokens, tool calls, approval requests, and a final answer.
-
-**Demo task recorded for this README:** in an empty directory outside this repo, ask RxyCode to write a single-file `click-counter.html` — a large button, a click count, and a compact layout. The run should finish in a few minutes. You should see the prompt, tool calls (`write` / `read`), an approval if the safety gate asks, and the HTML file on disk.
-
-The recording below is a real run of that task: a visible terminal titled **RxyCode CLI 1.2.10** starts `python -m appserver`, sends the prompt over ProtocolClient, streams tool calls and progress, then writes `click-counter.html`.
-
-<p align="center">
-  <video controls width="800" poster="docs/images/cli-demo-cover.png" src="docs/assets/cli-demo.mp4">
-    <a href="docs/assets/cli-demo.mp4">CLI demo video (mp4)</a>
-  </video>
-</p>
-
-<p align="center">
-  <a href="docs/assets/cli-demo.mp4"><img src="docs/images/cli-demo-cover.png" alt="CLI demo cover: write tool finishes click-counter.html" width="800"></a>
-</p>
-
-Same transport without the TUI (useful for scripts and the Desktop CLI harness):
-
-```text
-python -m appserver
-        │  stdio JSON-RPC
-        ▼
-ProtocolClient  →  session/new  →  session/prompt
-```
-
-The in-tree harness is `frontend/desktop-app/scripts/real-business-cli-harness.mts`. It is a test/ops tool, not an extra user command.
+OpenTUI talks to the core over **stdio JSON-RPC**: the frontend spawns `python -m appserver`, which hosts `Session` → `AgentV2`. You see streaming tokens, tool calls, approval prompts when needed, and a final answer.
 
 ## Desktop GUI
 
@@ -156,6 +135,9 @@ The in-tree harness is `frontend/desktop-app/scripts/real-business-cli-harness.m
 Plan cards offer **是，实施此计划**, a **补充说明** field, and **跳过**. Permission labels in the UI are 更改前询问 / 自动编辑 / 完全访问. Switching to 完全访问 asks for confirmation (Escape cancels). Settings → 更新与诊断 shows product version **1.2.10**.
 
 <p align="center">
+  <img src="docs/images/gui-shell.png" alt="RxyCode Desktop chat shell" width="800">
+</p>
+<p align="center">
   <img src="docs/images/gui-plus-menu.png" alt="Composer plus menu: attach, workspace, goal, plan" width="800">
 </p>
 <p align="center">
@@ -164,10 +146,6 @@ Plan cards offer **是，实施此计划**, a **补充说明** field, and **跳�
 <p align="center">
   <img src="docs/images/gui-plan-card.png" alt="Plan card with Build, Revise, and Skip" width="800">
 </p>
-
-> **Full GUI guide:** installers, custom install directory, desktop shortcut,
-> auto-launching the backend, and every screen is documented in
-> [docs/GUI.md](docs/GUI.md) (中文版见 [README.zh-CN.md](README.zh-CN.md)).
 
 ## Architecture
 
@@ -262,32 +240,13 @@ Writes outside the whitelist are blocked. The TUI and Desktop raise an approval 
 | `Esc` | Cancel |
 | `Ctrl+C` | Copy / cancel stream / clear input; twice within 2s to quit |
 
-## Testing
-
-Do not treat a badge count as a live census. Recorded baselines live in [CHANGELOG.md](CHANGELOG.md) (for example 10412 on v1.2.8, 10840 on v1.2.9) and [docs/modules/tests.md](docs/modules/tests.md). CI is [`.github/workflows/ci.yml`](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml).
-
-```bash
-# Frontend
-cd frontend && npm test
-cd frontend/opentui-app && bun test
-
-# Backend (deterministic; no paid live models)
-python -m pytest tests -m "not live and not pty and not serial" -n 2 --dist loadscope -q
-python -m pytest tests -m "serial and not live and not pty" -n 0 -q
-
-# Packaging contract used by the installers
-python -m pytest tests/unit/test_packaging_contract.py tests/unit/test_installers.py -q
-```
-
-Live provider tests are opt-in and skipped without keys. This tree also ran a local GUI/CLI real-business suite **T01–T08**; **T09 was skipped**.
-
 ## Version history
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Desktop Plan / Goal / `+` menu; plan card Build/Revise/Skip; CLI `appserver` + ProtocolClient harness; T01–T08 local real-business run (T09 skipped) |
-| [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | Isolated subagents (Phase C): independent child sessions; `@agent` mention, Task tool, `subtask=true`; OpenTUI child tree; upstream-reuse audit; 10840 tests recorded in CHANGELOG, evals GATE 94.7% |
-| [v1.2.8](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8) | 2026-08 | Model adaptation: DeepSeek v4, Doubao (ark), Anthropic Claude 5 family; exact capability isolation; 10412 tests recorded in CHANGELOG |
+| [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Desktop Plan / Goal / `+` menu; plan card Build/Revise/Skip; default CLI remains OpenTUI (`rxycode`) |
+| [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | Isolated subagents (Phase C): independent child sessions; `@agent` mention, Task tool, `subtask=true`; OpenTUI child tree |
+| [v1.2.8](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8) | 2026-08 | Model adaptation: DeepSeek v4, Doubao (ark), Anthropic Claude 5 family; exact capability isolation |
 | [v1.2.7](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7) | 2026-08 | Completed answers no longer discarded by failed read-only probes; smarter web-research queries; Doubao provider |
 | [v1.2.6](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.6) | 2026-08 | webfetch decoding, MCP mis-routing, Windows shell/encoding, web search hardening |
 | [v1.2.5](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5) | 2026-08 | DeepSeek / Qwen / Claude adaptation; lazy imports; explicit request routing; stdio transport |
@@ -298,7 +257,7 @@ Live provider tests are opt-in and skipped without keys. This tree also ran a lo
 | [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | OpenTUI default TUI (Ink fallback) |
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI, SSE, Docker, CI, one-command installers |
 | [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph rewrite: plan-and-execute, tools, tiered memory |
-| [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | Initial release: ReAct + verification + MCP |
+| [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | Initial release: verification + MCP |
 
 Full notes: [CHANGELOG.md](CHANGELOG.md).
 
