@@ -387,6 +387,32 @@ async function main(argv: string[]): Promise<void> {
     )
   }
 
+  // A standalone (uv) interpreter has no build backend, and a framework
+  // python may not carry setuptools either. The rxycode install below uses
+  // --no-build-isolation, so ensure setuptools+wheel exist in the staged
+  // runtime first (network is available in CI; --no-index is only used for
+  // the rxycode install itself).
+  const backend = spawnSync(
+    pythonExe,
+    ['-m', 'pip', 'install', '--break-system-packages', 'setuptools', 'wheel'],
+    {
+      cwd: outDir,
+      env: {
+        ...process.env,
+        PIP_DISABLE_PIP_VERSION_CHECK: '1',
+        PYTHONNOUSERSITE: '1'
+      },
+      encoding: 'utf8',
+      timeout: 120_000
+    }
+  )
+  if (backend.status !== 0) {
+    fail(
+      `pip install setuptools/wheel into runtime failed (status ${String(backend.status)}, ` +
+        `error ${String(backend.error)}): ${backend.stderr}${backend.stdout}`
+    )
+  }
+
   const pip = spawnSync(
     pythonExe,
     [
@@ -396,6 +422,7 @@ async function main(argv: string[]): Promise<void> {
       '--no-deps',
       '--no-build-isolation',
       '--disable-pip-version-check',
+      '--break-system-packages',
       repo
     ],
     {
