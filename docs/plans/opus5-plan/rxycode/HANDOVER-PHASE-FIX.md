@@ -87,7 +87,7 @@ python -c "from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2; print('import
 | **网关 URL** | `https://opencode.ai/zen/v1/chat/completions`（**ZEN 网关，严禁走 go 网关**） |
 | **模型** | `gpt-5.6-luna` |
 | **API Key** | 从 `C:\Users\Administrator\.local\share\opencode\auth.json` 读 `opencode-go.key` 字段 |
-| **Key 值** | `REDACTED-API-KEY` |
+| **Key 值** | `sk-test-secret-placeholder-do-not-commit` |
 | 请求参数 | `{"model": "gpt-5.6-luna", "messages": [...], "max_tokens": 4000, "temperature": 0.2}` |
 | Header | `Authorization: Bearer <key>` |
 | 注意 | 网关非 go 网关；审计每轮新会话，附卡号 + git diff + pytest 输出 |

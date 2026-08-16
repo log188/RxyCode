@@ -1,4 +1,4 @@
-"""Luna#3: _redact must cover every path that echoes an error containing the key.
+﻿"""Luna#3: _redact must cover every path that echoes an error containing the key.
 
 Each error response that could embed a provider error string (which may
 repeat the api_key back) must have the key redacted before it reaches the
@@ -41,7 +41,7 @@ def _assert_no_key_leak(result: dict, key: str) -> None:
 
 def test_discover_failure_redacts_key(isolated_config, monkeypatch: pytest.MonkeyPatch) -> None:
     """Provider error strings sometimes echo the key back; _redact must strip it."""
-    secret = "sk-super-secret-discover"
+    secret = "sk-test-secret-discover"
 
     def _fail(*args, **kwargs):
         return {"success": False, "error": f"401 with key {secret}", "error_code": "auth"}
@@ -57,7 +57,7 @@ def test_discover_failure_redacts_key(isolated_config, monkeypatch: pytest.Monke
 
 
 def test_onboard_probe_failure_redacts_key(isolated_config, monkeypatch: pytest.MonkeyPatch) -> None:
-    secret = "sk-super-secret-onboard"
+    secret = "sk-test-secret-onboard"
 
     def _probe(*args, **kwargs):
         return {"ok": False, "error": f"bad credential {secret}", "error_code": "probe"}
@@ -74,7 +74,7 @@ def test_onboard_probe_failure_redacts_key(isolated_config, monkeypatch: pytest.
 
 
 def test_onboard_batch_exception_redacts_key(isolated_config, monkeypatch: pytest.MonkeyPatch) -> None:
-    secret = "sk-super-secret-batch"
+    secret = "sk-test-secret-batch"
 
     def _boom(*args, **kwargs):
         raise RuntimeError(f"unexpected {secret} in exception")
@@ -92,6 +92,6 @@ def test_onboard_batch_exception_redacts_key(isolated_config, monkeypatch: pytes
 
 def test_upsert_credential_never_returns_key(isolated_config) -> None:
     """credentials/upsert response must not contain the submitted key."""
-    secret = "sk-upsert-secret"
+    secret = "sk-test-secret-upsert"
     result = model_routes.upsert_credential({"id": "ghost-model", "api_key": secret})
     _assert_no_key_leak(result, secret)

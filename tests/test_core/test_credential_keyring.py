@@ -1,4 +1,4 @@
-"""DC4: cross-platform keyring backend tests (macOS Keychain / Linux Secret Service).
+﻿"""DC4: cross-platform keyring backend tests (macOS Keychain / Linux Secret Service).
 
 The credential store must prefer the OS keychain on POSIX when a desktop
 keyring backend is available (keyring lib), and degrade to the 0600
@@ -62,7 +62,7 @@ def test_store_uses_keyring_when_available(keyring_backend, tmp_path: Path) -> N
         store_credential,
     )
 
-    secret = "sk-live-secret-123"
+    secret = "sk-test-secret-live-123"
     ref = store_credential(secret, tmp_path / "config.yaml")
 
     stored_file = (tmp_path / "credentials.yaml").read_text(encoding="utf-8")
@@ -82,7 +82,7 @@ def test_store_falls_back_to_file_when_keyring_unavailable(
     )
 
     keyring_backend.available = False
-    secret = "sk-fallback-secret-456"
+    secret = "sk-test-secret-fallback-456"
     ref = store_credential(secret, tmp_path / "config.yaml")
 
     stored_file = (tmp_path / "credentials.yaml").read_text(encoding="utf-8")
@@ -100,7 +100,7 @@ def test_delete_credential_cleans_keyring(
         store_credential,
     )
 
-    secret = "sk-delete-me"
+    secret = "sk-test-secret-delete-me"
     ref = store_credential(secret, tmp_path / "config.yaml")
     assert load_credential(ref, tmp_path / "config.yaml") == secret
 
@@ -117,7 +117,7 @@ def test_posix_file_fallback_keeps_0600_permissions(tmp_path: Path) -> None:
 
     from RxyCode.RxyCode1_1_0.config.credential_store import store_credential
 
-    secret = "sk-perm-check"
+    secret = "sk-test-secret-perm-check"
     store_credential(secret, tmp_path / "config.yaml")
 
     if os.name != "nt":
