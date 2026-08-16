@@ -1,10 +1,10 @@
-﻿"""RxyCode 1.2.9 - LangGraph-based agent."""
+﻿"""RxyCode 1.2.10 - LangGraph-based agent."""
 
 import sys as _sys
 import types as _types
 from pathlib import Path as _Path
 
-__version__ = "1.2.9"
+__version__ = "1.2.10"
 
 __all__ = ["__version__"]
 

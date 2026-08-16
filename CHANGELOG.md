@@ -11,6 +11,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.10] - 2026-08-16
+
+### Highlights
+
+Desktop GUI release. The Electron app (`rxycode gui`) now has Plan mode, a
+Goal dialog, a plan card with Build / Revise / Skip, and a Composer `+`
+menu (attach files, pick a workspace, set a goal, toggle plan). CLI gained
+a real-business harness over `python -m appserver` and ProtocolClient
+(`frontend/desktop-app/scripts/real-business-cli-harness.mts`). Local
+GUI/CLI real-business suite **T01–T08** was run on this tree; **T09 was
+skipped**. Product version is **1.2.10**. Protocol version stays `1.1.0`.
+
+### Added
+
+- **Desktop Plan / Goal / workspace flows** — Plan mode keeps the agent on
+  a plan document; Goal dialog stores a standing goal; plan card offers
+  实施 / 补充说明 / 跳过 (`frontend/desktop-app/src/renderer/src/components/`).
+- **Composer `+` menu** — 文件和文件夹、在项目中使用、目标、计划模式
+  (`ComposerPlusMenu.tsx`).
+- **CLI real-business harness** — stdio JSON-RPC client that starts
+  `python -m appserver`, creates a workspace session, and prompts through
+  ProtocolClient (`real-business-cli-harness.mts`).
+
+### Fixed
+
+- Goal dialog closes on Escape and overlay click.
+- Full-access confirmation closes on Escape.
+- Attached file paths are written into the prompt (`promptWithAttachment`).
+- Permission mode labels in the Desktop UI are Chinese: 更改前询问 /
+  自动编辑 / 完全访问.
+
+### Changed
+
+- Product version **1.2.10** in `pyproject.toml`, installers, OpenTUI/Ink
+  headers, MCP `clientInfo`, and Desktop Settings 「当前版本」
+  (`frontend/desktop-app/package.json`). Protocol (`protocol/version.py`
+  `1.1.0`) and evals package version are unchanged.
+
+---
+
 ## [1.2.9] - 2026-08-09
 
 ### Highlights
@@ -578,6 +618,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.10]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10
 [1.2.9]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9
 [1.2.8]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8
 [1.2.7]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7
