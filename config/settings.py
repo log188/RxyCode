@@ -277,6 +277,15 @@ def _default_config() -> dict:
             "max_parallel": 3,          # Semaphore limit to prevent API rate limits
             "max_graph_steps": 60,      # hard state-machine step budget
             "max_tool_rounds": 10,      # hard fast-path tool loop budget
+            # Creation/build turns may be overridden for unusually large
+            # projects, but the default must fail/recover promptly. A larger
+            # value multiplies model latency and token use when the model is
+            # stuck validating the same artifact.
+            "fast_build_max_tool_rounds": 10,
+            # Fast build turns follow the active model's resolved output limit
+            # by default. Set an explicit integer only when an operator wants
+            # a smaller tool-call budget for a particular deployment.
+            "fast_build_tool_round_max_tokens": None,
             # Global re-plan budget. Each replan round consumes several LangGraph
             # super-steps, so an unbounded executor->validator->reflection->
             # re_planner loop can exhaust recursion_limit and crash the build

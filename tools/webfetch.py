@@ -50,6 +50,8 @@ async def fetch_url_async(url: str, format: str = "text", timeout: int = 30) -> 
         )
         response.raise_for_status()
         return _format_content(response.text, format.lower())
+    except asyncio.TimeoutError:
+        return f"[timeout fetching {safe_url_label(url)} after {timeout:g}s]"
     except asyncio.CancelledError:
         raise
     except Exception as exc:

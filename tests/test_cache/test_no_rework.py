@@ -343,6 +343,93 @@ def test_capture_called_before_llm_stream(monkeypatch):
     assert agent._git_snapshot is not None
 
 
+@pytest.mark.asyncio
+async def test_malformed_native_tool_call_is_not_executed_and_gets_repair_turn(monkeypatch):
+    """A truncated write cannot reach the tool validator or touch the workspace."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = object.__new__(AgentV2)
+    agent._session_loaded = True
+    agent._session_id = "malformed-tool-call"
+    agent._memory = SimpleNamespace(
+        get_context_for_prompt=lambda _q: "",
+        add_interaction=lambda *a: None,
+        save_session=lambda: None,
+        compress_if_needed=lambda _sid: None,
+    )
+    agent._cfg = {"execution": {"max_tool_rounds": 3, "stuck_threshold": 3}}
+    agent.model_config = {
+        "base_url": "https://api.example.test/v1",
+        "model_name": "test-model",
+    }
+    agent._capabilities = DEFAULT_CAPABILITIES
+    agent._resolved_limits = None
+    agent._keep_alive_state = None
+    agent._tokenizer = "tiktoken:o200k_base"
+    agent._tool_tracer = None
+    agent._last_thinking = ""
+    agent._thinking_history = []
+    agent._provider = None
+    agent._git_snapshot = None
+
+    executions = []
+
+    async def fake_execute(tool_calls, *, mode=None):
+        executions.append(tool_calls)
+        return []
+
+    agent._execute_tools_parallel = fake_execute
+    agent._get_core_tools = lambda: []
+    agent._maybe_compress_context = lambda _messages: __import__("asyncio").sleep(0)
+    agent._capture_git_snapshot_async = lambda: __import__("asyncio").sleep(0)
+    agent._tokenizer_spec = lambda: "tiktoken:o200k_base"
+
+    calls = 0
+
+    async def fake_stream(_messages, _tools=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="",
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    id="call-bad",
+                                    function=SimpleNamespace(
+                                        name="write",
+                                        arguments='{"filePath":"game.js","content":"partial',
+                                    ),
+                                )
+                            ],
+                        )
+                    )
+                ],
+                usage=None,
+            )
+        else:
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(
+                    content="recovered",
+                    tool_calls=None,
+                ))],
+                usage=None,
+            )
+
+    agent._raw_stream = fake_stream
+
+    result = await agent._fast_reply_with_tools(
+        "create a game", allowed_tool_names=None, role_instruction="", mode="build"
+    )
+
+    assert result == "recovered"
+    assert executions == [[]]
+    assert calls == 2
+
+
 # ============================================================================
 # 完成判据 5：reviewer 重试默认关闭 + 预算保护
 # ============================================================================
@@ -591,6 +678,60 @@ def test_parse_dsml_single_invoke():
     assert calls[0]["type"] == "tool_call"
 
 
+def test_streamed_native_tool_arguments_reject_truncated_json_without_execution():
+    """A truncated streamed function payload must be classified before validation."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+        _decode_streamed_tool_arguments,
+    )
+
+    args, error = _decode_streamed_tool_arguments(
+        '{"filePath":"T01-runner/game.js","content":"const game = '
+    )
+
+    assert args == {"__raw__": '{"filePath":"T01-runner/game.js","content":"const game = '}
+    assert error
+    assert "invalid JSON" in error
+
+
+def test_streamed_native_tool_arguments_accept_json_object_only():
+    """Valid object arguments remain ordinary tool input; arrays are rejected."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+        _decode_streamed_tool_arguments,
+    )
+
+    args, error = _decode_streamed_tool_arguments('{"filePath":"a.txt","content":"ok"}')
+    assert args == {"filePath": "a.txt", "content": "ok"}
+    assert error is None
+
+    args, error = _decode_streamed_tool_arguments('["not", "an", "object"]')
+    assert args == {"__raw__": '["not", "an", "object"]'}
+    assert error
+    assert "object" in error
+
+
+def test_malformed_native_tool_call_keeps_raw_arguments_for_provider_history():
+    """The repair turn must retain the provider payload as a string, not re-encode it."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    raw = '{"filePath":"a.js","content":"partial'
+    messages = AgentV2._to_openai_messages([
+        SimpleNamespace(
+            type="ai",
+            content="",
+            additional_kwargs={},
+            tool_calls=[
+                {
+                    "id": "call-1",
+                    "name": "write",
+                    "args": {"__raw__": raw},
+                }
+            ],
+        )
+    ])
+
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == raw
+
+
 def test_parse_dsml_multiple_invokes():
     """多个工具调用 → 全部解析。"""
     from RxyCode.RxyCode1_1_0.core.agent_v2 import _parse_dsml_tool_calls
@@ -692,6 +833,42 @@ def test_parse_dsml_fullwidth_pipe_variant():
     assert calls[0]["args"] == {"filePath": "a.py"}
 
 
+def test_parse_dsml_source_parameter_allows_raw_ampersand_and_markup():
+    """源码参数不能因未转义 ``&`` 或注释标签而丢失后续工具调用。"""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _parse_dsml_tool_calls
+
+    prefix = "\uff5c\uff5cDSML\uff5c\uff5c"
+    source = 'String html = value.replace("&", "&amp;");\n<p>raw source</p>'
+    text = (
+        f"<{prefix}tool_calls>"
+        f'<{prefix}invoke name="write">'
+        f'<{prefix}parameter name="content">{source}</{prefix}parameter>'
+        f"</{prefix}invoke>"
+        f"</{prefix}tool_calls>"
+    )
+    calls = _parse_dsml_tool_calls(text)
+    assert calls is not None
+    assert calls[0]["name"] == "write"
+    assert calls[0]["args"]["content"] == source
+
+
+def test_strip_dsml_markup_never_leaks_transport_payload():
+    """A synthesis miss must not render raw DSML as the final answer."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _strip_dsml_tool_markup
+
+    marker = "\uff5c\uff5cDSML\uff5c\uff5c"
+    answer = (
+        "已完成前置检查。\n"
+        f"<{marker}tool_calls><{marker}invoke name=\"bash\">"
+        f"<{marker}parameter name=\"command\">javac -version"
+        f"</{marker}parameter></{marker}invoke></{marker}tool_calls>"
+    )
+    cleaned = _strip_dsml_tool_markup(answer)
+    assert cleaned == "已完成前置检查。"
+    assert "tool_calls" not in cleaned
+    assert "DSML" not in cleaned
+
+
 def test_parse_dsml_with_surrounding_text():
     """DSML 前后混有普通说明文本也能解析（luna R1-4）。"""
     from RxyCode.RxyCode1_1_0.core.agent_v2 import _parse_dsml_tool_calls
@@ -706,6 +883,70 @@ def test_parse_dsml_with_surrounding_text():
     calls = _parse_dsml_tool_calls(text)
     assert calls is not None
     assert calls[0]["name"] == "read"
+
+
+def test_contains_dsml_markup_when_invoke_is_truncated():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+        _contains_dsml_tool_markup,
+        _parse_dsml_tool_calls,
+    )
+
+    text = (
+        "<\uff5c\uff5cDSML\uff5c\uff5ctool_calls>\n"
+        "<\uff5c\uff5cDSML\uff5c\uff5cinvoke name=\"\n"
+        "Get-ChildItem Env:\n"
+    )
+    assert _contains_dsml_tool_markup(text) is True
+    assert not (_parse_dsml_tool_calls(text) or [])
+
+
+def test_should_nudge_build_to_write_until_write_succeeds():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _should_nudge_build_to_write
+
+    assert _should_nudge_build_to_write("build", False, 0) is True
+    assert _should_nudge_build_to_write("build", False, 1) is True
+    assert _should_nudge_build_to_write("build", False, 2) is False
+    assert _should_nudge_build_to_write("build", True, 0) is False
+    assert _should_nudge_build_to_write("plan", False, 0) is False
+    assert _should_nudge_build_to_write("build", False, 0, has_write_tool=False) is False
+
+
+def test_should_nudge_build_after_partial_write_continuation():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+        _answer_is_incomplete_build_continuation,
+        _redact_env_secrets,
+        _should_nudge_build_to_write,
+    )
+
+    continuation = (
+        "Entities done. Now the repositories and the auth/product/"
+        "inventory/order/revenue controllers with @RestController annotations."
+    )
+    assert _answer_is_incomplete_build_continuation(continuation) is True
+    assert _should_nudge_build_to_write(
+        "build", True, 0, answer=continuation
+    ) is True
+    assert _should_nudge_build_to_write(
+        "build", True, 8, answer=continuation
+    ) is False
+    assert _should_nudge_build_to_write(
+        "build", True, 0, answer="All controllers written and smoke passed."
+    ) is False
+    listing = (
+        "Wrote pom.xml plus Auth/Product/Inventory/Order/Revenue "
+        "controllers, Flyway SQL, and index.html. "
+        "Tests run: 2, Failures: 0, Errors: 0."
+    )
+    assert _answer_is_incomplete_build_continuation(listing) is False
+
+
+def test_redact_env_secrets_strips_password_values(monkeypatch):
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _redact_env_secrets
+
+    monkeypatch.setenv("MYSQL_PASSWORD", "unit-test-secret-value")
+    text = "env MYSQL_PASSWORD=unit-test-secret-value leaked"
+    assert "unit-test-secret-value" not in _redact_env_secrets(text)
+    assert "***" in _redact_env_secrets(text)
 
 
 def test_stuck_detector_breaks_outer_loop():

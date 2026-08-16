@@ -382,18 +382,24 @@ async function runOne(
     screenshots.push(await harness.screenshot(`screenshots/round-${round}/${scenario.id}/terminal.png`))
     if (scenario.id === 'DTS-29') {
       for (const view of [
-        { name: 'wide-light', width: 1440, height: 900, theme: 'light' },
-        { name: 'wide-dark', width: 1440, height: 900, theme: 'dark' },
-        { name: 'drawer-dark', width: 1024, height: 820, theme: 'dark' },
-        { name: 'compact-light', width: 760, height: 820, theme: 'light' }
+        { name: 'wide', width: 1440, height: 900 },
+        { name: 'standard', width: 1280, height: 720 },
+        { name: 'drawer', width: 1024, height: 768 },
+        { name: 'compact', width: 800, height: 700 }
       ]) {
-        await harness.setViewport(view.width, view.height)
-        await harness.evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(view.theme)}`)
-        screenshots.push(await harness.screenshot(
-          `screenshots/round-${round}/${scenario.id}/${view.name}.png`
-        ))
+        for (const theme of ['light', 'dark'] as const) {
+          for (const zoom of [1, 1.25, 1.5]) {
+            await harness.setViewport(view.width, view.height)
+            await harness.setZoom(zoom)
+            await harness.evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`)
+            screenshots.push(await harness.screenshot(
+              `screenshots/round-${round}/${scenario.id}/${view.name}-${theme}-${String(zoom).replace('.', '-')}.png`
+            ))
+          }
+        }
       }
       await harness.setViewport(1440, 900)
+      await harness.setZoom(1)
       await harness.evaluate(`document.documentElement.dataset.theme = 'system'`)
     }
   } catch (caught) {

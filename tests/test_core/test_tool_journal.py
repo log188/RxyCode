@@ -432,6 +432,108 @@ async def test_agent_resume_reuses_completed_call_but_new_run_gets_new_attempt(
     assert new_attempt != crashed_attempt
 
 
+@pytest.mark.asyncio
+async def test_succeeded_run_with_pending_bash_does_not_rotate_attempt(tmp_path):
+    """A succeeded answer must not complete the checkpoint while bash is pending.
+
+    T09 repair turns reused the same prompt after a failed mysql/maven probe.
+    Completing the checkpoint rotated attempt_id; the orphan guard then
+    blocked later writes as journal_unavailable.
+    """
+    from langchain_core.tools import StructuredTool
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
+    from RxyCode.RxyCode1_1_0.execution.tool_journal import ToolExecutionJournal
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    writes = {"calls": 0}
+
+    async def write_file(value: str) -> str:
+        writes["calls"] += 1
+        return f"formatted: {value}"
+
+    async def fail_bash(command: str) -> str:
+        return f"[exit code: 1]\n{command} failed"
+
+    orchestrator = ToolOrchestrator()
+    orchestrator.register(
+        "format",
+        StructuredTool.from_function(
+            coroutine=write_file,
+            name="format",
+            description="mutating formatter",
+        ),
+    )
+    orchestrator.register(
+        "bash",
+        StructuredTool.from_function(
+            coroutine=fail_bash,
+            name="bash",
+            description="shell",
+        ),
+    )
+    orchestrator.set_audit_logger(MagicMock())
+    agent = AgentV2.__new__(AgentV2)
+    agent._session_id = "journal-session"
+    agent._tool_tracer = None
+    agent._hooks = None
+    agent._checkpoint_store = CheckpointStore(tmp_path / "checkpoints")
+    agent._tool_journal = ToolExecutionJournal(tmp_path / "journal")
+    agent._tool_orchestrator = orchestrator
+    config = {"safety": {"enabled": False}}
+
+    async def write_then_fail_probe(_user_input: str, _mode: str) -> str:
+        await orchestrator.execute_tool("format", {"value": "ok"}, config=config)
+        await orchestrator.execute_tool(
+            "bash", {"command": "mysql --version"}, config=config
+        )
+        return "Coffee shop ready."
+
+    agent._run_impl = write_then_fail_probe
+    assert await agent._run_observed(
+        "same request", "build", "journal-pending-bash"
+    ) == "Coffee shop ready."
+    first_attempt = agent._checkpoint_store.begin_attempt(
+        "journal-session", "same request", "build"
+    )
+    assert first_attempt["completed"] is False
+    assert agent._tool_journal.has_pending(first_attempt["attempt_id"]) is True
+
+    later_writes = {"calls": 0}
+
+    async def write_missing_html(value: str) -> str:
+        later_writes["calls"] += 1
+        return f"formatted: {value}"
+
+    orchestrator.register(
+        "format",
+        StructuredTool.from_function(
+            coroutine=write_missing_html,
+            name="format",
+            description="mutating formatter",
+        ),
+    )
+
+    async def write_index(_user_input: str, _mode: str) -> str:
+        return await orchestrator.execute_tool(
+            "format", {"value": "index.html"}, config=config
+        )
+
+    agent._run_impl = write_index
+    result = await agent._run_observed(
+        "same request", "build", "journal-pending-resume"
+    )
+    resumed = agent._checkpoint_store.begin_attempt(
+        "journal-session", "same request", "build"
+    )
+
+    assert "journal unavailable" not in result
+    assert result == "formatted: index.html"
+    assert later_writes["calls"] == 1
+    assert resumed["attempt_id"] == first_attempt["attempt_id"]
+
+
 def test_journal_retention_prunes_completed_but_never_pending_attempts(tmp_path):
     from RxyCode.RxyCode1_1_0.execution.tool_journal import (
         ToolExecutionJournal,

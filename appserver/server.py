@@ -148,6 +148,7 @@ class AppServer:
         host = AgentHost(
             session_id=session_id,
             workspace_root=record.workspace_root,
+            model_id=record.model_id,
             stub=self._stub,
             project_root=project_root,
             forward_server_request=self._send_server_request,
@@ -435,8 +436,8 @@ class AppServer:
         # the ``+`` button look frozen before the session response was sent.
         # The renderer already has the shared model snapshot; callers that
         # need a task-specific model may pass ``model`` explicitly.  The
-        # background worker still resolves the configured active model when it
-        # bootstraps.
+        # The background worker receives the task-scoped model when one was
+        # selected, and falls back to the configured active model otherwise.
         record = self._sessions.create(
             Path(workspace), model_id=model_id, provider_id=provider_id
         )
@@ -472,6 +473,12 @@ class AppServer:
             async with self._session_lock(session_id):
                 host = await self._host_for_session(session_id)
             await host.ensure_bootstrapped(timeout=_DEFAULT_WARM_TIMEOUT_SECONDS)
+            await self._emit_model(
+                ProgressUpdate(
+                    session_id=session_id,
+                    text="Agent worker ready",
+                )
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -551,6 +558,12 @@ class AppServer:
                 async def _execute_prompt() -> dict[str, Any]:
                     host._emit = emit_message
                     await host.ensure_bootstrapped(timeout=wall_timeout)
+                    await self._emit_model(
+                        ProgressUpdate(
+                            session_id=session_id,
+                            text="Waiting for model response…",
+                        )
+                    )
                     # Bootstrap is a separate cold-start phase. It has the
                     # outer prompt timeout, but must not be judged as a
                     # stalled *running* job before the worker can emit its
@@ -1026,8 +1039,16 @@ class AppServer:
             if (
                 host is not None
                 and host.alive()
-                and getattr(host, "bootstrapped", False)
             ):
+                # ``session/new`` warms the worker in the background.  The
+                # Desktop model picker can immediately send ``session/set_model``
+                # while that single-flight bootstrap is still running.  Join
+                # it before switching the task-local model; otherwise the
+                # following prompt can race the same worker bootstrap and sit
+                # at ``Starting Agent worker…`` until the appserver watchdog
+                # reports a misleading 120s stall.
+                if not getattr(host, "bootstrapped", False):
+                    await host.ensure_bootstrapped(timeout=_DEFAULT_WARM_TIMEOUT_SECONDS)
                 switched = await host.set_model(model_id, timeout=30.0)
                 if isinstance(switched, dict):
                     result.update(switched)

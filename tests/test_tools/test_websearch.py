@@ -69,6 +69,30 @@ class TestSearchWeb:
             result = search_web("test", 5)
             assert "error" in result.lower() or "no results" in result.lower()
 
+    def test_search_has_a_total_deadline_when_an_engine_hangs(self, monkeypatch):
+        import threading
+        import time
+        from RxyCode.RxyCode1_1_0.tools import websearch
+
+        finished = threading.Event()
+
+        def hanging_engine(_query, _num_results):
+            try:
+                threading.Event().wait(0.5)
+                return []
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(websearch, "TOTAL_BUDGET", 0.05)
+        monkeypatch.setattr(websearch, "_engine_list", lambda _query: [("hung", hanging_engine)])
+        started = time.monotonic()
+        result = websearch.search_web("test", 5)
+        elapsed = time.monotonic() - started
+
+        assert "error" in result.lower()
+        assert elapsed < 0.3
+        finished.wait(1)
+
 
 class TestEngineFunctions:
     def test_duckduckgo_returns_list(self):
@@ -160,6 +184,34 @@ class TestEngineFunctions:
         from RxyCode.RxyCode1_1_0.tools.websearch import _search_ddgs
         with patch("ddgs.DDGS", side_effect=RuntimeError("boom")):
             assert _search_ddgs("test", 5) == []
+
+    def test_ddgs_has_a_total_deadline_when_the_provider_hangs(self, monkeypatch):
+        import threading
+        from RxyCode.RxyCode1_1_0.tools import websearch
+
+        entered = threading.Event()
+
+        class HangingDDGS:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                entered.set()
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def text(self, *_args, **_kwargs):
+                entered.wait(1)
+                threading.Event().wait(1)
+                return []
+
+        monkeypatch.setattr(websearch, "DDGS_TOTAL_BUDGET", 0.05)
+        with patch("ddgs.DDGS", HangingDDGS):
+            assert websearch._search_ddgs("test", 5) == []
+            entered.wait(0.5)
+        assert entered.is_set()
 
     def test_ddgs_import_error_degrades_gracefully(self, monkeypatch):
         """If ddgs is not installed, _search_ddgs must return [] and never raise."""

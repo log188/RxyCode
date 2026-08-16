@@ -120,7 +120,10 @@ def build_tool_evidence(
         status = "dry_run" if lowered.startswith("[dry-run]") else "rejected"
     elif lowered.startswith(failure_prefixes) or legacy_not_found:
         status = "failed"
-    elif "[syntax check: syntax_error:" in lowered or "[syntax check: bracket_mismatch:" in lowered:
+    elif "[syntax check: syntax_error:" in lowered:
+        # Parse/compile errors are authoritative. BRACKET_MISMATCH is a
+        # heuristic warning on an already-written file (often a helper like
+        # `_smoke.js`) and must not rewrite a successful write as failed.
         status = "failed"
     elif exit_code is not None and exit_code != 0:
         status = "failed"

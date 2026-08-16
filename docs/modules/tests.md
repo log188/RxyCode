@@ -104,6 +104,16 @@ npm run build
 npm run e2e
 ```
 
+Desktop GUI 真实业务与确定性套件在 `frontend/desktop-app/`，走真实 Electron + CDP，不进入普通 CI。验收记录见 `docs/RXYCODE-GUI-REAL-E2E-REPORT-2026-08-13.md`。
+
+```powershell
+Set-Location frontend/desktop-app
+node --test scripts/real-business-suite.test.mts scripts/cdp-harness.test.mts
+node scripts/real-business-suite.mts --batch=A --artifacts=<dir>
+node scripts/real-business-suite.mts --batch=B --artifacts=<dir>
+node scripts/desktop-cd-suite.mts --mode=deterministic --rounds=3 --artifacts=<dir>
+```
+
 ## Live 测试
 
 Live 测试默认跳过。只有在隔离预算和测试专用凭据准备完成后才应启用：

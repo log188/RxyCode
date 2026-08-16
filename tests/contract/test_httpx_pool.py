@@ -194,3 +194,33 @@ async def test_fetch_passes_the_caller_timeout_per_request(monkeypatch):
     per_request = kwargs.get("timeout")
     assert per_request is not None
     assert float(per_request.connect) == 77.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_timeout_cancels_a_hanging_dns_resolution(monkeypatch):
+    """DNS resolution is part of the fetch deadline, not an unbounded gap."""
+    from RxyCode.RxyCode1_1_0.tools import webfetch
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def hanging_resolve(_hostname: str, _port: int) -> list[str]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(safe_http, "resolve_public_addresses", hanging_resolve)
+    monkeypatch.setattr(webfetch, "_resolve_public_addresses", hanging_resolve)
+
+    result = await asyncio.wait_for(
+        webfetch.fetch_url_async("https://example.com/", timeout=0.1),
+        timeout=1.0,
+    )
+
+    assert await asyncio.wait_for(started.wait(), timeout=0.2)
+    assert cancelled.is_set()
+    assert result.startswith("[timeout fetching https://example.com/")
+    assert "0.1s" in result

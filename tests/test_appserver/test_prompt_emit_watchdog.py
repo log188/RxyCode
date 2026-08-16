@@ -10,12 +10,15 @@ worker. OpenCode/Claude do not treat silent thinking as a dead job.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import time
 from unittest.mock import AsyncMock
 
 import pytest
 
 from appserver.agent_host import AgentHost
+from appserver.agent_worker import AgentWorker
 from appserver.server import AppServer
 from appserver.watchdog import WatchdogState
 
@@ -68,3 +71,32 @@ def test_host_notification_touches_active_job_for_session():
 
     assert time.monotonic() - job.last_progress_at < 1.0
     assert server._watchdog.stalled_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_prompt_heartbeat_emits_user_visible_waiting_progress(monkeypatch):
+    """A silent provider remains observable without treating heartbeat as text."""
+
+    worker = object.__new__(AgentWorker)
+    messages: list[dict] = []
+    worker._schedule_write = messages.append
+    monkeypatch.setenv("RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS", "0.25")
+
+    heartbeat = asyncio.create_task(worker._prompt_heartbeat("s1"))
+    try:
+        await asyncio.sleep(0.3)
+    finally:
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
+
+    methods = [message["method"] for message in messages]
+    assert "event/heartbeat" in methods
+    progress = [
+        message for message in messages if message["method"] == "event/progress"
+    ]
+    assert progress
+    assert progress[0]["params"] == {
+        "session_id": "s1",
+        "text": "正在等待模型响应…",
+    }

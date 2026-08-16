@@ -69,16 +69,34 @@ class TestToOpenAIMessages:
 
     def test_tool_message_conversion(self):
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        ai_msg = SimpleNamespace(
+            type="ai",
+            content="",
+            tool_calls=[{"id": "call_123", "name": "read", "args": {"path": "."}}],
+            additional_kwargs={},
+        )
         tool_msg = SimpleNamespace(
             type="tool",
             content="result data",
             tool_call_id="call_123",
             additional_kwargs={},
         )
-        result = AgentV2._to_openai_messages([tool_msg])
-        assert result[0]["role"] == "tool"
-        assert result[0]["content"] == "result data"
-        assert result[0]["tool_call_id"] == "call_123"
+        result = AgentV2._to_openai_messages([ai_msg, tool_msg])
+        assert result[1]["role"] == "tool"
+        assert result[1]["content"] == "result data"
+        assert result[1]["tool_call_id"] == "call_123"
+
+    def test_orphan_tool_message_is_dropped(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        user = SimpleNamespace(type="human", content="fix it", additional_kwargs={})
+        orphan = SimpleNamespace(
+            type="tool",
+            content="stale tool output",
+            tool_call_id="call_orphan",
+            additional_kwargs={},
+        )
+        result = AgentV2._to_openai_messages([user, orphan])
+        assert [item["role"] for item in result] == ["user"]
 
     def test_assistant_message_with_tool_calls(self):
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
@@ -91,6 +109,34 @@ class TestToOpenAIMessages:
         result = AgentV2._to_openai_messages([ai_msg])
         assert result[0]["role"] == "assistant"
         assert result[0]["tool_calls"][0]["function"]["name"] == "read"
+        assert result[1]["role"] == "tool"
+        assert result[1]["tool_call_id"] == "call_1"
+
+    def test_unanswered_parallel_tool_calls_are_stubbed(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        ai_msg = SimpleNamespace(
+            type="ai",
+            content="",
+            tool_calls=[
+                {"id": "call_a", "name": "bash", "args": {"command": "echo a"}},
+                {"id": "call_b", "name": "bash", "args": {"command": "echo b"}},
+            ],
+            additional_kwargs={},
+        )
+        tool_a = SimpleNamespace(
+            type="tool",
+            content="a",
+            tool_call_id="call_a",
+            additional_kwargs={},
+        )
+        nxt = SimpleNamespace(type="human", content="continue", additional_kwargs={})
+        result = AgentV2._to_openai_messages([ai_msg, tool_a, nxt])
+        assert [item["role"] for item in result] == ["assistant", "tool", "tool", "user"]
+        assert [item["tool_call_id"] for item in result if item["role"] == "tool"] == [
+            "call_a",
+            "call_b",
+        ]
+        assert "did not complete" in result[2]["content"]
 
 
 # ---------------------------------------------------------------------------

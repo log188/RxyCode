@@ -192,6 +192,22 @@ def test_parallel_disabled_serial_all():
     assert [r["id"] for r in results] == ["r1", "r2"]
 
 
+def test_fast_build_enables_read_parallelism_without_changing_default():
+    """Fast build turns on the safe read-only optimization per tool turn."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = _new_agent()
+    agent._cfg = {"execution": {"parallel_enabled": False, "max_parallel": 3}}
+    agent.model_config = {"effort": "fast"}
+
+    enabled, limit = agent._parallel_tool_config(mode="build")
+    assert enabled is True
+    assert limit == 3
+
+    disabled, _ = agent._parallel_tool_config(mode="plan")
+    assert disabled is False
+
+
 # ============================================================================
 # 完成判据 2：后台 fork 摘要不阻塞主循环
 # ============================================================================

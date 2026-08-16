@@ -9,7 +9,10 @@ from typing import Any
 
 
 def bootstrap_agent(
-    *, stub: bool = False, workspace_root: Path | str | None = None
+    *,
+    stub: bool = False,
+    workspace_root: Path | str | None = None,
+    model_name: str | None = None,
 ) -> Any:
     """Initialize AgentV2 (or stub) for stdio appserver."""
     import logging
@@ -59,6 +62,10 @@ def bootstrap_agent(
         from core.agent_v2 import AgentV2 as Agent
 
     log.info("bootstrap_agent: constructing AgentV2")
-    agent = Agent()
+    # A Desktop session may choose a task-scoped model before its worker has
+    # finished booting.  Pass that selection into the first AgentV2
+    # construction so the cold worker never initializes the old global active
+    # model only to rebuild it a moment later.
+    agent = Agent(model_name=model_name)
     log.info("bootstrap_agent: AgentV2 ready")
     return agent

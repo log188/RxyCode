@@ -161,7 +161,7 @@ python -m evals.cli run --backend agent --models <新模型id> --save-baseline
 
 ## DeepSeek v4 会话续接（A22，§7.1）
 
-deepseek-v4-flash / deepseek-v4-pro 是 thinking 默认开启的推理模型（thinking: {"type":"enabled"} 默认、effort 默认 high）。带 tools 的轮次**必须**把上一轮 assistant 消息的 reasoning_content 原样回传（_to_openai_messages 保留该字段），否则 API **400**（§7.1 问 5，S3/S4 官方明确）。
+deepseek-v4-flash / deepseek-v4-pro 是 thinking 默认开启的推理模型（thinking: {"type":"enabled"} 默认、effort 默认 high）。带 tools 的轮次**必须**把上一轮 assistant 消息的 reasoning_content 原样回传（_to_openai_messages 保留该字段），否则 API **400**（§7.1 问 5，S3/S4 官方明确）。`role=tool` 也必须紧跟带匹配 `tool_calls` 的 assistant；历史里的孤儿 tool 消息会被丢掉，未完成的并行 `tool_calls` 会补一条 stub tool 结果，避免 `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'` 以及 `insufficient tool messages following tool_calls message`。
 
 - 过渡期别名：deepseek-chat（non-thinking）/ deepseek-reasoner（thinking）在 2026-07-24 后指向 v4-flash 对应档（§7.1 S13）；providers.md 支持表仍列出以便旧配置平滑迁移。
 - thinking 模式下 temperature / top_p / presence_penalty / frequency_penalty 全部无效（不报错但被忽略，§7.1 问 5）；accepts_temperature=False。

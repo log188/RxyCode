@@ -63,6 +63,7 @@ import {
 } from '../../../platform/index.mts'
 import { PerformanceTraceRegistry, publishPerformanceTrace } from '../lib/performanceTrace.mts'
 import { isRecoverableConnectionError } from '../lib/taskActions.mts'
+import { createNotificationBatcher, type NotificationBatcher } from '../lib/notificationBatch.mts'
 
 export interface UseConversationResult {
   state: ConversationState
@@ -121,8 +122,29 @@ export function useConversation(
   )
   const performanceTraceRef = useRef(new PerformanceTraceRegistry())
   const reconnectingRef = useRef<Promise<boolean> | null>(null)
+  // AppServerManager reports `running` as soon as the child process is
+  // spawned.  The renderer still has to complete protocol initialize before
+  // session mutations are safe.  Keep that readiness boundary explicit so a
+  // fast click cannot race the first attach.
+  const connectionReadyRef = useRef<Promise<boolean> | null>(null)
   const reconnectTransportRef = useRef<((targetSessionId?: string) => Promise<boolean>) | null>(null)
   const recoverableSessionsRef = useRef(new Set<string>())
+  const messageDeltaBatchRef = useRef<NotificationBatcher | null>(null)
+
+  if (messageDeltaBatchRef.current === null) {
+    messageDeltaBatchRef.current = createNotificationBatcher((notifications) => {
+      setState((current) =>
+        notifications.reduce(
+          (next, notification) => applyProtocolNotification(next, notification.method, notification.params),
+          current
+        )
+      )
+    })
+  }
+
+  useEffect(() => () => {
+    messageDeltaBatchRef.current?.cancel()
+  }, [])
 
   useEffect(() => {
     stateRef.current = state
@@ -147,7 +169,13 @@ export function useConversation(
       if (method === 'event/message_delta') {
         trace.mark(sessionId, 'model_request')
         trace.mark(sessionId, 'first_token')
+        messageDeltaBatchRef.current?.push({ method, params })
+        return
       }
+      // Control-plane events must observe all preceding streamed text before
+      // they update the timeline. This preserves command/result/final order
+      // while avoiding one React render per token-sized delta.
+      messageDeltaBatchRef.current?.flush()
       if (method === 'event/tool_begin') trace.mark(sessionId, 'tool_begin')
       if (method.startsWith('event/recovery_')) trace.mark(sessionId, 'recovery')
       if (method === 'event/final') {
@@ -361,8 +389,10 @@ export function useConversation(
     }
     const connection = connectionRef.current
     if (status === 'running' && info !== null) {
-      void connection
-        .attach(info)
+      const attachPromise = connection.attach(info)
+      const attachReady = attachPromise.then(() => true, () => false)
+      connectionReadyRef.current = attachReady
+      void attachPromise
         .then(async () => {
           if (connectionRef.current !== connection) return
           const client = connection.client
@@ -493,6 +523,7 @@ export function useConversation(
           setConnectionError(message)
         })
     } else {
+      connectionReadyRef.current = null
       connection.detach('appserver not running')
       setProtocolClient(null)
       queueMicrotask(() => setConnectionError(null))
@@ -509,8 +540,11 @@ export function useConversation(
   }, [])
 
   const createSession = useCallback(async (model?: { modelId?: string; providerId?: string | null }): Promise<boolean> => {
+    const ready = connectionReadyRef.current
+    if (ready !== null && !(await ready)) return false
     const client = await ensureClient()
-    if (client === null || client === undefined || info === null) return false
+    const currentInfo = infoRef.current
+    if (client === null || client === undefined || currentInfo === null) return false
     try {
       const created = await client.requestWithTimeout<{
         session_id: string
@@ -518,7 +552,7 @@ export function useConversation(
         model_id?: string | null
         provider_id?: string | null
       }>('session/new', {
-        workspace_root: workspaceRootOverride ?? info.repoRoot,
+        workspace_root: workspaceRootOverride ?? currentInfo.repoRoot,
         ...(model?.modelId ? { model: model.modelId } : {}),
         ...(model?.providerId ? { provider_id: model.providerId } : {})
       }, 10_000)

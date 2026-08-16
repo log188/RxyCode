@@ -295,7 +295,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     <div className="settings-overlay" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) props.onClose()
     }}>
-      <div className="settings-page" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div className="settings-page" role="dialog" aria-modal="true" aria-labelledby="settings-title" data-testid="settings-dialog">
         <header className="settings-header">
           <div id="settings-title" className="settings-title">Settings</div>
           <button type="button" className="settings-close" onClick={props.onClose}>
@@ -371,7 +371,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                     <section key={group} className="model-group" aria-labelledby={`model-group-${group}`}>
                       <h3 id={`model-group-${group}`} className="model-group-title">{group}</h3>
                       {entries.map((model: ModelEntry) => (
-                        <div key={model.id} className={`model-row${model.active ? ' active' : ''}`}>
+                        <div key={model.id} className={`model-row${model.active ? ' active' : ''}`} data-testid="model-row" data-model-id={model.id}>
                           <div className="model-main">
                             <span className="model-name">{model.nickname || model.name}</span>
                             <span className="model-id">{model.id}</span>
@@ -389,6 +389,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                               <button
                                 type="button"
                                 className="model-activate"
+                                data-testid="model-activate"
                                 onClick={() => void props.models.setActive(model.id).then((ok) => {
                                   if (ok) props.onModelSelected?.(model.id)
                                 })}

@@ -156,7 +156,7 @@ function SessionList({
     <aside className="session-panel" data-testid="session-nav" aria-label="Tasks and sessions">
       <div className="panel-header">
         <span className="panel-title">Tasks</span>
-        <button type="button" className="new-session" onClick={onCreate} disabled={disabled} title="New task" aria-label="New task">
+        <button type="button" className="new-session" onClick={onCreate} disabled={disabled} title="New task" aria-label="New task" data-testid="new-session">
           <Plus aria-hidden="true" size={16} />
         </button>
       </div>

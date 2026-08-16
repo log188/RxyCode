@@ -7,13 +7,18 @@ LLM 调用前捕获工作区 Git 状态（status/diff），坏结局可回滚到
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import subprocess
 import time
 
 _logger = logging.getLogger(__name__)
 
-GIT_TIMEOUT_S = 15
+# A snapshot is a best-effort rollback aid, not a prerequisite for an LLM
+# request.  A hung Windows worktree must not consume the whole first-token
+# budget.  Callers may override this in focused tests.
+GIT_TIMEOUT_S = 1.0
 
 
 def _run_git_quiet(args: list[str], cwd: str, stdin_text: str | None = None) -> str:
@@ -21,6 +26,7 @@ def _run_git_quiet(args: list[str], cwd: str, stdin_text: str | None = None) -> 
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -36,6 +42,45 @@ def _run_git_quiet(args: list[str], cwd: str, stdin_text: str | None = None) -> 
     return result.stdout
 
 
+async def _run_git_async(
+    args: list[str], cwd: str, stdin_text: str | None = None
+) -> str:
+    """Run a read-only git command without blocking the appserver loop.
+
+    ``subprocess.run(timeout=...)`` is synchronous and was previously called
+    from the async AgentV2 turn.  On Windows a stuck git child can therefore
+    block watchdog heartbeats while Python waits for process teardown.  The
+    async subprocess is explicitly killed on timeout and its pipes are
+    drained before the timeout is surfaced.
+    """
+    process = await asyncio.create_subprocess_exec(
+        "git",
+        *args,
+        cwd=cwd,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        stdin=asyncio.subprocess.PIPE if stdin_text is not None else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    input_bytes = None if stdin_text is None else stdin_text.encode("utf-8")
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(input=input_bytes), timeout=GIT_TIMEOUT_S
+        )
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.communicate()
+        raise TimeoutError(
+            f"git {' '.join(args)} timed out after {GIT_TIMEOUT_S:.0f}s"
+        ) from exc
+    if process.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"git {' '.join(args)} failed rc={process.returncode}: {detail}"
+        )
+    return stdout.decode("utf-8", errors="replace")
+
+
 class GitSnapshot:
     """一次 Git 工作区快照。
 
@@ -46,6 +91,9 @@ class GitSnapshot:
     def __init__(self, repo_path: str = ".") -> None:
         self.repo_path = str(repo_path)
         self.captured = False
+        # Optional capture is attempted once per snapshot. A failed attempt
+        # must not add one Git timeout before every subsequent model round.
+        self._capture_attempted = False
         self.timestamp: float = 0.0
         self.status_text: str | None = None
         self.diff_text: str | None = None
@@ -57,6 +105,9 @@ class GitSnapshot:
         **只捕获一次**（初始基线，luna R6-1）：已捕获过则直接返回 True，
         不覆盖——否则每轮 LLM 调用前的重复捕获会丢失原始基线。
         """
+        if self._capture_attempted:
+            return self.captured
+        self._capture_attempted = True
         if self.captured:
             return True
         try:
@@ -65,6 +116,32 @@ class GitSnapshot:
             diff = _run_git_quiet(["diff"], self.repo_path)
         except Exception as exc:  # noqa: BLE001 - 快照失败必须容错
             _logger.warning("B7 git snapshot capture skipped: %s", exc)
+            self.captured = False
+            return False
+        self.status_text = status
+        self.diff_text = diff
+        self._restore_diff = diff
+        self.timestamp = time.time()
+        self.captured = True
+        return True
+
+    async def capture_async(self) -> bool:
+        """Capture a snapshot without blocking an async AgentV2 turn."""
+        if self._capture_attempted:
+            return self.captured
+        self._capture_attempted = True
+        if self.captured:
+            return True
+        try:
+            status = await asyncio.wait_for(
+                _run_git_async(["status", "--porcelain"], self.repo_path),
+                timeout=GIT_TIMEOUT_S,
+            )
+            diff = await asyncio.wait_for(
+                _run_git_async(["diff"], self.repo_path), timeout=GIT_TIMEOUT_S
+            )
+        except Exception as exc:  # noqa: BLE001 - snapshot failure is optional
+            _logger.warning("B7 async git snapshot capture skipped: %s", exc)
             self.captured = False
             return False
         self.status_text = status

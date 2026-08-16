@@ -38,16 +38,25 @@ Session restoration searches the current date, earlier dated records, and the le
 **Classes:**
 - UsageTrackingLLM (line ~401): Wrapper around any LangChain LLM that records
   token usage and settles provider/model rate-limit grants for every
-  `ainvoke()` and `astream()` call. It re-wraps `bind_tools()` and
+  LLM call. `_to_openai_messages` drops orphan `role=tool` history entries
+  that are not a response to the preceding assistant `tool_calls`, and
+  inserts a stub tool result for any unanswered `tool_call_id` before the
+  next user/assistant message (or the end of the payload). Both mismatches
+  otherwise 400 on DeepSeek/OpenAI. Incomplete DSML/XML tool markup in the
+  model text is treated as a continuation (native tools), not a successful
+  Final Answer. A build turn that never successfully calls write/edit, or
+  that stops after a partial write to say "now the controllers" / "请继续",
+  is nudged to keep writing instead of emitting a filename table as the
+  Final Answer. `ainvoke()` and `astream()` call. It re-wraps `bind_tools()` and
   `with_structured_output()` so fast path, graph, and sub-agent calls retain
   both behaviors.
-- AgentV2 (line ~747): The main agent. Handles user input routing, fast-path optimization, compose mode, and the full LangGraph pipeline. Also owns session lifecycle (`set_session`/`reset_session`/`switch_model`/`list_checkpoints`), hooks, trajectory and checkpoint/journal integration.
+- AgentV2 (line ~747): The main agent. Handles user input routing, fast-path optimization, compose mode, and the full LangGraph pipeline. Also owns session lifecycle (`set_session`/`reset_session`/`switch_model`/`list_checkpoints`), hooks, trajectory and checkpoint/journal integration. A succeeded run does not mark the durable checkpoint complete while the side-effect journal still has pending WRITE/DANGER rows; otherwise an identical retry rotates `attempt_id` and later writes are blocked as `journal_unavailable`.
 - SubAgentV2 (line ~3763): Legacy sub-agent compatibility shim (`$` prefix commands). Superseded by `core/subagents/` (ChildSessionManager + ChildRuntime).
 
 **How a Request Flows:**
 1. AgentV2.run(user_input, mode) is called
 2. Plan mode uses a dedicated read-only tool loop and never enters the execution graph
-3. Download intent check (_detect_download_intent) for build/compose requests
+3. Download intent check (_detect_download_intent) for build/compose requests that are not create/build product prompts. A long “create a website” request that mentions an isolated Skill directory must not collapse into `download_skill`. Create/build product requests that also ask for websearch continue after research prefetch failure; pure freshness Q&A still aborts instead of guessing.
 4. Fast path: simple queries go directly to _fast_reply() (with 2-level cache: exact + semantic)
 5. Parallel path: complex multi-task queries set `parallel_requested` on the graph state and execute through LangGraph's parallel executor. The legacy `_run_with_subagents()` is **disabled** (`core/agent_v2.py:2950-2954` raises `RuntimeError`); use `core/subagents/` ChildSessionManager for isolated subagent dispatch.
 6. Compose path: plan+build mode uses _run_compose()
@@ -303,7 +312,10 @@ Dispatch entry points: `tools/subagent_task_tool.py` (`task` tool),
 ### Supporting modules
 
 - `core/research_policy.py` — research fast-path policy (`get_research_policy`),
-  including `is_research_summary_request` routing for research-summary intents.
+  including `extract_research_query` (UI `search/filter` and page-control copy
+  such as date filters are not search topics; T06 prefers gold/silver/Nasdaq)
+  and create/build product tasks continuing after prefetch failure while pure
+  Q&A still aborts instead of guessing.
 - `core/run_lifecycle.py` — `RunLifecycle` wrapper used by `api_server` around `Session.prompt`.
 - `core/hooks.py` — lifecycle `HookRegistry` (`before`/`after`/`error`).
 - `core/checkpoints.py` — durable `CheckpointStore` for graph snapshots and side-effect journaling.

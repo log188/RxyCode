@@ -47,6 +47,11 @@ Each session gets its own **agent worker subprocess**. Prompt/bootstrap timeouts
 `AgentHost.kill()` so blocked work cannot hold the main process (T1).
 Background `session/new` warm uses a 180s budget and **single-flight**
 bootstrap: a timed-out waiter does not start a second AgentV2 constructor.
+`session/set_model` joins that same in-flight warm (also 180s) instead of
+aborting at 30s, which previously left Desktop stuck on
+`Starting Agent worker…`. After bootstrap the GUI receives
+`Waiting for model response…` so the startup banner cannot linger over
+later tool activity.
 
 ## Phase 2 hard constraints (P4)
 

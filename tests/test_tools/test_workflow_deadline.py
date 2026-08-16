@@ -566,3 +566,14 @@ async def test_cancelling_run_task_cleans_controlled_executor(
         await workflow.manage_workflow_async("status", run_id=run_id)
     )
     assert status["status"] == "cancelled"
+
+
+def test_workflow_script_emits_running_progress_heartbeat():
+    import inspect
+
+    from RxyCode.RxyCode1_1_0.tools import workflow_tool as workflow
+
+    source = inspect.getsource(workflow._execute_script_async)
+    assert "Workflow script still running" in source
+    assert "write_progress" in source
+    assert "asyncio.sleep(10.0)" in source

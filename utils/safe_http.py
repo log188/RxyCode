@@ -243,7 +243,13 @@ async def fetch_public_response(
     client = get_shared_client()
     for redirect_count in range(MAX_REDIRECTS + 1):
         normalized, hostname, port, scheme = validate_public_url(current_url)
-        addresses = await resolve_public_addresses(hostname, port)
+        # DNS is part of the caller's request deadline. Without this outer
+        # cancellation boundary, a resolver stall can outlive httpx's connect
+        # timeout and keep a GUI job alive until the appserver watchdog kills
+        # it as an opaque "job stalled" failure.
+        addresses = await asyncio.wait_for(
+            resolve_public_addresses(hostname, port), timeout=timeout
+        )
         pinned, host_header = _pinned_url(normalized, addresses[0], port)
         hop_headers = {**request_headers, "Host": host_header}
         extensions = {"sni_hostname": hostname} if scheme == "https" else None

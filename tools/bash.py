@@ -58,7 +58,13 @@ def _format_result(result: dict) -> str:
     if not result["success"]:
         output += f"\n[exit code: {result['exit_code']}]"
     output = _truncate_output(output)
-    return output.strip() or "[no output]"
+    output = output.strip()
+    if not result["success"]:
+        # Tool recovery classifies the stable [error...] prefix.  Preserve the
+        # command output and exit code, but do not let a failed shell probe be
+        # mistaken for a successful empty/diagnostic result.
+        return f"[error executing bash: {output or 'command failed'}]"
+    return output or "[no output]"
 
 
 bash_tool = StructuredTool.from_function(

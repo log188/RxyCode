@@ -86,6 +86,8 @@ def redact_sensitive(value: object) -> str:
 def classify_agent_result(answer: str) -> tuple[str, str]:
     """Classify AgentV2/build/tool string results without changing their API."""
     stripped = answer.strip()
+    if not stripped:
+        return "failed", "模型未返回可见结果"
     lowered = stripped.lower()
     if lowered.startswith(_CANCELLED_RESULT_PREFIXES):
         return "cancelled", stripped

@@ -132,6 +132,7 @@ Thumbs.db
 docs/*
 !docs/modules/
 !docs/images/
+!docs/RXYCODE-GUI-REAL-E2E-REPORT-2026-08-13.md
 docs/plans/
 
 # --- 计划目录里的压缩包 / 零散笔记（不入库）---

@@ -504,6 +504,7 @@ class AgentHost:
         *,
         session_id: str,
         workspace_root: Path,
+        model_id: str | None = None,
         stub: bool,
         project_root: Path,
         forward_server_request: ForwardServerRequest,
@@ -511,6 +512,7 @@ class AgentHost:
     ) -> None:
         self.session_id = session_id
         self.workspace_root = workspace_root.resolve()
+        self.model_id = str(model_id or "").strip() or None
         self._stub = stub
         self._forward_server_request = forward_server_request
         self._main_loop = main_loop
@@ -834,6 +836,7 @@ class AgentHost:
                 "stub": self._stub,
                 "workspace_root": str(self.workspace_root),
                 "session_id": self.session_id,
+                "model_id": self.model_id,
             },
             timeout=_BOOTSTRAP_RPC_TIMEOUT_SECONDS,
         )

@@ -101,15 +101,82 @@ DANGEROUS_COMMAND_PATTERNS: list[str] = [
 
 _COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in DANGEROUS_COMMAND_PATTERNS]
 
+# A deliberately small allow-list for shell probes that have no filesystem,
+# process, package, network, or repository side effect.  Bash itself remains
+# WRITE by default; only a command made entirely from these segments can be
+# downgraded to READ.  Keeping this list narrow is important because an
+# arbitrary shell command must never become auto-approved merely because it
+# happens to contain a read-looking verb.
+_READ_ONLY_BASH_SEGMENTS = [
+    re.compile(r"^(?:pwd|Get-Location)\s*$", re.IGNORECASE),
+    re.compile(
+        r"^(?:ls|ls\.exe|dir|Get-ChildItem)(?:\s+-[\w-]+)*"
+        r"(?:\s+(?:['\"][^'\"<>|]+['\"]|[A-Za-z0-9_.:/\\~-]+))?\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^(?:echo|Write-Output)(?:\s+[^<>|]+)?$", re.IGNORECASE),
+    re.compile(r'^"[^"<>|]+"$'),
+    re.compile(r"^(?:where|where\.exe)\s+[A-Za-z0-9_.-]+\s*$", re.IGNORECASE),
+    re.compile(
+        r"^(?:node|python3?|py|java|javac|npm)(?:\.exe|\.cmd)?\s+"
+        r"(?:--version|-version|-V)\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^node(?:\.exe|\.cmd)?\s+--check\s+[A-Za-z0-9_./\\-]+\.(?:js|mjs|cjs)\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^git\s+(?:status(?:\s+--[\w-]+)*|log(?:\s+[^<>|]+)?)\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^(?:cmd(?:\.exe)?\s+/c\s+)?ver\s*$", re.IGNORECASE),
+]
+
+# Stderr-only redirects are not filesystem writes. Agents routinely append
+# ``2>&1`` to version probes; treating ``>`` as a write would force those
+# probes through WRITE approval and then fail the whole task when a missing
+# Windows alias such as ``python3`` returns exit 1.
+_STDERR_ONLY_REDIRECT_RE = re.compile(
+    r"(?:2>&1|2>\s*/dev/null|2>\s*nul|2>\s*\$null)\s*",
+    re.IGNORECASE,
+)
+
+
+def _is_read_only_bash_probe(command: str) -> bool:
+    """Return true only for a complete, known-safe environment probe.
+
+    Splitting on shell control/pipeline separators is intentionally simple and
+    conservative.  Any segment not in the explicit allow-list keeps the
+    command at WRITE, while dangerous-pattern matching still runs first.
+    """
+    if not command:
+        return False
+    normalized = _STDERR_ONLY_REDIRECT_RE.sub(" ", command)
+    if any(token in normalized for token in (">", "<", "`", "$(", "${")):
+        return False
+    segments = re.split(r"(?:&&|\|\||[;&|])", normalized)
+    return bool(segments) and all(
+        any(pattern.fullmatch(segment.strip()) for pattern in _READ_ONLY_BASH_SEGMENTS)
+        for segment in segments
+        if segment.strip()
+    )
+
 
 def classify_bash_command(cmd: str) -> RiskLevel:
-    """Dynamically classify a shell command. Any dangerous-pattern hit
-    escalates to DANGER; otherwise shell execution is WRITE level."""
+    """Dynamically classify a shell command.
+
+    Destructive patterns escalate to DANGER.  A narrow set of complete,
+    read-only environment probes is READ so normal startup inspection does not
+    block the user on an approval dialog.  Unknown shell remains WRITE.
+    """
     if not cmd:
         return RiskLevel.WRITE
     for pat in _COMPILED_PATTERNS:
         if pat.search(cmd):
             return RiskLevel.DANGER
+    if _is_read_only_bash_probe(cmd):
+        return RiskLevel.READ
     return RiskLevel.WRITE
 
 
@@ -141,7 +208,13 @@ def classify_tool_risk(name: str, args: Any = None) -> RiskLevel:
 
     risk = get_tool_risk(name)
     if name == "bash" and isinstance(args, dict):
-        return max(risk, classify_bash_command(str(args.get("command", ""))))
+        command_risk = classify_bash_command(str(args.get("command", "")))
+        # Bash is statically WRITE, but a complete, allow-listed probe is
+        # explicitly READ.  Unknown commands retain the static fail-closed
+        # WRITE level; dangerous patterns still escalate to DANGER.
+        if command_risk is RiskLevel.READ:
+            return RiskLevel.READ
+        return max(risk, command_risk)
     return risk
 
 

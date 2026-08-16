@@ -13,6 +13,7 @@ import { useConversation } from './hooks/useConversation'
 import { useModels } from './hooks/useModels'
 import type { TimelineItem } from './lib/conversationStore.mts'
 import { canTrashTask } from './lib/taskActions.mts'
+import { modelStatusLabel } from './lib/taskPresentation.mts'
 import {
   effectiveWorkspaceRoot,
   loadWorkspaceSettings,
@@ -229,6 +230,7 @@ function App(): React.JSX.Element {
             onClick={() => setSettingsOpen(true)}
             aria-label="Settings"
             title="Settings"
+            data-testid="open-settings"
           >
             <Settings aria-hidden="true" size={17} />
           </button>
@@ -247,7 +249,7 @@ function App(): React.JSX.Element {
               activeSessionId={activeSessionId}
               runStateBySession={conversation.state.runStateBySession}
               childCountBySession={childCountBySession}
-              disabled={status !== 'running'}
+              disabled={status !== 'running' || conversation.protocolClient === null}
               onCreate={() => void handleCreate()}
               onSelect={(sessionId) => {
                 conversation.selectSession(sessionId)
@@ -267,7 +269,7 @@ function App(): React.JSX.Element {
           activeSessionId={activeSessionId}
           runStateBySession={conversation.state.runStateBySession}
           childCountBySession={childCountBySession}
-          disabled={status !== 'running'}
+          disabled={status !== 'running' || conversation.protocolClient === null}
           onCreate={() => void handleCreate()}
           onSelect={conversation.selectSession}
           onRename={(sessionId, title) => void conversation.renameSession(sessionId, title)}
@@ -281,7 +283,11 @@ function App(): React.JSX.Element {
           <TaskHeader
             title={activeSession?.title ?? 'New task'}
             workspaceRoot={activeSession?.workspaceRoot ?? effectiveWorkspace}
-            modelLabel={selectedTaskModel || 'Model not connected'}
+            modelLabel={modelStatusLabel({
+              selectedModelId: selectedTaskModel,
+              loading: models.loading,
+              snapshotLoaded: models.snapshot !== null
+            })}
             runState={activeRunState}
           />
           {conversation.connectionError !== null && (
@@ -302,6 +308,7 @@ function App(): React.JSX.Element {
             onSend={(text) => void conversation.sendMessage(text, permissionMode)}
             onStop={() => void conversation.interrupt()}
             models={models.snapshot?.models ?? []}
+            modelsLoading={models.loading || (conversation.protocolClient !== null && models.snapshot === null)}
             selectedModelId={selectedTaskModel}
             onSelectModel={(modelId) => {
               if (activeSessionId !== null) {

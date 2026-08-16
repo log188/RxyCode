@@ -779,6 +779,13 @@ export function applyPromptResult(
   }
   const completed = completeAssistant(state, sessionId, result.text, result.runId, result.status)
   const runState = runStateFromJob(result.status)
+  if ((runState === 'failed' || runState === 'cancelled' || runState === 'timed_out') && result.text.trim() === '') {
+    return applyError(
+      removeApprovalRequestsForSession(completed, sessionId),
+      sessionId,
+      `run ${result.status}`
+    )
+  }
   const withFinal = appendTimeline(completed, sessionId, {
     kind: 'final_answer',
     id: `${sessionId}:final:${result.runId}`,

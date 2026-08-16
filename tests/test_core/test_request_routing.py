@@ -184,6 +184,30 @@ def test_using_an_installed_skill_tool_is_not_a_skill_download_request():
     assert detect_download_intent(text) is None
 
 
+def test_skill_directory_in_a_website_prompt_is_not_download_skill():
+    """T03 mentioned an isolated Skill directory and was routed to
+    download_skill(name='directory'), which aborted the whole create task."""
+    from RxyCode.RxyCode1_1_0.core.request_routing import has_creation_product_intent
+
+    text = (
+        "Create T03-company in the current workspace. First call websearch. "
+        "Then automatically search for and genuinely load one suitable frontend "
+        "development Skill. Install it only into the isolated test Skill directory, "
+        "and record its name. Build an original responsive company website."
+    )
+    assert has_creation_product_intent(text) is True
+    assert detect_download_intent(text) is None
+
+
+def test_explicit_named_skill_install_is_still_download_intent():
+    assert detect_download_intent("install skill named tdd") == ("skill", "tdd", "")
+    assert detect_download_intent("安装 skill 叫 coding-workflow") == (
+        "skill",
+        "coding-workflow",
+        "",
+    )
+
+
 def test_mcp_install_intent_still_detected():
     assert detect_download_intent("安装 mcp server 叫 filesystem") == (
         "mcp",

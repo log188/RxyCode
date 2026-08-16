@@ -33,6 +33,97 @@ async def test_failed_tool_evidence_overrides_optimistic_final_answer():
 
 
 @pytest.mark.asyncio
+async def test_failed_version_probe_bash_does_not_override_completed_answer(tmp_path):
+    """A Windows ``python3 --version`` miss is a READ environment probe.
+
+    T01 previously died with ``[evidence failed: Tool bash did not complete:
+    failed]`` after the agent had already written a playable game, because
+    ``2>&1`` kept the probe at WRITE and the terminal evidence gate treated
+    exit 1 as authoritative.
+    """
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel, classify_tool_risk
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    command = (
+        'node --version 2>&1; echo "---"; python --version 2>&1; '
+        'echo "---"; python3 --version 2>&1'
+    )
+    assert classify_tool_risk("bash", {"command": command}) == RiskLevel.READ
+
+    artifact = tmp_path / "index.html"
+    artifact.write_text("<html><body>ok</body></html>", encoding="utf-8")
+    agent = object.__new__(AgentV2)
+
+    async def completed_run(_user_input: str, _mode: str) -> str:
+        ToolOrchestrator()._finish(
+            "bash",
+            {"command": command, "description": "Check available runtimes"},
+            "[error executing bash: v24.18.0\r\n---\r\nPython 3.13.9\r\n---\r\n\n[exit code: 1]]",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.READ,
+        )
+        ToolOrchestrator()._finish(
+            "write",
+            {"filePath": str(artifact), "content": artifact.read_text(encoding="utf-8")},
+            f"[wrote {artifact.stat().st_size} bytes to {artifact}]",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.WRITE,
+        )
+        return "T01-runner is playable. Files: index.html, styles.css, game.js, README.md."
+
+    agent._run_impl = completed_run
+    result = await agent.run("Create T01-runner in the current workspace")
+
+    assert result.startswith("T01-runner is playable")
+    assert "evidence failed" not in result
+
+
+@pytest.mark.asyncio
+async def test_failed_bash_smoke_test_does_not_override_written_artifact(tmp_path):
+    """A later ``node smoke-test.mjs`` exit 1 must not discard files already written.
+
+    T01 wrote a complete runner game, then a 18/19 smoke check failed on
+    localStorage. The evidence gate used to replace the Final Answer with
+    ``[evidence failed: Tool bash did not complete: failed]``.
+    """
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    artifact = tmp_path / "index.html"
+    artifact.write_text("<html><body>ok</body></html>", encoding="utf-8")
+    agent = object.__new__(AgentV2)
+
+    async def completed_run(_user_input: str, _mode: str) -> str:
+        ToolOrchestrator()._finish(
+            "write",
+            {"filePath": str(artifact), "content": artifact.read_text(encoding="utf-8")},
+            f"[wrote {artifact.stat().st_size} bytes to {artifact}]",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.WRITE,
+        )
+        ToolOrchestrator()._finish(
+            "bash",
+            {"command": "node .\\smoke-test.mjs", "workdir": str(tmp_path)},
+            "[error executing bash: FAIL  localStorage 写入最高分\n=== 结果: 18/19 通过 ===\n[exit code: 1]]",
+            executed=True,
+            approval="approved",
+            risk=RiskLevel.WRITE,
+        )
+        return "T01-runner is playable. Smoke: 18/19. localStorage probe unavailable in Node."
+
+    agent._run_impl = completed_run
+    result = await agent.run("Create T01-runner in the current workspace")
+
+    assert result.startswith("T01-runner is playable")
+    assert "evidence failed" not in result
+
+
+@pytest.mark.asyncio
 async def test_read_only_probe_failure_does_not_override_completed_answer():
     """A failed read-only probe (webfetch/websearch) must not discard a fully
     completed answer. Research fetches are attempts — the model may retry with
@@ -133,6 +224,82 @@ async def test_tool_timeout_does_not_override_recovered_answer(tmp_path):
     result = await agent.run("观察长 sleep 超时")
 
     assert "超时发生" in result
+    assert "evidence failed" not in result
+
+
+@pytest.mark.asyncio
+async def test_shell_timeout_after_format_does_not_override_written_artifact(tmp_path):
+    """Windows bash records '[timeout after 60s]', not 'timed out after'."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    agent = object.__new__(AgentV2)
+    game = tmp_path / "game.js"
+    game.write_text("console.log('ok')", encoding="utf-8")
+
+    async def recovered_run(_user_input: str, _mode: str) -> str:
+        ToolOrchestrator()._finish(
+            "write",
+            {"filePath": str(game), "content": "console.log('ok')"},
+            f"[wrote 18 bytes to {game}]",
+            executed=True,
+            approval="approved",
+            risk=RiskLevel.WRITE,
+        )
+        ToolOrchestrator()._finish(
+            "bash",
+            {"command": "python T01-runner\\\\_check_html.py"},
+            "[error executing bash: [timeout after 60s]\n[exit code: -1]]",
+            executed=True,
+            approval="approved",
+            risk=RiskLevel.WRITE,
+        )
+        return "game.js written; HTML parser timed out and was skipped."
+
+    agent._run_impl = recovered_run
+    result = await agent.run("create the runner")
+
+    assert "game.js written" in result
+    assert "evidence failed" not in result
+
+
+@pytest.mark.asyncio
+async def test_helper_write_bracket_mismatch_does_not_override_game_files(tmp_path):
+    """A _smoke.js bracket warning must not discard an already written game."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    agent = object.__new__(AgentV2)
+    game = tmp_path / "game.js"
+    smoke = tmp_path / "_smoke.js"
+    game.write_text("console.log('ok')", encoding="utf-8")
+    smoke.write_text("console.log('smoke')", encoding="utf-8")
+
+    async def recovered_run(_user_input: str, _mode: str) -> str:
+        ToolOrchestrator()._finish(
+            "write",
+            {"filePath": str(game), "content": "console.log('ok')"},
+            f"[wrote 18 bytes to {game}]\n[syntax check: OK]",
+            executed=True,
+            approval="approved",
+            risk=RiskLevel.WRITE,
+        )
+        ToolOrchestrator()._finish(
+            "write",
+            {"filePath": str(smoke), "content": "console.log('smoke')"},
+            f"[wrote 20 bytes to {smoke}]\n[syntax check: BRACKET_MISMATCH: opens=35, closes=40]",
+            executed=True,
+            approval="approved",
+            risk=RiskLevel.WRITE,
+        )
+        return "T01-runner written with helper smoke file."
+
+    agent._run_impl = recovered_run
+    result = await agent.run("create the runner")
+
+    assert "T01-runner written" in result
     assert "evidence failed" not in result
 
 

@@ -84,11 +84,7 @@ class TestClassifyBashCommand:
         assert classify_bash_command(cmd) == RiskLevel.DANGER, cmd
 
     @pytest.mark.parametrize("cmd", [
-        "ls -la",
-        "echo hello",
         "python -m pytest tests -q",
-        "git status",
-        "git log --oneline",
         "cat README.md",
         "grep -r foo .",
         "npm install",
@@ -99,6 +95,36 @@ class TestClassifyBashCommand:
         "Remove-Item .\\build -Recurse",  # relative project cleanup
     ])
     def test_normal_commands_are_write(self, cmd):
+        assert classify_bash_command(cmd) == RiskLevel.WRITE, cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "pwd; echo \"---\"; ls -la",
+        "Get-Location; Get-ChildItem -Force",
+        "node --version; python --version; where cmd",
+        "node --version 2>&1; echo \"---\"; python --version 2>&1; echo \"---\"; python3 --version 2>&1",
+        "node --check game.js && echo \"JS_SYNTAX_OK\"",
+        "python3 --version 2>$null",
+        "java -version 2>&1",
+        "git status --short",
+        "git log --oneline -5",
+        "ls -la \"C:\\\\Windows\\\\Temp\\\\workspace\"",
+        "Get-ChildItem -Force; \"---NODE---\"; node --version 2>&1; Get-Location",
+        "node --check game.js; \"check-exit: $LASTEXITCODE\"",
+        "python --version & node --version & cmd /c ver",
+    ])
+    def test_known_read_only_probe_commands_do_not_require_write_approval(self, cmd):
+        """Environment probes are READ; unknown shell remains fail-closed WRITE."""
+        assert classify_bash_command(cmd) == RiskLevel.READ, cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "node --version 2>&1; npm install",
+        "python --version > version.txt",
+        "echo hi > file.txt",
+        "node --check game.js > out.txt",
+        "python3 script.py",
+    ])
+    def test_stderr_redirect_does_not_downgrade_mutating_shell(self, cmd):
+        """Only stderr-only redirects may be ignored; file writes stay WRITE."""
         assert classify_bash_command(cmd) == RiskLevel.WRITE, cmd
 
     def test_pattern_table_is_extensible_list(self):
@@ -187,7 +213,8 @@ class TestArgumentAwareToolRisk:
         assert classify_tool_risk(name, args) == RiskLevel.WRITE
 
     def test_bash_still_uses_dynamic_escalation(self):
-        assert classify_tool_risk("bash", {"command": "echo ok"}) == RiskLevel.WRITE
+        assert classify_tool_risk("bash", {"command": "echo ok"}) == RiskLevel.READ
+        assert classify_tool_risk("bash", {"command": "npm install"}) == RiskLevel.WRITE
         assert classify_tool_risk("bash", {"command": "shutdown now"}) == RiskLevel.DANGER
 
 

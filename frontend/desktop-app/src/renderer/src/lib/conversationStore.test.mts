@@ -276,6 +276,18 @@ test('applyPromptResult finalizes running tools as errors when the prompt failed
   assert.equal(state.errorBySession['s1'], 'run failed')
 })
 
+test('failed prompt with empty text does not render a blank Final Answer heading', () => {
+  let state = beginAssistantMessage(baseState(), 's1')
+  state = applyPromptResult(state, 's1', {
+    runId: 'run-empty-failed',
+    status: 'failed',
+    text: ''
+  })
+  assert.equal(state.timelineBySession['s1']?.some((item) => item.kind === 'final_answer'), false)
+  assert.equal(state.timelineBySession['s1']?.at(-1)?.kind, 'error')
+  assert.equal(state.errorBySession['s1'], 'run failed')
+})
+
 test('applyPromptResult clears a previous session error', () => {
   const errored = applyError(baseState(), 's1', 'boom')
   const state = applyPromptResult(errored, 's1', {

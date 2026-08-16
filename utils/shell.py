@@ -232,10 +232,22 @@ class ShellExecutor:
             flags=re.IGNORECASE,
         )
         head = re.sub(
-            r"(?<![\w-])\bls\s+(-[alA]+)\b",
-            lambda m: "Get-ChildItem -Force"
-            if "a" in m.group(1)
-            else "Get-ChildItem",
+            r"(?<![\w-])\bls\s+(-[alAR]+)(?=\s|[;&|]|$)",
+            lambda m: "Get-ChildItem"
+            + (" -Force" if "a" in m.group(1).lower() else "")
+            + (" -Recurse" if "r" in m.group(1).lower() else ""),
+            head,
+            flags=re.IGNORECASE,
+        )
+        # The Docker adapter exposes the session root as /workspace.  When
+        # the same command is executed directly on Windows, the session cwd
+        # is already that root; mapping it to C:\\workspace is both wrong and
+        # expensive because it causes a failed tool round and model repair.
+        head = re.sub(
+            r"\bcd\s+/workspace(?:/([^\s;&|]+))?",
+            lambda m: "Set-Location ."
+            if not m.group(1)
+            else "Set-Location .\\" + m.group(1).replace("/", "\\"),
             head,
             flags=re.IGNORECASE,
         )
@@ -342,11 +354,29 @@ class ShellExecutor:
         if actual_shell == "powershell":
             # grep/find 的 pattern 参数在引号内，必须先于引号保护解析。
             command = self._translate_grep_find(command)
+            # ``%~dp0`` is a cmd batch-file variable. Outside a batch file,
+            # the session workdir is the meaningful equivalent.
+            command = re.sub(r"%~dp0", ".", command, flags=re.IGNORECASE)
             # luna R2: 保护引号内文本，转换只作用于引号外，避免误改
             # echo "2>/dev/null" 之类的输出文本。
             masked, quoted_restores = self._protect_quoted(command)
             command = self._translate_powershell_outside_quotes(masked)
             command = self._restore_quoted(command, quoted_restores)
+            # Keep stderr from native version probes inside cmd.exe. If the
+            # model already emitted ``cmd /c "java -version" 2>&1``, leaving
+            # the redirection outside makes PowerShell classify Java's normal
+            # version stderr as a terminating error.
+            command = re.sub(
+                r'(?<![\w-])\bcmd(?:\.exe)?\s+/c\s+(["\'])'
+                r'(java|javac|python3?|node|npm|mvn|gradle)\s+'
+                r'(--version|-version)\1\s+2>&1',
+                lambda m: (
+                    f'cmd.exe /d /c "{m.group(2)} {m.group(3)} 2>&1"'
+                ),
+                command,
+                flags=re.IGNORECASE,
+            )
+            command = self._wrap_mysql_client_for_powershell(command)
         elif actual_shell == "cmd":
             command = command.replace("$env:USERPROFILE", "%USERPROFILE%")
             command = command.replace("$env:APPDATA", "%APPDATA%")
@@ -364,6 +394,53 @@ class ShellExecutor:
         反斜杠转义（PS 不认）与 $ 变量展开（双引号会展开）。
         """
         return "'" + (text or "").replace("'", "''") + "'"
+
+    @staticmethod
+    def _invokes_mysql_client(command: str) -> bool:
+        """True only when the mysql CLI is the program being run.
+
+        ``MYSQL_URL``, ``-like "MYSQL*"``, and ``Get-Command mysql`` must stay
+        in PowerShell. A case-insensitive ``\\bmysql\\b`` also matches those.
+        """
+        if re.search(
+            r"\b(Get-Command|Get-ChildItem|Get-Alias|Select-String)\b",
+            command,
+            flags=re.IGNORECASE,
+        ) and re.search(r"mysql\.exe\s+-", command, flags=re.IGNORECASE) is None:
+            return False
+        if re.search(r"-like\s+[\"']MYSQL", command, flags=re.IGNORECASE):
+            return False
+        if re.search(
+            r'(?:^|[;&|]\s*)\s*(?:&\s*)?["\']?(?:[A-Za-z]:\\[^"\';&|\n]*\\)?mysql\.exe\b',
+            command,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        return (
+            re.search(
+                r"(?:^|[;&|]\s*)\s*(?:&\s*)?[\"']?mysql(?:\.exe)?(?:\s+-|\s*$)",
+                command,
+            )
+            is not None
+        )
+
+    def _wrap_mysql_client_for_powershell(self, command: str) -> str:
+        """Run the mysql CLI through cmd.exe so WinPS 5 does not fail the tool.
+
+        The official client writes password-on-CLI warnings to stderr.
+        PowerShell 5 turns that into NativeCommandError even when the query
+        succeeded. Unquoted ``-e "SELECT 1; SHOW DATABASES;"`` is also split
+        on ``;``. cmd.exe keeps mysql's native status and SQL separators.
+        """
+        if not self._invokes_mysql_client(command):
+            return command
+        if re.search(r"(?<![\w-])\bcmd(?:\.exe)?\s+/d\s+/c\b", command, flags=re.IGNORECASE):
+            prefix = "$ErrorActionPreference='Continue'; "
+            return command if command.startswith(prefix) else prefix + command
+        return (
+            "$ErrorActionPreference='Continue'; cmd.exe /d /c "
+            + self._ps_single_quote(command)
+        )
 
     def _translate_grep_find(self, command: str) -> str:
         """B7: POSIX grep/find → PowerShell（pattern 参数在引号内，
@@ -404,6 +481,17 @@ class ShellExecutor:
         )
         # POSIX `find <path> -name "pat"` → Get-ChildItem -Recurse -Filter
         command = re.sub(
+            r"(?<![\w-])\bfind\s+(\S+)(?:\s+-maxdepth\s+\d+)?\s+-type\s+d\s+-i?name\s+([\"'])(.*?)\2",
+            lambda m: (
+                "Get-ChildItem -Path "
+                + m.group(1)
+                + " -Recurse -Directory -Filter "
+                + self._ps_single_quote(m.group(3))
+            ),
+            command,
+            flags=re.IGNORECASE,
+        )
+        command = re.sub(
             r"(?<![\w-])\bfind\s+(\S+)(?:\s+[^|;]*?)?\s+-name\s+"
             r"([\"'])(.*?)\2",
             lambda m: (
@@ -440,28 +528,166 @@ class ShellExecutor:
             command,
             flags=re.IGNORECASE,
         )
+        # The container-facing tools use /workspace as a portable session
+        # root.  Direct Windows execution must keep the already selected cwd
+        # instead of resolving that synthetic path as C:\\workspace.
+        command = re.sub(
+            r"\bcd\s+/workspace(?:/([^\s;&|]+))?",
+            lambda m: "Set-Location ."
+            if not m.group(1)
+            else "Set-Location .\\" + m.group(1).replace("/", "\\"),
+            command,
+            flags=re.IGNORECASE,
+        )
         # POSIX `ls -la` / `ls -l` / `ls -a` → PowerShell Get-ChildItem,
         # whose aliased `ls` rejects the GNU-style `-la` flag bundles.
         command = re.sub(
-            r"(?<![\w-])\bls\s+(-[alA]+)\b",
-            lambda m: "Get-ChildItem -Force"
-            if "a" in m.group(1)
-            else "Get-ChildItem",
+            r"(?<![\w-])\bls\s+(-[alAR]+)(?=\s|[;&|]|$)",
+            lambda m: "Get-ChildItem"
+            + (" -Force" if "a" in m.group(1).lower() else "")
+            + (" -Recurse" if "r" in m.group(1).lower() else ""),
+            command,
+            flags=re.IGNORECASE,
+        )
+        # POSIX mkdir -p has no direct PowerShell equivalent.  Use -Force so
+        # this remains idempotent, and keep each path as a separate argument
+        # so quoted paths containing spaces are preserved.
+        def _mkdir_repl(match: re.Match[str]) -> str:
+            raw_paths = match.group(1).strip()
+            # The capture intentionally stops before ``>`` but may retain the
+            # numeric descriptor from ``2>&1``.  It is redirection syntax, not
+            # a second directory path.
+            raw_paths = re.sub(r"\s+\d+\s*$", "", raw_paths).strip()
+            paths = re.findall(r'"[^"]*"|\'[^\']*\'|\S+', raw_paths)
+            return (
+                "New-Item -ItemType Directory -Force -Path "
+                + ", ".join(paths)
+                + " | Out-Null"
+            )
+
+        command = re.sub(
+            r"(?<![\w-])\bmkdir\s+-p(?:\s+-[A-Za-z][A-Za-z0-9_-]*)*\s+([^\r\n;&|>]+)",
+            _mkdir_repl,
+            command,
+            flags=re.IGNORECASE,
+        )
+        # PowerShell's ``mkdir`` alias accepts one positional path, while
+        # POSIX/cmd callers commonly pass several paths in one invocation
+        # (``mkdir src bin``).  Translating only ``mkdir -p`` left that
+        # otherwise harmless command looking successful when followed by
+        # ``echo`` even though one or more directories were never created.
+        # Handle the plain form as well, but leave an already-generated
+        # ``New-Item`` command untouched.
+        command = re.sub(
+            r"(?<![\w-])\bmkdir\s+(?!-)([^\r\n;&|>]+)",
+            _mkdir_repl,
+            command,
+            flags=re.IGNORECASE,
+        )
+        # POSIX ``rm -rf path`` is the common clean-build idiom. Preserve its
+        # recursive/force semantics explicitly instead of passing ``-rf`` to
+        # PowerShell's Remove-Item parameter parser.
+        command = re.sub(
+            r"(?<![\w-])\brm\s+-rf(?:\s+-[A-Za-z][A-Za-z0-9_-]*)*\s+([^\r\n;&|>]+)",
+            lambda m: "Remove-Item -Recurse -Force -LiteralPath " + m.group(1).strip(),
+            command,
+            flags=re.IGNORECASE,
+        )
+        # POSIX find . -type f is frequently used for an artifact inventory;
+        # without this translation Windows executes find.exe, which has a
+        # different syntax and causes a needless model retry.
+        command = re.sub(
+            r"(?<![\w-])\bfind\s+(\S+)(?:\s+-maxdepth\s+\d+)?\s+-type\s+f\b",
+            r"Get-ChildItem -Path \1 -Recurse -File",
+            command,
+            flags=re.IGNORECASE,
+        )
+        command = re.sub(
+            r"(?<![\w-])\bfind\s+(\S+)(?:\s+-maxdepth\s+\d+)?\s+-type\s+d\b",
+            r"Get-ChildItem -Path \1 -Recurse -Directory",
+            command,
+            flags=re.IGNORECASE,
+        )
+        # POSIX ``wc -l file`` is commonly used to verify generated source
+        # length. PowerShell has no ``wc`` command; keep the same scalar
+        # line-count meaning instead of triggering model recovery on Windows.
+        command = re.sub(
+            r"(?<![\w-])\bwc\s+-l\s+(\"[^\"]+\"|'[^']+'|[^\s;&|]+)",
+            lambda m: "Get-Content -LiteralPath " + m.group(1) + " | Measure-Object -Line | Select-Object -ExpandProperty Lines",
+            command,
+            flags=re.IGNORECASE,
+        )
+        # Resolve one or more executables using PowerShell's command lookup.
+        command = re.sub(
+            r"(?<![\w-])\bwhich\s+([A-Za-z][A-Za-z0-9_.+\-]*(?:\s+[A-Za-z][A-Za-z0-9_.+\-]+)*)",
+            lambda m: (
+                "Get-Command "
+                + ",".join(m.group(1).split())
+                + " | Select-Object -ExpandProperty Source"
+            ),
+            command,
+            flags=re.IGNORECASE,
+        )
+        # POSIX/cmd ``where java`` is parsed as PowerShell's Where-Object
+        # alias. Resolve it explicitly so environment probes do not trigger
+        # a needless model recovery on Windows. Do not swallow the ``2`` from
+        # a following ``2>&1`` redirect (that produced ``Get-Command chrome,2``).
+        command = re.sub(
+            r"(?<![\w-])\bwhere\s+([A-Za-z][A-Za-z0-9_.+\-]*(?:\s+[A-Za-z][A-Za-z0-9_.+\-]+)*)",
+            lambda m: "Get-Command " + ",".join(m.group(1).split()) + " | Select-Object -ExpandProperty Source",
+            command,
+            flags=re.IGNORECASE,
+        )
+        # ``uname -a`` is a common POSIX environment probe. Return a stable
+        # Windows OS description instead of invoking an unavailable binary.
+        command = re.sub(
+            r"(?<![\w-])\buname(?:\s+-[A-Za-z]+)?\b",
+            "[Environment]::OSVersion.VersionString",
+            command,
+            flags=re.IGNORECASE,
+        )
+        # Windows PowerShell reports a non-zero wrapper exit code for several
+        # runtimes whose version probe writes informational text to stderr
+        # (notably ``java -version``). Let cmd.exe preserve native status.
+        command = re.sub(
+            r"(?<![\w-])\b(java|javac|python3?|node|npm|mvn|gradle)\s+"
+            r"(--version|-version)\b(\s+2>&1)?",
+            lambda m: (
+                f'cmd.exe /d /c "{m.group(1)} {m.group(2)}'
+                f'{" 2>&1" if m.group(3) else ""}"'
+            ),
             command,
             flags=re.IGNORECASE,
         )
         # cmd.exe `dir /b <path>` (bare-name listing) → Get-ChildItem -Name.
+        # ``ver`` is a cmd.exe builtin; invoking it directly in PowerShell
+        # creates a deterministic command-not-found failure and an avoidable
+        # recovery round.
+        command = re.sub(
+            r"(?<![\w-])\bver\b",
+            "cmd.exe /d /c ver",
+            command,
+            flags=re.IGNORECASE,
+        )
         # Without this, WinPS parses `/b` as a path and errors.
         command = re.sub(
+            r"\bdir\s+/s\s+/b\s+(\S+)",
+            lambda m: "Get-ChildItem -Path " + m.group(1) + " -Recurse -Name",
+            command,
+            flags=re.IGNORECASE,
+        )
+        command = re.sub(
             r"\bdir\s+/b\b(\s+\S+)?",
-            lambda m: "Get-ChildItem -Name" + (m.group(1) or ""),
+            lambda m: "Get-ChildItem"
+            + (" -Path " + m.group(1).strip() if m.group(1) else "")
+            + " -Name",
             command,
             flags=re.IGNORECASE,
         )
         # cmd.exe `dir <path> /b` (flag after path) → same translation.
         command = re.sub(
             r"\bdir\b(\s+\S+)\s+/b\b",
-            lambda m: "Get-ChildItem -Name" + m.group(1),
+            lambda m: "Get-ChildItem -Path " + m.group(1).strip() + " -Name",
             command,
             flags=re.IGNORECASE,
         )
@@ -498,14 +724,14 @@ class ShellExecutor:
             if not cat_file.startswith(("|", "&", ";")):
                 command = "Get-Content " + cat_file + command[cat_match.end():]
         # B7: POSIX `cmd1 || cmd2` 失败回退 → `cmd1; if (-not $?) { cmd2 }`。
-        # 只处理单一 || 链（多段链不强制，避免误转换）。
-        if "||" in command and command.count("||") == 1:
-            left, _, right = command.partition("||")
-            left = left.strip().rstrip(";").strip()
-            right = right.strip()
-            if left and right:
-                command = f"{left}; if (-not $?) {{ {right} }}"
-                # luna R3-5: || 重写后 right 内的 pwd 处于 `{ ` 后，需再转换一次。
+        # WinPS 5 rejects ``||``. Rewrite every unquoted segment, not just one.
+        if "||" in command:
+            parts = [part.strip().rstrip(";").strip() for part in command.split("||")]
+            if len(parts) >= 2 and all(parts):
+                rebuilt = parts[0]
+                for part in parts[1:]:
+                    rebuilt = f"{rebuilt}; if (-not $?) {{ {part} }}"
+                command = rebuilt
                 command = re.sub(
                     r"(\{\s*)(?<![\w-])\bpwd\b",
                     r"\1Get-Location",

@@ -85,6 +85,22 @@ class TestWriteFile:
         assert target.exists()
         assert target.read_text(encoding="utf-8") == "deep"
 
+    def test_absolute_write_keeps_nonexistent_parent_in_explicit_workspace(
+        self, tmp_path, monkeypatch
+    ):
+        """An absolute target must not fall back to the dated output directory."""
+        data_dir = tmp_path / "data"
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("RXYCODE_DATA_DIR", str(data_dir))
+
+        target = workspace / "nested" / "new.txt"
+        result = self._write(str(target), "workspace target")
+
+        assert target.read_text(encoding="utf-8") == "workspace target"
+        assert str(target) in result
+        assert not list((data_dir / "output").glob("**/new.txt"))
+
     def test_write_empty_content(self, tmp_path):
         f = tmp_path / "empty.txt"
         target = self._target(str(f))

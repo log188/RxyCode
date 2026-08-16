@@ -50,6 +50,48 @@ except ImportError:
 _logger = logging.getLogger(__name__)
 
 
+def configure_agent_workspace(
+    agent: Any,
+    *,
+    session_id: str,
+    workspace_root: Path,
+) -> Any:
+    """Bind an AgentV2 instance to the worker's session-local workspace.
+
+    AgentV2 historically starts with the compatibility session id ``latest``.
+    A Desktop worker, however, owns a concrete session and an isolated
+    workspace.  Leaving the default in place makes session-scoped tools read
+    the wrong persisted cwd (or fall back to the appserver source tree).
+    Configure both the agent metadata and the session-runtime cwd before the
+    first prompt; this does not mutate process-global cwd and is safe for
+    concurrent workers.
+    """
+    resolved_session_id = str(session_id)
+    resolved_workspace = Path(workspace_root).resolve()
+    resolved_workspace.mkdir(parents=True, exist_ok=True)
+    agent._session_id = resolved_session_id
+    agent._workspace_root = resolved_workspace
+    try:
+        from ..core.session_runtime import (
+            bind_session,
+            reset_session_binding,
+            set_working_directory,
+        )
+    except ImportError:
+        from RxyCode.RxyCode1_1_0.core.session_runtime import (
+            bind_session,
+            reset_session_binding,
+            set_working_directory,
+        )
+
+    token = bind_session(resolved_session_id)
+    try:
+        set_working_directory(resolved_workspace)
+    finally:
+        reset_session_binding(token)
+    return agent
+
+
 def resolve_subagent_task_token_budget() -> int:
     """Resolve a child task's aggregate budget from active-model metadata.
 
@@ -273,9 +315,10 @@ class AgentWorker:
         """Keep the appserver watchdog alive while the provider is silent.
 
         A model request or a long-running local tool can legitimately produce
-        no user-visible event for a while.  The watchdog must distinguish that
-        from a dead worker, so this heartbeat is deliberately not persisted as
-        a task event and the renderer does not render it as activity.
+        no model event for a while.  The watchdog must distinguish that from a
+        dead worker, while the renderer still needs an honest waiting state.
+        ``event/heartbeat`` remains an internal liveness signal; the paired
+        ``event/progress`` is persisted and rendered as a compact status line.
         """
         raw_interval = os.environ.get(
             "RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS", "10"
@@ -294,6 +337,16 @@ class AgentWorker:
                     "jsonrpc": "2.0",
                     "method": "event/heartbeat",
                     "params": {"session_id": session_id},
+                }
+            )
+            self._schedule_write(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "event/progress",
+                    "params": {
+                        "session_id": session_id,
+                        "text": "正在等待模型响应…",
+                    },
                 }
             )
 
@@ -383,6 +436,7 @@ class AgentWorker:
         workspace = Path(str(params.get("workspace_root", ".")))
         self._workspace_root = workspace.resolve()
         self._session_id = str(params.get("session_id", "worker"))
+        model_id = str(params.get("model_id") or "").strip() or None
         self._subagent_manager, self._subagent_event_store = bootstrap_subagent_manager(
             session_id=self._session_id,
             workspace_root=self._workspace_root,
@@ -397,6 +451,12 @@ class AgentWorker:
             self._agent = await asyncio.to_thread(
                 bootstrap_agent,
                 stub=stub,
+                workspace_root=self._workspace_root,
+                model_name=model_id,
+            )
+            self._agent = configure_agent_workspace(
+                self._agent,
+                session_id=self._session_id,
                 workspace_root=self._workspace_root,
             )
         finally:
