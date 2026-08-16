@@ -413,6 +413,35 @@ async function main(argv: string[]): Promise<void> {
     )
   }
 
+  // The staged interpreter (esp. a uv standalone python) has an empty
+  // site-packages; the runtime dependencies come from requirements.txt. The
+  // desktop job already installs them into setup-python, but on mac/linux
+  // the runtime uses a *different* interpreter, so install the deps into the
+  // staged runtime itself (idempotent, network available in CI).
+  const reqPath = join(repo, 'requirements.txt')
+  if (existsSync(reqPath)) {
+    const deps = spawnSync(
+      pythonExe,
+      ['-m', 'pip', 'install', '--break-system-packages', '-r', reqPath],
+      {
+        cwd: outDir,
+        env: {
+          ...process.env,
+          PIP_DISABLE_PIP_VERSION_CHECK: '1',
+          PYTHONNOUSERSITE: '1'
+        },
+        encoding: 'utf8',
+        timeout: 600_000
+      }
+    )
+    if (deps.status !== 0) {
+      fail(
+        `pip install requirements into runtime failed (status ${String(deps.status)}, ` +
+          `error ${String(deps.error)}): ${deps.stderr}${deps.stdout}`
+      )
+    }
+  }
+
   const pip = spawnSync(
     pythonExe,
     [
