@@ -176,15 +176,28 @@ jobs:
             echo "No distribution artifacts found under dist/" >&2
             exit 1
           fi
+          upload_with_retry() {
+            local file="$1"
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "$GITHUB_REF_NAME" "$file" --clobber; then
+                return 0
+              fi
+              echo "upload failed for $file (attempt $attempt); retrying..." >&2
+              sleep $((attempt * 5))
+            done
+            echo "upload failed for $file after retries" >&2
+            return 1
+          }
           # Retries / concurrent tag workflows may find an existing release
           # (sometimes without assets). Create once, otherwise replace assets.
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "Release $GITHUB_REF_NAME already exists; uploading assets with --clobber."
-            gh release upload "$GITHUB_REF_NAME" "${artifacts[@]}" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" "${artifacts[@]}" \
-              --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
           fi
+          echo "Release $GITHUB_REF_NAME exists; uploading assets with --clobber."
+          for artifact in "${artifacts[@]}"; do
+            upload_with_retry "$artifact"
+          done
 
   desktop:
     name: Build desktop app (${{ matrix.label }})
@@ -273,16 +286,28 @@ jobs:
           # macOS runners ship bash 3.2 where globstar and mapfile are
           # unavailable; also avoid shell/gh glob re-expansion by uploading
           # each file individually.
+          upload_with_retry() {
+            file="$1"
+            attempt=1
+            while [ "$attempt" -le 5 ]; do
+              if gh release upload "$GITHUB_REF_NAME" "$file" --clobber; then
+                return 0
+              fi
+              echo "upload failed for $file (attempt $attempt); retrying..." >&2
+              sleep $((attempt * 5))
+              attempt=$((attempt + 1))
+            done
+            echo "upload failed for $file after retries" >&2
+            return 1
+          }
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          fi
           found=0
           while IFS= read -r f; do
             [ -f "$f" ] || continue
             found=1
-            if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-              gh release upload "$GITHUB_REF_NAME" "$f" --clobber
-            else
-              gh release create "$GITHUB_REF_NAME" "$f" \
-                --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
-            fi
+            upload_with_retry "$f"
           done < <(find frontend/desktop-app/dist -maxdepth 1 -type f \( ${{ matrix.find }} \) -print)
           if [ "$found" -eq 0 ]; then
             echo "No desktop artifacts produced for ${{ matrix.label }}" >&2
