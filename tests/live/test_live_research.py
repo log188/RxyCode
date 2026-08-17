@@ -5,6 +5,8 @@ import os
 import pytest
 import yaml
 
+from RxyCode.RxyCode1_1_0.evals.runner import is_provider_infra_error
+
 
 pytestmark = pytest.mark.live
 
@@ -24,9 +26,10 @@ async def test_current_fact_research_returns_a_source(isolated_runtime):
     config = _default_config()
     config["models"] = {
         "live-test": {
-            "model_name": os.environ.get("RXYCODE_LIVE_MODEL", "gpt-4o-mini"),
+            "model_name": os.environ.get("RXYCODE_LIVE_MODEL", "deepseek-v4-flash"),
             "api_key": os.environ["RXYCODE_LIVE_API_KEY"],
-            "base_url": os.environ.get("RXYCODE_LIVE_BASE_URL") or None,
+            "base_url": os.environ.get("RXYCODE_LIVE_BASE_URL")
+            or "https://opencode.ai/zen/go/v1",
             "temperature": 0,
             "max_tokens": 2048,
         }
@@ -45,10 +48,18 @@ async def test_current_fact_research_returns_a_source(isolated_runtime):
     )
 
     agent = AgentV2()
-    answer = await agent.run(
-        "What is the latest stable Python release? Cite the official source.",
-        mode="build",
-    )
+    try:
+        answer = await agent.run(
+            "What is the latest stable Python release? Cite the official source.",
+            mode="build",
+        )
+    except Exception as exc:
+        if is_provider_infra_error(str(exc)):
+            pytest.skip(f"live provider unavailable: {type(exc).__name__}")
+        raise
+
+    if is_provider_infra_error(answer):
+        pytest.skip("live provider returned auth/quota error")
 
     assert "https://" in answer
     assert "python.org" in answer.lower()

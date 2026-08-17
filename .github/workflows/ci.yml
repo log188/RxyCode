@@ -391,8 +391,8 @@ jobs:
     env:
       RXYCODE_RUN_LIVE_TESTS: "1"
       RXYCODE_LIVE_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
-      RXYCODE_LIVE_MODEL: ${{ vars.RXYCODE_LIVE_MODEL || 'gpt-4o-mini' }}
-      RXYCODE_LIVE_BASE_URL: ${{ vars.RXYCODE_LIVE_BASE_URL }}
+      RXYCODE_LIVE_MODEL: ${{ vars.RXYCODE_LIVE_MODEL || 'deepseek-v4-flash' }}
+      RXYCODE_LIVE_BASE_URL: ${{ vars.RXYCODE_LIVE_BASE_URL || 'https://opencode.ai/zen/go/v1' }}
       RXYCODE_TEST_ROOT: ${{ github.workspace }}/artifacts/runtime
       RXYCODE_TEST_RUN_ID: live
     steps:

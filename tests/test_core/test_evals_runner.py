@@ -991,6 +991,69 @@ class TestBaseline:
         assert "Delta" in diff
 
 
+class TestProviderInfraGate:
+    def test_detects_auth_and_quota_text(self):
+        from RxyCode.RxyCode1_1_0.evals.runner import is_provider_infra_error
+
+        assert is_provider_infra_error(
+            "Error code: 429 - GoUsageLimitError Monthly usage limit reached"
+        )
+        assert is_provider_infra_error(
+            "AuthenticationError invalid_api_key Incorrect API key provided"
+        )
+        assert is_provider_infra_error(
+            "CircuitBreakerError Timeout not elapsed yet, circuit breaker still open"
+        )
+        assert not is_provider_infra_error("pattern 'DISCOUNT' not in pricing.py")
+
+    def test_suite_blocked_when_quota_collapses_tokens(self):
+        from RxyCode.RxyCode1_1_0.evals.runner import suite_blocked_by_provider
+
+        report = SuiteReport(
+            results=[
+                TaskResult(
+                    task_id="a",
+                    category="bugfix",
+                    passed=False,
+                    error="RateLimitError GoUsageLimitError",
+                    token_usage={"total": 0},
+                ),
+                TaskResult(
+                    task_id="b",
+                    category="bugfix",
+                    passed=False,
+                    error="one or more checks failed",
+                    token_usage={"total": 0},
+                ),
+            ]
+        )
+        report.compute_summary()
+        assert suite_blocked_by_provider(report) is True
+
+    def test_suite_not_blocked_on_real_task_failures(self):
+        from RxyCode.RxyCode1_1_0.evals.runner import suite_blocked_by_provider
+
+        report = SuiteReport(
+            results=[
+                TaskResult(
+                    task_id="a",
+                    category="refactor",
+                    passed=False,
+                    error="pattern 'DISCOUNT' not in pricing.py",
+                    token_usage={"total": 1200},
+                ),
+                TaskResult(
+                    task_id="b",
+                    category="refactor",
+                    passed=True,
+                    token_usage={"total": 800},
+                ),
+            ]
+        )
+        report.compute_summary()
+        assert suite_blocked_by_provider(report) is False
+
+
 class TestEvalLlmKwargs:
     def test_preserves_pre_a6_minimal_profile(self):
         from config.model_capabilities import DEFAULT_CAPABILITIES

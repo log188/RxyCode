@@ -42,6 +42,21 @@ _CODE_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
+#: Auth / quota / breaker text that means the provider, not the task, failed.
+PROVIDER_INFRA_MARKERS = (
+    "invalid_api_key",
+    "incorrect api key provided",
+    "error code: 401",
+    "authenticationerror",
+    "error code: 429",
+    "ratelimiterror",
+    "gousagelimiterror",
+    "monthly usage limit reached",
+    "insufficient_quota",
+    "circuitbreakererror",
+    "circuit breaker still open",
+)
+
 
 # ---------------------------------------------------------------------------
 # Result dataclasses
@@ -838,6 +853,35 @@ def load_report_from_baseline(path: Path) -> SuiteReport:
     return report
 
 
+def is_provider_infra_error(text: str | None) -> bool:
+    """True when *text* is an auth, quota, or circuit-breaker failure."""
+    blob = (text or "").lower()
+    return any(marker in blob for marker in PROVIDER_INFRA_MARKERS)
+
+
+def suite_blocked_by_provider(report: SuiteReport) -> bool:
+    """True when suite failures are provider infra, not task-quality regressions.
+
+    Weekly CI shares one live key. A 401/429/open breaker can collapse pass
+    rate (and token count) without any AgentV2 change; that must not trip the
+    baseline gate.
+    """
+    infra_hits = 0
+    for result in report.results:
+        if is_provider_infra_error(result.error) or is_provider_infra_error(
+            result.agent_answer
+        ):
+            infra_hits += 1
+    if infra_hits == 0:
+        return False
+    summary = report.summary or report.compute_summary()
+    tokens = int(summary.get("total_tokens") or 0)
+    failed = int(summary.get("failed") or 0)
+    if tokens == 0 and failed > 0:
+        return True
+    return infra_hits >= 3
+
+
 def compare_baseline_pass_rate(current: SuiteReport, baseline_path: Path) -> tuple[str, bool]:
     """Return markdown diff and whether pass rate regressed."""
     from .report import diff_baseline
@@ -1127,7 +1171,14 @@ def main() -> int:
         except Exception:
             base_rate = 0.0
         cur_rate = s["pass_rate"]
-        if regressed:
+        if suite_blocked_by_provider(report):
+            print(
+                "GATE: SKIP (provider auth/quota/circuit-breaker; "
+                "not a task-quality regression)",
+                file=sys.stderr,
+            )
+            exit_code = 0
+        elif regressed:
             print(
                 f"GATE: FAIL (pass rate {cur_rate:.1%} < baseline {base_rate:.1%})",
                 file=sys.stderr,

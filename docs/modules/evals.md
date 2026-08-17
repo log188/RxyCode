@@ -144,7 +144,8 @@ python -m evals.run --dry
 
 **Exit codes:**
 
-- `0` — all tasks passed (and no baseline regression if `--compare-baseline` set)
+- `0` — all tasks passed, no baseline regression, **or** the baseline gate
+  skipped because the provider returned auth/quota/circuit-breaker errors
 - `1` — one or more tasks failed
 - `2` — pass rate regressed vs baseline
 

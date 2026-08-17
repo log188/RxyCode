@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Weekly scheduled CI no longer treats live-provider 401/quota/circuit-breaker
+  as an AgentV2 quality regression (eval gate skips; live test skips).
+
 ---
 
 ## [1.2.10] - 2026-08-16

@@ -73,6 +73,9 @@ def test_ci_uses_isolated_coverage_files_and_failure_artifact_root():
     assert "RXYCODE_TEST_ROOT:" in workflow
     assert "artifacts/runtime" in workflow
     assert "Require live provider credentials" in workflow
+    assert "vars.RXYCODE_LIVE_MODEL || 'deepseek-v4-flash'" in workflow
+    assert "vars.RXYCODE_LIVE_BASE_URL || 'https://opencode.ai/zen/go/v1'" in workflow
+    assert "vars.RXYCODE_LIVE_MODEL || 'gpt-4o-mini'" not in workflow
 
 
 def test_process_singletons_can_be_mutated_without_escaping_test():
