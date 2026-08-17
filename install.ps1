@@ -200,7 +200,7 @@ function Install-OpenTuiDependencies {
     try {
         & $BunExecutable install
         if ($LASTEXITCODE -ne 0) {
-            throw "bun install failed with exit code $LASTEXITCODE in $AppDir"
+            Write-Host "Warning: bun install failed with exit code $LASTEXITCODE in $AppDir; OpenTUI may fall back to Ink."
         }
     }
     finally {

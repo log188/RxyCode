@@ -73,8 +73,11 @@ def test_manifest_includes_opentui_and_ink_runtimes_and_excludes_node_modules():
     assert "include frontend/package.json" in manifest
     assert "recursive-include frontend/opentui-app/src *" in manifest
     assert "include frontend/opentui-app/package.json" in manifest
+    assert "recursive-include frontend/protocol-client/src *" in manifest
+    assert "include frontend/protocol-client/package.json" in manifest
     assert "prune frontend/node_modules" in manifest
     assert "prune frontend/opentui-app/node_modules" in manifest
+    assert "prune frontend/protocol-client/node_modules" in manifest
 
 
 def test_package_data_ships_opentui_sources():
@@ -85,6 +88,29 @@ def test_package_data_ships_opentui_sources():
     assert "frontend/dist/*.js" in joined
     assert "frontend/opentui-app/package.json" in joined
     assert "frontend/opentui-app/src/**/*" in joined
+    assert "frontend/protocol-client/package.json" in joined
+    assert "frontend/protocol-client/src/**/*" in joined
+
+
+def test_pyproject_includes_every_core_subpackage():
+    packages = set(_pyproject()["tool"]["setuptools"]["packages"])
+    missing = []
+    for init in (PROJECT_ROOT / "core").rglob("__init__.py"):
+        rel = init.parent.relative_to(PROJECT_ROOT)
+        dotted = "RxyCode.RxyCode1_1_0." + ".".join(rel.parts)
+        if dotted not in packages:
+            missing.append(dotted)
+    assert not missing, f"pyproject omits core subpackages: {missing}"
+
+
+def test_nsis_custom_init_honors_silent_install_dir():
+    nsh = (PROJECT_ROOT / "frontend" / "desktop-app" / "build" / "installer.nsh").read_text(
+        encoding="utf-8"
+    )
+    assert "!macro customInit" in nsh
+    assert "rxy_use_default" in nsh
+    assert 'StrCmp "$INSTDIR" "" rxy_use_default' in nsh
+    assert nsh.count("StrCpy $INSTDIR") == 1
 
 
 def test_ci_smokes_the_installed_package_without_namespace_links():

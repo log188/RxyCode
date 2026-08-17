@@ -10,6 +10,9 @@ recursive-include frontend/opentui-app/src *
 include frontend/opentui-app/package.json
 include frontend/opentui-app/tsconfig.json
 include frontend/opentui-app/bun.lock
+recursive-include frontend/protocol-client/src *
+include frontend/protocol-client/package.json
+include frontend/protocol-client/tsconfig.json
 recursive-include evals/tasks *.yaml
 global-exclude *.py[cod]
 global-exclude *.log
@@ -23,4 +26,5 @@ prune data
 prune frontend/node_modules
 prune frontend/opentui-app/node_modules
 prune frontend/opentui-app/e2e
+prune frontend/protocol-client/node_modules
 prune node_modules

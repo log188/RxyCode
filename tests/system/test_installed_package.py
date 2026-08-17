@@ -192,6 +192,10 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
         assert VERSIONED_ROOT / "__main__.py" in paths
         assert PurePosixPath("RxyCode/__main__.py") in paths
         assert VERSIONED_ROOT / "log/logger.py" in paths
+        assert VERSIONED_ROOT / "core/providers/__init__.py" in paths
+        assert VERSIONED_ROOT / "core/subagents/__init__.py" in paths
+        assert VERSIONED_ROOT / "core/bridge/__init__.py" in paths
+        assert VERSIONED_ROOT / "frontend/protocol-client/package.json" in paths
         assert VERSIONED_ROOT / "frontend/package.json" in paths
         assert VERSIONED_ROOT / "frontend/dist/index.js" in paths
         assert any(
@@ -298,6 +302,17 @@ def test_fresh_install_runs_console_and_module_entrypoints(
         env=installed_package.env,
     )
     assert "1.2.10" in version.stdout + version.stderr
+
+    providers = _run(
+        [
+            str(installed_package.python),
+            "-c",
+            "from RxyCode.RxyCode1_1_0.core import providers; print(providers.__name__)",
+        ],
+        cwd=installed_package.workdir,
+        env=installed_package.env,
+    )
+    assert "RxyCode.RxyCode1_1_0.core.providers" in providers.stdout
 
     help_result = _run(
         [str(installed_package.console), "--help"],

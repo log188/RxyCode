@@ -133,6 +133,8 @@ def test_installer_sources_are_pinned_and_do_not_pipe_remote_code():
     assert "RXYCODE_NO_MODIFY_PATH" in ps_text
     assert "RXYCODE_NO_MODIFY_PATH" in sh_text
     assert "installation failed: uv could not update PATH" not in sh_text
+    assert "bun install failed with exit code" in ps_text
+    assert "throw \"bun install failed" not in ps_text
     assert 'Add("--from")' not in ps_text
     assert "tool install --force --from" not in sh_text
 

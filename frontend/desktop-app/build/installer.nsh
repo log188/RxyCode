@@ -34,8 +34,15 @@
 ; required here.
 
 ; --- Directory page: prefill default install dir on first run -------------------------
-; Runs right after the standard Init; sets $INSTDIR to the RxyCode desktop
-; folder unless the user already chose a custom path on a re-run.
+; Runs right after the standard Init. Honor silent `/D=` and a user-chosen
+; path: only replace electron-builder's stock LOCALAPPDATA\Programs location
+; (or an empty INSTDIR) with ~/.rxycode/desktop. Do not overwrite /D=.
 !macro customInit
-  StrCpy $INSTDIR "${DEFAULT_INSTALL_DIR}"
+  StrCmp "$INSTDIR" "" rxy_use_default
+  StrCmp "$INSTDIR" "$LOCALAPPDATA\Programs\RxyCode Desktop" rxy_use_default
+  StrCmp "$INSTDIR" "$LOCALAPPDATA\Programs\rxycode-desktop" rxy_use_default
+  Goto rxy_keep_instdir
+  rxy_use_default:
+    StrCpy $INSTDIR "${DEFAULT_INSTALL_DIR}"
+  rxy_keep_instdir:
 !macroend
