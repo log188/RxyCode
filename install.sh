@@ -248,8 +248,12 @@ fi
 
 if [ "$no_modify_path" -eq 0 ]; then
     if ! "$uv_bin" tool update-shell; then
-        printf '%s\n' "RxyCode installation failed: uv could not update PATH." >&2
-        exit 1
+        printf '%s\n' \
+            "Warning: uv could not update PATH (the current shell could not be determined)." >&2
+        printf '%s\n' \
+            "The tool is installed; add the uv tool bin directory to PATH, or open a new terminal." >&2
+        printf '%s\n' \
+            "Set RXYCODE_NO_MODIFY_PATH=1 to skip this step on future installs." >&2
     fi
 fi
 

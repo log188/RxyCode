@@ -57,6 +57,19 @@ def test_resolve_desktop_exe_posix_name(monkeypatch, tmp_path):
     assert resolved == str(exe)
 
 
+def test_gui_without_packaged_or_sources_points_to_release(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "_resolve_desktop_executable", lambda d=None: None)
+    monkeypatch.setattr(main, "_frontend_dir", lambda: str(tmp_path))
+
+    with pytest.raises(click.ClickException) as exc:
+        main.gui.callback(desktop_dir=None)
+
+    message = str(exc.value)
+    assert "does not include the Electron app" in message
+    assert f"releases/tag/v{main.__version__}" in message
+    assert "RXYCODE_DESKTOP_DIR" in message
+
+
 def test_gui_falls_back_to_dev_without_packaged_build(monkeypatch, tmp_path):
     """No packaged desktop -> dev fallback must spawn npm in desktop-app."""
     import subprocess

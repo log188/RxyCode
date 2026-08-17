@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { keepPythonFile } from './prepare-runtime.mts'
+import { keepPythonFile, keepVendoredFile, windowsVersionedDllName } from './prepare-runtime.mts'
 
 function win(src: string): boolean {
   return keepPythonFile('C:/Python', src, 'win32', false)
@@ -24,6 +24,9 @@ function posixDir(src: string): boolean {
 test('win32 keeps interpreter + stdlib, drops debug/Docs/test', () => {
   assert.equal(win('C:/Python/python.exe'), true)
   assert.equal(win('C:/Python/pythonw.exe'), true)
+  assert.equal(win('C:/Python/python3.dll'), true)
+  assert.equal(win('C:/Python/python312.dll'), true)
+  assert.equal(win('C:/Python/python313.dll'), true)
   assert.equal(win('C:/Python/python314.dll'), true)
   assert.equal(win('C:/Python/vcruntime140.dll'), true)
   assert.equal(win('C:/Python/python_d.exe'), false) // debug interpreter dropped
@@ -76,4 +79,22 @@ test('directory roots (bin/lib/Lib/DLLs) are always traversed', () => {
   // Pruned subtrees stay pruned even as directories.
   assert.equal(posixDir('/opt/python/lib/python3.14/test'), false)
   assert.equal(winDir('C:/Python/Lib/site-packages/pytest'), true)
+})
+
+test('windowsVersionedDllName maps CPython X.Y to pythonXY.dll', () => {
+  assert.equal(windowsVersionedDllName('3.12.10'), 'python312.dll')
+  assert.equal(windowsVersionedDllName('Python 3.12.10'), 'python312.dll')
+  assert.equal(windowsVersionedDllName('3.14.2'), 'python314.dll')
+  assert.equal(windowsVersionedDllName('not-a-version'), null)
+})
+
+test('vendored app tree keeps appserver and drops repo junk', () => {
+  const keep = (src: string): boolean => keepVendoredFile('C:/repo', src, true)
+  assert.equal(keep('C:/repo/appserver/__main__.py'), true)
+  assert.equal(keep('C:/repo/core/agent_v2.py'), true)
+  assert.equal(keep('C:/repo/.github/workflows/ci.yml'), false)
+  assert.equal(keep('C:/repo/evals/run.py'), false)
+  assert.equal(keep('C:/repo/frontend/opentui-app/package.json'), false)
+  assert.equal(keep('C:/repo/frontend/desktop-app/package.json'), false)
+  assert.equal(keep('C:/repo/__pycache__/x.pyc'), false)
 })

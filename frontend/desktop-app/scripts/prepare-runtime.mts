@@ -45,11 +45,23 @@ function argValue(argv: string[], name: string): string | null {
   return index >= 0 && argv[index + 1] !== undefined ? argv[index + 1] : null
 }
 
+export function windowsVersionedDllName(pythonVersion: string): string | null {
+  // "3.12.10" / "Python 3.12.10" -> python312.dll. The unversioned
+  // python3.dll stub cannot start CPython without this sibling DLL.
+  const match = /(\d+)\.(\d+)/.exec(pythonVersion)
+  if (match === null) return null
+  return `python${match[1]}${match[2]}.dll`
+}
+
 function runPython(pythonExe: string, args: string[], cwd?: string): string {
   const result = spawnSync(pythonExe, args, {
     cwd,
     encoding: 'utf8',
-    timeout: 120_000
+    timeout: 120_000,
+    env: {
+      ...process.env,
+      PYTHONDONTWRITEBYTECODE: '1'
+    }
   })
   if (result.status !== 0) {
     fail(`python ${args.join(' ')} failed (status ${String(result.status)}): ${result.stderr}`)
@@ -94,8 +106,8 @@ function keepPythonFile(
       return (
         name === 'python.exe' ||
         name === 'pythonw.exe' ||
-        name === 'python3.dll' ||
-        name === 'python314.dll' ||
+        // python3.dll (stub) + python3XY.dll (3.12, 3.13, 3.14, …)
+        /^python3\d*\.dll$/i.test(name) ||
         name.startsWith('vcruntime140') ||
         name === 'LICENSE.txt'
       )
@@ -154,7 +166,7 @@ function keepSitePackages(parts: string[], name: string): boolean {
   return true
 }
 
-export { keepPythonFile, keepSitePackages }
+export { keepPythonFile, keepSitePackages, keepVendoredFile }
 
 function keepVendoredFile(repo: string, src: string, isDirectory: boolean): boolean {
   void isDirectory // signature parity with keepPythonFile
@@ -165,24 +177,44 @@ function keepVendoredFile(repo: string, src: string, isDirectory: boolean): bool
   const top = parts[0]
   if (
     top === '.git' ||
+    top === '.github' ||
     top === '.pytest_cache' ||
+    top === '.worktrees' ||
+    top === '.cursor' ||
+    top === '.codex' ||
+    top === '.agents' ||
     top === 'docs' ||
     top === 'tests' ||
+    top === 'evals' ||
+    top === 'frontend' ||
     top === 'rxycode.egg-info'
   ) {
-    return false
-  }
-  // The desktop shell must never be vendored into itself: when
-  // RXYCODE_REPO_DIR points at the same checkout that contains
-  // frontend/desktop-app, copying would recurse into its build/runtime
-  // staging (cpSync ERR_FS_CP_EINVAL).
-  if (parts[0] === 'frontend' && parts[1] === 'desktop-app') {
     return false
   }
   if (top === 'log' && (name.endsWith('.out') || name === 'status.json' || name.endsWith('.log'))) {
     return false
   }
   return true
+}
+
+function stripBytecode(root: string): void {
+  const stack = [root]
+  while (stack.length > 0) {
+    const current = stack.pop() as string
+    for (const name of readdirSync(current)) {
+      const full = join(current, name)
+      const stat = lstatSync(full)
+      if (stat.isDirectory()) {
+        if (name === '__pycache__') {
+          rmSync(full, { recursive: true, force: true })
+        } else {
+          stack.push(full)
+        }
+      } else if (name.endsWith('.pyc')) {
+        rmSync(full, { force: true })
+      }
+    }
+  }
 }
 
 function dirSize(dir: string): number {
@@ -478,6 +510,16 @@ async function main(argv: string[]): Promise<void> {
     '-c',
     'import platform; print(platform.python_version())'
   ])
+  if (platform === 'win32') {
+    const dllName = windowsVersionedDllName(pythonVersion)
+    if (dllName === null || !existsSync(join(outDir, 'python', dllName))) {
+      fail(
+        `Windows runtime is missing ${dllName ?? 'python3XY.dll'} next to python.exe ` +
+          `(staged ${pythonVersion}). python3.dll is only a stub; without the versioned ` +
+          `DLL the packaged appserver cannot start on machines that do not already have CPython.`
+      )
+    }
+  }
   const protocolVersion = (
     JSON.parse(readFileSync(join(appDirStaged, 'protocol', 'schema.json'), 'utf8')) as {
       protocol_version: string
@@ -514,7 +556,8 @@ async function main(argv: string[]): Promise<void> {
       ...process.env,
       RXYCODE_APPSERVER_STUB: '1',
       PYTHONUNBUFFERED: '1',
-      PYTHONIOENCODING: 'utf-8'
+      PYTHONIOENCODING: 'utf-8',
+      PYTHONDONTWRITEBYTECODE: '1'
     },
     input: '',
     timeout: 120_000,
@@ -523,6 +566,7 @@ async function main(argv: string[]): Promise<void> {
   if (start.status !== 0) {
     fail(`stub appserver start failed (status ${String(start.status)}): ${start.stderr}`)
   }
+  stripBytecode(appDirStaged)
 
   const total = dirSize(outDir)
   console.log(

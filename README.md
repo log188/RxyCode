@@ -70,9 +70,11 @@ curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.10/install.sh
 rxycode
 ```
 
-The installer bootstraps `uv` if needed, creates an isolated tool environment, and installs the pinned **`v1.2.10`** release.
+The installer bootstraps `uv` if needed, creates an isolated tool environment, and installs the pinned **`v1.2.10`** release. That is the **CLI / OpenTUI** package. It does not include the Electron Desktop app.
 
-**Downloads:** only the latest release (**`v1.2.10`**) publishes installable wheel/sdist assets. Older GitHub Releases keep notes but do not offer binary downloads.
+Set `RXYCODE_NO_MODIFY_PATH=1` to skip PATH updates. A PATH-update failure is a warning; the install still succeeds.
+
+**Downloads:** the latest release (**`v1.2.10`**) publishes the CLI wheel/sdist **and** Desktop binaries (Windows setup.exe / portable zip, macOS dmg, Linux AppImage). GitHub “Source code” zip/tar.gz is the full backend+frontend tree for building from source — it is not a ready-to-run Desktop install. Older GitHub Releases keep notes but do not offer binary downloads.
 
 ### Option 2: Run once with uv
 
@@ -110,7 +112,7 @@ docker compose run --rm tui    # Interactive TUI (needs TTY)
 |---------|------------|
 | `rxycode` or `python -m RxyCode` | Default **OpenTUI** |
 | `rxycode --version` | Package version, no runtime init |
-| `rxycode gui` | **Desktop** Electron app |
+| `rxycode gui` | Desktop **only after** you install a Desktop build (not part of the CLI/`uv` install) |
 | `rxycode --api` | API server only (`api_server.py`) |
 | `RXYCODE_TUI=ink rxycode` | Ink fallback TUI |
 
@@ -123,7 +125,15 @@ OpenTUI talks to the core over **stdio JSON-RPC**: the frontend spawns `python -
 
 ## Desktop GUI
 
-`rxycode gui` launches the Electron app. Composer sits at the bottom of the task pane. The `+` button opens:
+Desktop is a **separate download** from [GitHub Releases](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10):
+
+| OS | Asset |
+|----|--------|
+| Windows | `rxycode-desktop-1.2.10-setup.exe` (installer) or `RxyCode.Desktop-1.2.10-win.zip` (portable) |
+| macOS | `.dmg` (unsigned) |
+| Linux | `.AppImage` |
+
+`rxycode gui` only launches that installed app (`~/.rxycode/desktop`, `RXYCODE_DESKTOP_DIR`, or `--desktop-dir`). A CLI-only install cannot start Desktop. Composer sits at the bottom of the task pane. The `+` button opens:
 
 | Menu item | What it does |
 |-----------|----------------|

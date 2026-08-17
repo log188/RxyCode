@@ -334,7 +334,12 @@ try {
 
     Invoke-Uv -Executable $uvExecutable -Arguments $installArguments.ToArray()
     if (-not $noModifyPath) {
-        Invoke-Uv -Executable $uvExecutable -Arguments @("tool", "update-shell")
+        & $uvExecutable @("tool", "update-shell")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Warning: uv could not update PATH (the current shell could not be determined)."
+            Write-Host "The tool is installed; add the uv tool bin directory to PATH, or open a new terminal."
+            Write-Host "Set RXYCODE_NO_MODIFY_PATH=1 to skip this step on future installs."
+        }
     }
 
     $skipBun = Test-EnabledFlag (Get-ProcessEnvironmentValue "RXYCODE_SKIP_BUN_INSTALL")

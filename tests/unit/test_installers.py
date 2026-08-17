@@ -130,6 +130,9 @@ def test_installer_sources_are_pinned_and_do_not_pipe_remote_code():
     assert "curl -" not in sh_text or "--output" in sh_text
     assert "RXYCODE_INSTALL_DRY_RUN" in ps_text
     assert "RXYCODE_INSTALL_DRY_RUN" in sh_text
+    assert "RXYCODE_NO_MODIFY_PATH" in ps_text
+    assert "RXYCODE_NO_MODIFY_PATH" in sh_text
+    assert "installation failed: uv could not update PATH" not in sh_text
     assert 'Add("--from")' not in ps_text
     assert "tool install --force --from" not in sh_text
 
@@ -333,6 +336,56 @@ def test_shell_uses_fake_uv_with_force_and_no_path_update(tmp_path: Path):
     assert calls[0][:3] == ["tool", "install", "--force"]
     assert Path(calls[0][3]).name == source.name
     assert "Run 'rxycode'" in result.stdout
+
+
+def test_shell_update_shell_failure_is_warning_not_fatal(tmp_path: Path):
+    shell = _posix_shell()
+    if shell is None:
+        pytest.skip("POSIX sh is not installed")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    log_path = tmp_path / "uv.jsonl"
+    fake_bin = tmp_path / "fake-bin"
+    helper = _write_fake_uv(fake_bin, log_path)
+    env = _base_env(tmp_path)
+    env.pop("RXYCODE_NO_MODIFY_PATH", None)
+    env.update(
+        {
+            "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+            "RXYCODE_SOURCE": str(source),
+            "RXYCODE_UV_LOG": str(log_path),
+            "RXYCODE_TEST_PYTHON": sys.executable,
+            "RXYCODE_FAKE_UV_HELPER": str(helper),
+            "RXYCODE_FAKE_UV_EXIT": "0",
+        }
+    )
+    helper.write_text(
+        "from __future__ import annotations\n"
+        "import json, os, sys\n"
+        "with open(os.environ['RXYCODE_UV_LOG'], 'a', encoding='utf-8') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if len(sys.argv) >= 3 and sys.argv[1:3] == ['tool', 'update-shell']:\n"
+        "    raise SystemExit(1)\n"
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [shell, str(SHELL_INSTALLER), "--force"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Warning: uv could not update PATH" in result.stderr
+    assert "RXYCODE_NO_MODIFY_PATH=1" in result.stderr
+    assert "RxyCode is installed" in result.stdout
+    calls = _read_uv_calls(log_path)
+    assert calls[0][:3] == ["tool", "install", "--force"]
+    assert calls[1][:2] == ["tool", "update-shell"]
 
 
 def test_shell_dry_run_does_not_execute_uv(tmp_path: Path):

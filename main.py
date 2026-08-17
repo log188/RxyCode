@@ -681,13 +681,17 @@ def gui(desktop_dir):
             proc.wait(timeout=5)
         return
 
-    # Dev fallback: run the desktop-app via npm.
+    # Dev fallback: run the desktop-app via npm (source checkout only).
+    # Wheel / uv / install.sh do not ship Electron; say so instead of
+    # implying a CLI install is enough.
     app_dir = os.path.join(_frontend_dir(), "desktop-app")
     if not os.path.exists(os.path.join(app_dir, "package.json")):
         raise click.ClickException(
-            "Desktop app sources are missing (frontend/desktop-app). "
-            "Reinstall RxyCode or run from the source checkout. "
-            "Or place a packaged desktop build in ~/.rxycode/desktop."
+            "Desktop is not installed. The CLI package does not include the Electron app.\n"
+            "Download the Desktop build for your OS from:\n"
+            f"  https://github.com/xin-yi33/RxyCode/releases/tag/v{__version__}\n"
+            "Windows setup.exe installs to ~/.rxycode/desktop so `rxycode gui` works.\n"
+            "Or unpack the portable zip and pass --desktop-dir, or set RXYCODE_DESKTOP_DIR."
         )
     _log.info("Launching desktop from source", extra={"app_dir": app_dir})
     npm_exe = _npm_executable()

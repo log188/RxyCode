@@ -7,7 +7,7 @@
  *   resources/runtime/
  *     manifest.json          platform/arch/version metadata
  *     python/                relocatable Python install (python.exe on win32)
- *     app/                   vendored RxyCode 1.2.6 source (appserver/__main__.py)
+ *     app/                   vendored RxyCode source (appserver/__main__.py)
  *
  * The main process prefers this bundled runtime when present and falls back
  * to the development layout (python on PATH + repo root) otherwise.

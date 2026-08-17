@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { windowsVersionedDllName } from './prepare-runtime.mts'
 
 function fail(message: string): never {
   console.error(`RUNTIME_VERIFY_FAIL ${message}`)
@@ -52,6 +53,15 @@ if (!existsSync(join(appDirStaged, 'appserver', '__main__.py'))) {
 
 const version = spawnSync(pythonExe, ['-V'], { encoding: 'utf8', timeout: 30_000 })
 if (version.status !== 0) fail(`python -V failed: ${version.stderr}`)
+if (platform === 'win32') {
+  const dllName = windowsVersionedDllName(version.stdout.trim() || manifest.pythonVersion)
+  if (dllName === null || !existsSync(join(runtimeDir, 'python', dllName))) {
+    fail(
+      `Windows runtime missing ${dllName ?? 'python3XY.dll'} next to python.exe; ` +
+        'the stub python3.dll cannot start appserver on a machine without system CPython'
+    )
+  }
+}
 
 const imports = spawnSync(pythonExe, ['-c', 'import appserver; print("appserver-ok")'], {
   cwd: appDirStaged,

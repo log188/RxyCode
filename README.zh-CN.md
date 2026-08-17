@@ -70,9 +70,11 @@ curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.10/install.sh
 rxycode
 ```
 
-安装脚本会在需要时引导安装 `uv`，创建隔离环境，并安装钉死的 **`v1.2.10`**。
+安装脚本会在需要时引导安装 `uv`，创建隔离环境，并安装钉死的 **`v1.2.10`**。这是 **CLI / OpenTUI** 包，不包含 Electron Desktop。
 
-**下载说明：** 只有最新版（**`v1.2.10`**）提供可安装的 wheel/sdist。更早的 GitHub Release 仍保留说明，但不提供安装包。
+设置 `RXYCODE_NO_MODIFY_PATH=1` 可跳过改 PATH。PATH 更新失败只警告，安装仍算成功。
+
+**下载说明：** 最新版（**`v1.2.10`**）同时提供 CLI 的 wheel/sdist **以及** Desktop 安装包（Windows setup.exe / 便携 zip、macOS dmg、Linux AppImage）。GitHub 的 “Source code” zip/tar.gz 是完整前后端源码，用来自己构建，不是开箱即用的 Desktop。更早的 GitHub Release 仍保留说明，但不提供安装包。
 
 ### 方式二：一次性运行
 
@@ -110,7 +112,7 @@ docker compose run --rm tui    # Interactive TUI (needs TTY)
 |------|----------|
 | `rxycode` 或 `python -m RxyCode` | 默认 **OpenTUI** |
 | `rxycode --version` | 打印包版本，不初始化运行时 |
-| `rxycode gui` | **Desktop** Electron 应用 |
+| `rxycode gui` | 仅在已安装 Desktop 构建后打开（CLI/`uv` 安装不带 Electron） |
 | `rxycode --api` | 只起 API（`api_server.py`） |
 | `RXYCODE_TUI=ink rxycode` | Ink 回退 TUI |
 
@@ -123,7 +125,15 @@ OpenTUI 和核心之间是 **stdio JSON-RPC**：前端拉起 `python -m appserve
 
 ## Desktop GUI
 
-`rxycode gui` 启动 Electron 应用。任务区底部是 Composer。点 `+` 会打开：
+Desktop 需要从 [GitHub Releases](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) **单独下载**：
+
+| 系统 | 资源 |
+|------|------|
+| Windows | `rxycode-desktop-1.2.10-setup.exe`（安装包）或 `RxyCode.Desktop-1.2.10-win.zip`（便携包） |
+| macOS | `.dmg`（未签名） |
+| Linux | `.AppImage` |
+
+`rxycode gui` 只会启动已经装好的 Desktop（`~/.rxycode/desktop`、`RXYCODE_DESKTOP_DIR` 或 `--desktop-dir`）。只装 CLI 无法打开桌面端。任务区底部是 Composer。点 `+` 会打开：
 
 | 菜单项 | 作用 |
 |--------|------|
