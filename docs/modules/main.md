@@ -13,6 +13,7 @@ and starts the API server.
 - `rxycode --api`: Start the API server only
 - `rxycode gui`: Launch Desktop if a Desktop build is already installed (`~/.rxycode/desktop`, `RXYCODE_DESKTOP_DIR`, or `--desktop-dir`). The CLI wheel does not ship Electron; download setup.exe / zip / dmg / AppImage from GitHub Releases
 - `rxycode config`: Manage model configuration
+- `rxycode config add-model <id> <provider-model-id> --base-url <url>`: Add a model; API key comes from `RXYCODE_API_KEY`
 - `rxycode config model-limits`: Inspect/set per-model output limits (`inspect` / `set-auto`)
 
 The console script is declared in `pyproject.toml` and implemented by `entrypoint.py`. `_package_root/RxyCode/` provides the stable module bridge while the existing `RxyCode.RxyCode1_1_0.*` import contract remains intact.

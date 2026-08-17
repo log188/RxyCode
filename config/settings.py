@@ -437,7 +437,9 @@ def get_active_model_config(cfg: Optional[dict] = None) -> dict:
             name = available[0]
         else:
             raise ValueError(
-                "No model configured. Run: python -m RxyCode config add-model"
+                "No model configured. In the TUI run /addmodel, or: "
+                "rxycode config add-model <id> <provider-model-id> "
+                "--base-url <url> (API key from RXYCODE_API_KEY)."
             )
     return resolve_model_config(models[name])
 

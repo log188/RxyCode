@@ -142,6 +142,12 @@ def test_release_waits_for_cross_platform_installed_smoke_tests():
     publish_commands = "\n".join(
         step.get("run", "") for step in jobs["publish"]["steps"]
     )
+    release_text = (PROJECT_ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "frontend/desktop-app/dist/*.dmg" in release_text
+    assert "frontend/desktop-app/dist/*.zip" in release_text
+    assert release_text.count("frontend/desktop-app/dist/*.zip") >= 2
     assert "python -m build --no-isolation" in build_commands
     assert "python -m twine check dist/*" in build_commands
     assert "gh release create" in publish_commands

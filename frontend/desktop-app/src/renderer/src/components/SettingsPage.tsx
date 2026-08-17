@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useDiagnostics, type UpdateStatus } from '../../../platform/index.mts'
 import type { UseModelsResult } from '../hooks/useModels'
 import type { ModelEntry } from '../hooks/useModels'
+import { modelsUnavailableCopy } from '../lib/modelAvailability.mts'
 import { groupModelsByProvider } from '../lib/modelPresentation.mts'
 import type { DesktopLanguage, PermissionMode, ThemePreference } from '../lib/desktopPreferences.mts'
 
@@ -45,10 +46,18 @@ const UPDATE_STATUS_LABELS: Record<UpdateStatus, string> = {
   error: '出错'
 }
 
-function BlockedPanel({ title, detail }: { title: string; detail: string }): React.JSX.Element {
+function UnavailablePanel({
+  title,
+  detail,
+  blockedPrerequisite
+}: {
+  title: string
+  detail: string
+  blockedPrerequisite: boolean
+}): React.JSX.Element {
   return (
     <div className="blocked-panel">
-      <span className="blocked-badge">BLOCKED_PREREQUISITE</span>
+      {blockedPrerequisite ? <span className="blocked-badge">BLOCKED_PREREQUISITE</span> : null}
       <p className="blocked-title">{title}</p>
       <p className="blocked-detail">{detail}</p>
     </div>
@@ -347,16 +356,24 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           {tab === 'model' && (
             <section className="settings-panel">
               <h2>模型</h2>
-              {!props.models.supported ? (
+              {props.models.loading && !props.models.supported ? (
+                <p className="settings-hint">加载中…</p>
+              ) : !props.models.supported ? (
                 <>
-                  <BlockedPanel
-                    title="模型管理不可用（旧版 appserver）"
-                    detail="当前 appserver 未提供 models/* JSON-RPC 方法。请升级后端到支持 Phase 4 D5 的版本后，再从此处管理模型。"
+                  <UnavailablePanel
+                    {...modelsUnavailableCopy(
+                      props.models.unavailableReason ?? 'error',
+                      props.models.error,
+                      'models'
+                    )}
                   />
-                  <BlockedPanel
-                    title="Phase 3 上限来源摘要"
-                    detail="resolved_max_tokens / limit_source / context_window 由后端 models/list 提供；旧版 appserver 无此字段时此处不可用。"
-                  />
+                  {props.models.unavailableReason === 'method-not-found' ? (
+                    <UnavailablePanel
+                      title="Phase 3 上限来源摘要"
+                      detail="resolved_max_tokens / limit_source / context_window 由后端 models/list 提供；旧版 appserver 无此字段时此处不可用。"
+                      blockedPrerequisite
+                    />
+                  ) : null}
                 </>
               ) : (
                 <div className="models-list">
@@ -424,10 +441,15 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           {tab === 'apikey' && (
             <section className="settings-panel">
               <h2>API Key</h2>
-              {!props.models.supported ? (
-                <BlockedPanel
-                  title="API Key 管理不可用（旧版 appserver）"
-                  detail="当前 appserver 未提供 credentials/* JSON-RPC 方法。密钥由后端 credential_store 加密存储（Windows DPAPI），桌面端只提交、不回显。"
+              {props.models.loading && !props.models.supported ? (
+                <p className="settings-hint">加载中…</p>
+              ) : !props.models.supported ? (
+                <UnavailablePanel
+                  {...modelsUnavailableCopy(
+                    props.models.unavailableReason ?? 'error',
+                    props.models.error,
+                    'credentials'
+                  )}
                 />
               ) : (
                 <div className="apikey-list">

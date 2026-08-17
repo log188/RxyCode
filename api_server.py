@@ -438,11 +438,8 @@ def _init_agent():
 
 def _do_init():
     """Actual agent initialization (called under _init_lock)."""
-    import os
-    # Set working directory to RxyCode project root
-    _project_root = os.path.dirname(os.path.abspath(__file__))
-    os.chdir(_project_root)
-
+    # Keep the caller's cwd. A shipped `rxycode --api` must write into the
+    # user's project, not site-packages / the RxyCode checkout.
     from .config.settings import load_config
     from .utils.i18n import i18n
 

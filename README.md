@@ -120,6 +120,7 @@ docker compose run --rm tui    # Interactive TUI (needs TTY)
 2. If the model list is empty, OpenTUI shows a welcome hint and opens `/addmodel` (credentials are masked).
 3. If at least one model is already in `~/.RxyCode/config.yaml`, there is no extra hint.
 4. Type a natural-language task. Example: write a single-file `click-counter.html` in the current folder.
+5. Headless (`rxycode --api`): set `RXYCODE_API_KEY` and run `rxycode config add-model <id> <provider-model-id> --base-url <url>`. The key is never accepted on the command line.
 
 OpenTUI talks to the core over **stdio JSON-RPC**: the frontend spawns `python -m appserver`, which hosts `Session` → `AgentV2`. You see streaming tokens, tool calls, approval prompts when needed, and a final answer.
 

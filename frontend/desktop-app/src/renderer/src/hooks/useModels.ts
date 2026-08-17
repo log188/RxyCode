@@ -8,6 +8,10 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import type { ProtocolClient } from '@rxycode/protocol-client'
+import {
+  classifyModelsListFailure,
+  type ModelsUnavailableReason
+} from '../lib/modelAvailability.mts'
 
 export interface ModelEntry {
   id: string
@@ -64,6 +68,7 @@ export interface UseModelsResult {
   supported: boolean
   loading: boolean
   error: string | null
+  unavailableReason: ModelsUnavailableReason | null
   snapshot: ModelsSnapshot | null
   refresh(): Promise<void>
   setActive(id: string): Promise<boolean>
@@ -93,11 +98,21 @@ export function useModels({
 }: UseModelsOptions): UseModelsResult {
   const [supported, setSupported] = useState(false)
   const [loading, setLoading] = useState(() => client !== null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(client === null ? 'appserver not connected' : null)
+  const [unavailableReason, setUnavailableReason] = useState<ModelsUnavailableReason | null>(
+    client === null ? 'not-connected' : null
+  )
   const [snapshot, setSnapshot] = useState<ModelsSnapshot | null>(null)
 
   const refresh = useCallback(async () => {
-    if (client === null) return
+    if (client === null) {
+      setSupported(false)
+      setSnapshot(null)
+      setUnavailableReason('not-connected')
+      setError('appserver not connected')
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -107,15 +122,16 @@ export function useModels({
         30_000
       )) as Record<string, unknown>
       setSupported(true)
+      setUnavailableReason(null)
       setSnapshot({
         models: (list.models ?? []) as ModelEntry[],
         active: String(list.active ?? ''),
         recent: (list.recent ?? []) as string[]
       })
     } catch (e) {
-      // method-not-found / pre-D5 server: keep the BLOCKED panel visible.
       setSupported(false)
       setSnapshot(null)
+      setUnavailableReason(classifyModelsListFailure(e, true))
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
@@ -294,6 +310,7 @@ export function useModels({
     supported,
     loading,
     error,
+    unavailableReason,
     snapshot,
     refresh,
     setActive,

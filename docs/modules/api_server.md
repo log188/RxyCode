@@ -13,7 +13,8 @@ headless core and the same typed `protocol/` schema.
 - FastAPI with SSE (Server-Sent Events) for streaming responses
 - Binds to IPv4 loopback (`127.0.0.1`) on port 8765 by default
 - Launched by main.py in a background thread (alongside the Ink TUI); can run
-  standalone with `rxycode --api`
+  standalone with `rxycode --api`. Initialization keeps the process cwd so file
+  tools write into the caller's project, not the installed package tree.
 - Requests enter the agent through the headless `Session` facade
   (`core/session.py`) rather than calling `AgentV2` directly
 - File size: 2,029 lines. Docstring:

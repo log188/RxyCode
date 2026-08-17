@@ -15,6 +15,10 @@ Manages all RxyCode configuration: model settings, API keys, active model select
 | model_capabilities.py | `ModelCapabilities`/`UsageFieldMap`/`ModelPricing` dataclasses consumed by every provider |
 | agents/ | Built-in subagent definition files (`explore.json`, `general.json`, `reviewer.md`, `scout.yaml`) loaded by `core/subagents/config_loader.py` |
 
+Headless CLI: `rxycode config add-model <id> <provider-model-id> --base-url <url>`
+reads the API key from `RXYCODE_API_KEY` (never from argv). Empty config errors
+point at this command or the TUI `/addmodel` flow, not a missing subcommand.
+
 `add_model()` accepts optional `provider_id` and `provider_name` metadata for
 grouping in `/model`. `onboard_models_batch()` adds multiple models in one pass;
 when `skip_probe=True` (preset/custom discover path) it never calls

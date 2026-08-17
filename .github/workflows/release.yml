@@ -218,6 +218,7 @@ jobs:
             script: build:mac
             glob: |
               frontend/desktop-app/dist/*.dmg
+              frontend/desktop-app/dist/*.zip
             find: '-name "*.dmg" -o -name "*.zip"'
           - os: ubuntu-latest
             label: linux-appimage

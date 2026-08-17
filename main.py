@@ -715,13 +715,35 @@ def gui(desktop_dir):
 @click.argument("name", default="")
 @click.argument("extra", default="")
 @click.option("--dry-run", is_flag=True, default=False, help="Dry-run mode for model-limits migration.")
-def config(subcommand, name, extra, dry_run):
-    """Manage model configuration."""
+@click.option("--base-url", default="", help="Provider API root for add-model.")
+def config(subcommand, name, extra, dry_run, base_url):
+    """Manage model configuration.
+
+    Subcommands: list, add-model, test-model, set-active, remove, model-limits.
+    add-model reads the API key from RXYCODE_API_KEY, never from argv.
+    """
     from .config import model_manager
     from .config.settings import load_config
 
     if subcommand == "model-limits":
         return _config_model_limits(name, extra, dry_run=dry_run)
+    if subcommand == "add-model":
+        url = (base_url or "").strip()
+        if not name or not extra or not url:
+            raise click.ClickException(
+                "Usage: rxycode config add-model <id> <provider-model-id> "
+                "--base-url <url>\n"
+                "API key is read from RXYCODE_API_KEY (not from the command line)."
+            )
+        api_key = (os.environ.get("RXYCODE_API_KEY") or "").strip()
+        if not api_key:
+            raise click.ClickException("Set RXYCODE_API_KEY before add-model.")
+        try:
+            model_manager.add_model(name, api_key, url, model_name=extra)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        print(f"Added {name} ({extra}) @ {url}")
+        return
     if subcommand == "list":
         cfg = load_config()
         models = cfg.get("models", {})
@@ -755,7 +777,7 @@ def config(subcommand, name, extra, dry_run):
         else:
             print(f"Model '{name}' not found")
     else:
-        print("Subcommands: list, test-model, set-active, remove, model-limits")
+        print("Subcommands: list, add-model, test-model, set-active, remove, model-limits")
 
 
 def _config_model_limits(action: str, model_name: str, *, dry_run: bool = False) -> None:
