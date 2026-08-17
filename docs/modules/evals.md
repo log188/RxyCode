@@ -157,7 +157,6 @@ Baselines live in `evals/baselines/` as JSON snapshots from `SuiteReport.to_dict
 
 - After a deliberate harness or task change that should shift scores
 - After a model switch that is the new production target
-- Via nightly CI (`evals-nightly` job) on schedule
 
 **Do not** update baselines to hide regressions.
 
@@ -166,16 +165,20 @@ Baselines live in `evals/baselines/` as JSON snapshots from `SuiteReport.to_dict
 | When | What runs |
 |------|-----------|
 | Every PR | `python scripts/lint_eval_tasks.py` (in `lint` job) |
-| Weekly schedule / manual `run_live` | `evals-nightly` compares agent run vs `latest-agent.json` |
 
-Evals with real LLM calls are **not** in the PR gate (cost + latency).
+Evals with real LLM calls are **not** in GitHub Actions (they need a local API
+key). Run them on a machine you control:
+
+```powershell
+python -m evals.cli run --backend agent --compare-baseline evals/baselines/latest-agent.json
+```
 
 ## Dependencies
 
 - **Internal**: `core/agent_v2.py`, `core/session_runtime.py`, `config/settings.py`
 - **External**: `langchain_openai`, `pyyaml`
 
-Unit tests for the harness live in `tests/test_core/test_evals_runner.py` and `tests/test_prompt_registry.py`. Full eval runs require API credentials and are executed explicitly or via nightly CI.
+Unit tests for the harness live in `tests/test_core/test_evals_runner.py` and `tests/test_prompt_registry.py`. Full eval runs require API credentials on a local machine; they are not executed on GitHub Actions.
 ## A10: Per-Model Comparison Matrix (2026-08-06)
 
 `--models <id1,id2,...>` runs a full 17/19-task suite per model and saves per-model baselines; `--models-report <DATE>` regenerates the comparison matrix from existing baselines without re-running (see PHASE-A §A10).

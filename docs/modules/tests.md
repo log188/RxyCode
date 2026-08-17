@@ -126,7 +126,9 @@ $env:RXYCODE_LIVE_MODEL = "<model-id>"
 python -m pytest tests/live -m live -v
 ```
 
-不要把 key 写入 fixture、文档、命令历史 artifact 或仓库。GitHub Actions 中使用 `RXYCODE_LIVE_API_KEY` secret；CI 会在收集 live 测试前校验它并在缺失时明确失败。本地未显式启用 live 或未配置 key 时，用例仍自动报告 skip。
+不要把 key 写入 fixture、文档、命令历史 artifact、仓库，或 GitHub Actions
+secret。Live 测试只在本机显式启用；CI 不注入 `RXYCODE_LIVE_API_KEY`。本地未显式
+启用 live 或未配置 key 时，用例仍自动报告 skip。
 
 ## 编写规则
 

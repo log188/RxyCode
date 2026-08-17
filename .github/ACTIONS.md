@@ -5,8 +5,7 @@ the installed application instead of a checkout-specific import shim.
 
 ## Continuous integration
 
-`workflows/ci.yml` runs on pushes, pull requests, and manual dispatches. The
-weekly schedule is reserved for the opt-in live-provider lane.
+`workflows/ci.yml` runs on pushes, pull requests, and manual dispatches.
 
 Both Linux and Windows jobs install runtime and development dependencies, then
 install the checkout with:
@@ -32,8 +31,10 @@ The existing test lanes remain in place:
 - Windows runs backend contract/system tests, the frontend build and Vitest
   suite, the cross-shell installer/package contracts, and the real ConPTY
   end-to-end tests.
-- Live-provider tests run only on the weekly schedule or a manual dispatch with
-  `run_live=true`; missing credentials fail before a network call.
+
+GitHub Actions does not receive provider API keys. Live-provider and eval-suite
+runs stay local (`RXYCODE_RUN_LIVE_TESTS=1` plus a local key). Do not store
+`sk-` / `ark-` keys as repository secrets.
 
 All jobs upload their existing diagnostics even when a test step fails.
 

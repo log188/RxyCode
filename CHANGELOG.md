@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as an AgentV2 quality regression (eval gate skips; live test skips).
 - Provider 401/quota text no longer echoes `sk-` / `ark-` keys (including
   asterisk-masked forms) into CI logs, agent answers, or eval artifacts.
+- GitHub Actions no longer stores or injects `RXYCODE_LIVE_API_KEY`. Live and
+  eval suite runs stay on a local machine.
 
 ---
 

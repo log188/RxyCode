@@ -4,21 +4,13 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      run_live:
-        description: Run the paid/networked live provider test
-        required: false
-        default: false
-        type: boolean
-  schedule:
-    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+  cancel-in-progress: true
 
 env:
   PYTHON_VERSION: "3.12"
@@ -27,7 +19,6 @@ env:
 jobs:
   opentui:
     name: OpenTUI (default frontend)
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -78,7 +69,6 @@ jobs:
 
   protocol-client:
     name: Protocol client
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -109,7 +99,6 @@ jobs:
 
   lint:
     name: Lint (ruff)
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -129,7 +118,6 @@ jobs:
 
   linux-backend:
     name: Linux backend layers (py${{ matrix.python-version }})
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -245,7 +233,6 @@ jobs:
 
   windows-contract-system:
     name: Windows contracts, frontend, and ConPTY
-    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 35
     env:
@@ -378,132 +365,5 @@ jobs:
             frontend/artifacts/conpty.log
             artifacts/opentui-model-enter.log
             artifacts/runtime
-          if-no-files-found: warn
-          retention-days: 14
-
-  live-provider:
-    name: Opt-in live provider
-    if: >-
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_live)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      RXYCODE_RUN_LIVE_TESTS: "1"
-      RXYCODE_LIVE_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
-      RXYCODE_LIVE_MODEL: ${{ vars.RXYCODE_LIVE_MODEL || 'deepseek-v4-flash' }}
-      RXYCODE_LIVE_BASE_URL: ${{ vars.RXYCODE_LIVE_BASE_URL || 'https://opencode.ai/zen/go/v1' }}
-      RXYCODE_TEST_ROOT: ${{ github.workspace }}/artifacts/runtime
-      RXYCODE_TEST_RUN_ID: live
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-
-      - name: Install backend dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-dev.txt
-          python -m pip install -e . --no-deps
-
-      - name: Require live provider credentials
-        run: |
-          if [ -z "${RXYCODE_LIVE_API_KEY}" ]; then
-            echo "::warning::RXYCODE_LIVE_API_KEY is not configured; skipping live provider tests."
-            exit 0
-          fi
-          python scripts/require_live_credentials.py
-
-      - name: Run live tests
-        run: |
-          if [ -z "${RXYCODE_LIVE_API_KEY}" ]; then
-            echo "Live provider tests skipped (no credentials)."
-            exit 0
-          fi
-          mkdir -p artifacts
-          python -m pytest tests/live -m live -v --tb=short \
-            --junitxml=artifacts/live.xml
-
-      - name: Scan live diagnostics for credentials
-        id: scan_live_diagnostics
-        if: always()
-        run: python scripts/scan_secrets.py .
-
-      - name: Upload live diagnostics
-        if: ${{ always() && steps.scan_live_diagnostics.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: live-provider-report
-          path: artifacts/live.xml
-          if-no-files-found: warn
-          retention-days: 7
-
-  evals-nightly:
-    name: Evals vs baseline
-    if: >-
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_live)
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    env:
-      RXYCODE_TEST_ROOT: ${{ github.workspace }}/artifacts/runtime
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-
-      - name: Install backend dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-dev.txt
-          python -m pip install -e . --no-deps
-
-      - name: Prepare eval model config
-        id: prepare_eval_config
-        env:
-          RXYCODE_DATA_DIR: ${{ runner.temp }}/rxycode-eval-home
-          RXYCODE_LIVE_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
-          RXYCODE_EVAL_MODEL: deepseek-v4-flash
-          RXYCODE_EVAL_BASE_URL: https://opencode.ai/zen/go/v1
-        run: |
-          if [ -z "${RXYCODE_LIVE_API_KEY}" ]; then
-            echo "::warning::RXYCODE_LIVE_API_KEY is not configured; skipping eval suite."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          python scripts/prepare_eval_ci_config.py
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-
-      - name: Run eval suite against baseline
-        if: steps.prepare_eval_config.outputs.skip != 'true'
-        env:
-          RXYCODE_DATA_DIR: ${{ runner.temp }}/rxycode-eval-home
-          OPENAI_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
-        run: |
-          python -m evals.cli run --backend agent \
-            --compare-baseline evals/baselines/latest-agent.json
-
-      - name: Upload eval report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: eval-report
-          path: |
-            evals/results/
-            evals/baselines/
           if-no-files-found: warn
           retention-days: 14
