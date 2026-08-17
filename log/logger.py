@@ -25,6 +25,8 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Iterator
 
+from .log_helpers import redact_sensitive
+
 # 每次启动生成 8 字符 runID
 RUN_ID = uuid.uuid4().hex[:8]
 _CURRENT_RUN_ID: ContextVar[str | None] = ContextVar(
@@ -79,7 +81,7 @@ class KeyValueFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.created))
         level = record.levelname
-        msg = record.getMessage()
+        msg = redact_sensitive(record.getMessage())
 
         # 基础行
         run_id = getattr(record, "run_id", None) or get_current_run_id()
@@ -98,14 +100,14 @@ class KeyValueFormatter(logging.Formatter):
                 continue
             if key.startswith("_"):
                 continue
-            extras.append(f"{key}={_quote(str(value))}")
+            extras.append(f"{key}={_quote(redact_sensitive(str(value)))}")
 
         if extras:
             line += " " + " ".join(extras)
 
         # 异常信息
         if record.exc_info and record.exc_info[1] is not None:
-            line += "\n" + self.formatException(record.exc_info)
+            line += "\n" + redact_sensitive(self.formatException(record.exc_info))
 
         return line
 

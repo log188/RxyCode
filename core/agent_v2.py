@@ -83,6 +83,7 @@ from RxyCode.RxyCode1_1_0.execution.tool_journal import (
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
 from RxyCode.RxyCode1_1_0.log.log_helpers import (
     classify_agent_result,
+    redact_sensitive,
     trace_status_for_result,
 )
 from RxyCode.RxyCode1_1_0.log.logger import get_bound_run_id, run_id_context
@@ -3393,7 +3394,7 @@ class AgentV2:
             # Without this, a final 4xx is reduced to a generic failed tool
             # result and the root cause cannot be distinguished from a slow
             # stream. Truncate and avoid request/prompt data in the log.
-            detail = str(exc).replace("\r", " ").replace("\n", " ")
+            detail = redact_sensitive(str(exc).replace("\r", " ").replace("\n", " "))
             if len(detail) > 1000:
                 detail = detail[:1000] + "..."
             _logger.error(

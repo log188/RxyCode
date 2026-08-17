@@ -54,6 +54,22 @@ class TestLogHelpers:
         assert isinstance(ERROR_PREVIEW_LEN, int)
         assert ERROR_PREVIEW_LEN > 0
 
+    def test_redact_sensitive_strips_sk_ark_and_provider_masked_keys(self):
+        from RxyCode.RxyCode1_1_0.log.log_helpers import redact_sensitive
+
+        sk = "sk-" + "A" * 32
+        ark = "ark-" + "B" * 32
+        masked = "sk-" + "C" * 5 + "*" * 24 + "D" * 4
+        out = redact_sensitive(
+            f"Incorrect API key provided: {sk}; also {ark}; masked {masked}"
+        )
+        assert sk not in out
+        assert ark not in out
+        assert masked not in out
+        assert "sk-" not in out
+        assert "ark-" not in out
+        assert out.count("[REDACTED]") >= 3
+
     def test_log_chat_request_truncates_long_message(self):
         import logging
         from io import StringIO
@@ -79,6 +95,25 @@ class TestKeyValueFormatter:
         )
         result = formatter.format(record)
         assert "test message" in result
+
+    def test_format_redacts_provider_keys_in_message(self):
+        from RxyCode.RxyCode1_1_0.log.logger import KeyValueFormatter
+
+        leaked = "sk-" + "A" * 32
+        formatter = KeyValueFormatter()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.ERROR,
+            pathname="test.py",
+            lineno=1,
+            msg="llm_stream_error detail=%s",
+            args=(f"Incorrect API key provided: {leaked}",),
+            exc_info=None,
+        )
+        result = formatter.format(record)
+        assert leaked not in result
+        assert "sk-" not in result
+        assert "[REDACTED]" in result
 
     def test_format_uses_bound_run_id_without_duplicate_field(self):
         from RxyCode.RxyCode1_1_0.log.logger import (

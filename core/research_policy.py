@@ -6,6 +6,8 @@ import ipaddress
 import re
 from urllib.parse import urlsplit, urlunsplit
 
+from RxyCode.RxyCode1_1_0.log.log_helpers import redact_sensitive
+
 
 @dataclass(frozen=True)
 class ResearchPolicy:
@@ -259,7 +261,8 @@ def get_research_policy(query: str) -> ResearchPolicy:
 
 
 def research_failure_message(detail: str = "") -> str:
-    suffix = f" Detail: {detail[:300]}" if detail else ""
+    safe = redact_sensitive(detail)[:300] if detail else ""
+    suffix = f" Detail: {safe}" if safe else ""
     return (
         "I could not verify the requested current information from external sources, "
         "so I will not guess or present stale knowledge as current." + suffix
@@ -267,7 +270,8 @@ def research_failure_message(detail: str = "") -> str:
 
 
 def research_prefetch_failure_note(detail: str = "") -> str:
-    suffix = f" Detail: {detail[:300]}" if detail else ""
+    safe = redact_sensitive(detail)[:300] if detail else ""
+    suffix = f" Detail: {safe}" if safe else ""
     return (
         "External research prefetch failed. Do not invent live facts or cite "
         "unverified URLs. Record the unavailable research honestly, then continue "

@@ -80,6 +80,8 @@ class TaskResult:
     tools_used: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        from RxyCode.RxyCode1_1_0.log.log_helpers import redact_sensitive
+
         return {
             "task_id": self.task_id,
             "category": self.category,
@@ -87,8 +89,8 @@ class TaskResult:
             "duration_s": round(self.duration_s, 3),
             "token_usage": self.token_usage,
             "judge_score": self.judge_score,
-            "error": self.error,
-            "agent_answer": self.agent_answer[:2000],
+            "error": redact_sensitive(self.error),
+            "agent_answer": redact_sensitive(self.agent_answer)[:2000],
             "check_details": self.check_details,
             "tools_used": self.tools_used,
         }
@@ -1142,7 +1144,9 @@ def main() -> int:
         status = "PASS" if r.passed else "FAIL"
         print(f"  [{status}] {r.task_id} [{r.category}] {r.duration_s:.1f}s")
         if r.error:
-            print(f"         error: {r.error[:120]}")
+            from RxyCode.RxyCode1_1_0.log.log_helpers import redact_sensitive
+
+            print(f"         error: {redact_sensitive(r.error)[:120]}")
 
     if args.tag:
         print(f"\nResults saved to: {RESULTS_DIR / f'{args.tag}.json'}")

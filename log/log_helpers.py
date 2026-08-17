@@ -23,8 +23,11 @@ PROMPT_PREVIEW_LEN = 300
 ANSWER_PREVIEW_LEN = 200
 ERROR_PREVIEW_LEN = 300
 
+# Real sk-/ark- tokens, plus provider-masked 401 forms (middle replaced by
+# a long run of asterisks). Do not put a live-looking token in this comment.
 _SECRET_PATTERNS = (
-    re.compile(r"\b(sk-[A-Za-z0-9_-]{16,})\b"),
+    re.compile(r"\b((?:sk|ark)-[A-Za-z0-9_-]{16,})\b"),
+    re.compile(r"\b((?:sk|ark)-[A-Za-z0-9_-]{4,}\*{8,}[A-Za-z0-9_-]*)\b"),
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)([^\s,;]+)"),
     re.compile(r"(?i)(\bbearer\s+)([^\s,;\"']+)"),
     re.compile(r"(?i)(api[_-]?key|token|secret|password)(\s*[=:]\s*)([^\s,;]+)"),
@@ -78,9 +81,10 @@ def redact_sensitive(value: object) -> str:
     """Return a log-safe string with common credential forms removed."""
     text = str(value)
     text = _SECRET_PATTERNS[0].sub("[REDACTED]", text)
-    text = _SECRET_PATTERNS[1].sub(r"\1[REDACTED]", text)
+    text = _SECRET_PATTERNS[1].sub("[REDACTED]", text)
     text = _SECRET_PATTERNS[2].sub(r"\1[REDACTED]", text)
-    return _SECRET_PATTERNS[3].sub(r"\1\2[REDACTED]", text)
+    text = _SECRET_PATTERNS[3].sub(r"\1[REDACTED]", text)
+    return _SECRET_PATTERNS[4].sub(r"\1\2[REDACTED]", text)
 
 
 def classify_agent_result(answer: str) -> tuple[str, str]:

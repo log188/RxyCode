@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Weekly scheduled CI no longer treats live-provider 401/quota/circuit-breaker
   as an AgentV2 quality regression (eval gate skips; live test skips).
+- Provider 401/quota text no longer echoes `sk-` / `ark-` keys (including
+  asterisk-masked forms) into CI logs, agent answers, or eval artifacts.
 
 ---
 

@@ -216,6 +216,17 @@ def test_research_failure_message_refuses_to_guess():
     assert "timed out" in message
 
 
+def test_research_failure_message_redacts_provider_keys():
+    leaked = "sk-" + "A" * 32
+    message = research_failure_message(
+        f"Error code: 401 Incorrect API key provided: {leaked}"
+    )
+    assert leaked not in message
+    assert "sk-" not in message
+    assert "[REDACTED]" in message
+    assert "401" in message
+
+
 @pytest.mark.parametrize(
     ("user_input", "expected_query"),
     [

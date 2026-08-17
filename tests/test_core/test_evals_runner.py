@@ -170,6 +170,21 @@ class TestTaskResult:
         assert d["token_usage"]["total"] == 15
         assert d["agent_answer"] == "answer text"
 
+    def test_to_dict_redacts_provider_keys(self):
+        leaked = "sk-" + "A" * 32
+        r = TaskResult(
+            task_id="t-secret",
+            category="feature",
+            passed=False,
+            error=f"Incorrect API key provided: {leaked}",
+            agent_answer=f"Detail: {leaked}",
+        )
+        d = r.to_dict()
+        assert leaked not in d["error"]
+        assert leaked not in d["agent_answer"]
+        assert "sk-" not in d["error"]
+        assert "sk-" not in d["agent_answer"]
+
     def test_to_dict_truncates_long_answer(self):
         r = TaskResult(
             task_id="t4",

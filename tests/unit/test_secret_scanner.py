@@ -42,6 +42,32 @@ def test_secret_scanner_allows_environment_references_and_placeholders(tmp_path)
     assert scan(tmp_path) == []
 
 
+def test_secret_scanner_ignores_ark_model_ids(tmp_path):
+    from RxyCode.RxyCode1_1_0.scripts.scan_secrets import scan
+
+    (tmp_path / "models.md").write_text(
+        "| `ark-doubao-seed-2.1-turbo` | `ark-glm-5.2` | `ark-minimax-m3` |\n",
+        encoding="utf-8",
+    )
+
+    assert scan(tmp_path) == []
+
+
+def test_secret_scanner_flags_ark_and_provider_masked_sk(tmp_path):
+    from RxyCode.RxyCode1_1_0.scripts.scan_secrets import scan
+
+    (tmp_path / "live.xml").write_text(
+        "Incorrect API key provided: sk-" + "A" * 5 + "*" * 24 + "Z" * 4 + "\n"
+        "api_key: ark-" + "B" * 32 + "\n",
+        encoding="utf-8",
+    )
+
+    assert sorted(scan(tmp_path)) == [
+        (Path("live.xml"), 1, "provider-token"),
+        (Path("live.xml"), 2, "provider-token"),
+    ]
+
+
 def test_secret_scanner_checks_uploaded_report_formats_and_bearer_tokens(tmp_path):
     from RxyCode.RxyCode1_1_0.scripts.scan_secrets import scan
 

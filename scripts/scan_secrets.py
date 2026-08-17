@@ -45,7 +45,9 @@ TEXT_SUFFIXES = {
 
 SECRET_RULES = {
     "provider-token": re.compile(
-        r"\b(?:sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|"
+        r"\b(?:(?:sk|ark)-[A-Za-z0-9_-]{20,}|"
+        r"(?:sk|ark)-[A-Za-z0-9_-]{4,}\*{8,}[A-Za-z0-9_-]*|"
+        r"AIza[0-9A-Za-z_-]{30,}|"
         r"ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|"
         r"AKIA[0-9A-Z]{16})\b"
     ),
