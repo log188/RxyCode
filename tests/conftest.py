@@ -28,6 +28,7 @@ if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
     import types as _types
 
     _checkout_root = Path(__file__).resolve().parent.parent
+    os.environ["RXYCODE_CHECKOUT_ROOT"] = str(_checkout_root)
     _editable_finder_types = ("_EditableFinder",)
     sys.meta_path = [
         finder

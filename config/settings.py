@@ -455,9 +455,9 @@ def get_model_config(model_name: str, cfg: Optional[dict] = None) -> dict:
 def concurrent_api_slots() -> int:
     """C4 switch: RXYCODE_CONCURRENT_API (PHASE-C §4.4).
 
-    ``0`` (default) — legacy global-serial behaviour: a single global slot
+    ``0`` (default) → legacy global-serial behaviour: a single global slot
     (``max_concurrent=1``), so any second run is rejected/queued exactly as
-    before.  ``N`` (N >= 1) — global cap N plus one slot per session.
+    before.  ``N`` (N >= 1) → global cap N plus one slot per session.
     Invalid/negative values fall back to ``0``.
     """
     raw = os.environ.get("RXYCODE_CONCURRENT_API", "0").strip()
@@ -466,3 +466,28 @@ def concurrent_api_slots() -> int:
     except ValueError:
         return 0
     return value if value > 0 else 0
+
+
+def eventbus_log_enabled() -> bool:
+    """E1 switch: RXYCODE_EVENTBUS_LOG (PHASE-E §5 E1 / 附录 A).
+
+    ``1`` (default) → the event log is persisted and replay works;
+    ``0`` → debug mode, no event log, replay raises ReplayUnavailableError.
+    """
+    return os.environ.get("RXYCODE_EVENTBUS_LOG", "1") != "0"
+
+
+def agent_parallel_limit() -> int:
+    """E5 switch: RXYCODE_AGENT_PARALLEL (PHASE-E §5 E5 / 附录 A).
+
+    Maximum concurrently running agents inside one session worker.
+    ``1`` (default) → legacy serial behaviour (any second spawn is denied).
+    ``N`` (N >= 1) → up to N agents may run in parallel.
+    Invalid values fall back to ``1``.
+    """
+    raw = os.environ.get("RXYCODE_AGENT_PARALLEL", "1").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 1
+    return value if value >= 1 else 1

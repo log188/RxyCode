@@ -38,7 +38,27 @@ def _bind_top_level_checkout_to_canonical_package() -> None:
     parent.RxyCode1_1_0 = package
 
 
+def _register_bare_core_alias() -> None:
+    """Make ``import core`` resolve to this checkout's canonical core package.
+
+    A few modules (``appserver/*``, ``tools/*``) use the bare ``from core...``
+    form.  Under a source checkout that works because the repo root is on
+    ``sys.path``; under an installed/editable package the canonical name is
+    ``RxyCode.RxyCode1_1_0.core`` and the bare name would load a second copy
+    of the same files (splitting module singletons such as the approval
+    broker).  Registering the alias keeps both spellings the same object.
+    """
+    if "core" in sys.modules:
+        return
+    try:
+        import RxyCode.RxyCode1_1_0.core as _core_pkg
+    except ImportError:
+        return
+    sys.modules["core"] = _core_pkg
+
+
 _bind_top_level_checkout_to_canonical_package()
+_register_bare_core_alias()
 
 from .server import AppServer
 
