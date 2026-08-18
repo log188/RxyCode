@@ -7,10 +7,10 @@
  * a vendored appserver entry point.
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { windowsVersionedDllName } from './prepare-runtime.mts'
+import { scriptContainsBuildMachinePath, windowsVersionedDllName } from './prepare-runtime.mts'
 
 function fail(message: string): never {
   console.error(`RUNTIME_VERIFY_FAIL ${message}`)
@@ -60,6 +60,18 @@ if (platform === 'win32') {
       `Windows runtime missing ${dllName ?? 'python3XY.dll'} next to python.exe; ` +
         'the stub python3.dll cannot start appserver on a machine without system CPython'
     )
+  }
+}
+
+const scriptDir = platform === 'win32' ? join(runtimeDir, 'python', 'Scripts') : join(runtimeDir, 'python', 'bin')
+if (existsSync(scriptDir)) {
+  for (const name of readdirSync(scriptDir)) {
+    const full = join(scriptDir, name)
+    const raw = readFileSync(full)
+    const sample = raw.subarray(0, Math.min(raw.length, 4096)).toString('latin1')
+    if (scriptContainsBuildMachinePath(sample)) {
+      fail(`staged console script ${name} still points at the build-machine interpreter`)
+    }
   }
 }
 

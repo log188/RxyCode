@@ -1,6 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { keepPythonFile, keepVendoredFile, windowsVersionedDllName } from './prepare-runtime.mts'
+import {
+  keepPythonFile,
+  keepVendoredFile,
+  rewritePosixConsoleScript,
+  rewriteWindowsLauncherShebang,
+  scriptContainsBuildMachinePath,
+  windowsVersionedDllName
+} from './prepare-runtime.mts'
 
 function win(src: string): boolean {
   return keepPythonFile('C:/Python', src, 'win32', false)
@@ -79,6 +86,30 @@ test('directory roots (bin/lib/Lib/DLLs) are always traversed', () => {
   // Pruned subtrees stay pruned even as directories.
   assert.equal(posixDir('/opt/python/lib/python3.14/test'), false)
   assert.equal(winDir('C:/Python/Lib/site-packages/pytest'), true)
+})
+
+test('rewritePosixConsoleScript replaces CI shebangs with a relocatable wrapper', () => {
+  const ci =
+    '#!/home/runner/work/RxyCode/RxyCode/frontend/desktop-app/build/runtime/linux-x64/python/bin/python3\n' +
+    'import sys\nfrom RxyCode.RxyCode1_1_0.entrypoint import main\n'
+  const rewritten = rewritePosixConsoleScript(ci)
+  assert.equal(scriptContainsBuildMachinePath(rewritten), false)
+  assert.match(rewritten, /realpath/)
+  assert.match(rewritten, /from RxyCode\.RxyCode1_1_0\.entrypoint import main/)
+  const already =
+    '#!/bin/sh\n\'\'\'exec\' "$(dirname -- "$(realpath -- "$0")")/python3.12" "$0" "$@"\n\' \'\'\'\n'
+  assert.equal(rewritePosixConsoleScript(already), already)
+})
+
+test('rewriteWindowsLauncherShebang replaces the CI python.exe path in place', () => {
+  const shebang = '#!D:\\a\\RxyCode\\RxyCode\\frontend\\desktop-app\\build\\runtime\\win32-x64\\python\\python.exe'
+  const payload = Buffer.from(`MZ....${shebang}\nfrom RxyCode.RxyCode1_1_0.entrypoint import main\n`, 'latin1')
+  const rewritten = rewriteWindowsLauncherShebang(payload)
+  assert.equal(rewritten.length, payload.length)
+  const text = rewritten.toString('latin1')
+  assert.equal(scriptContainsBuildMachinePath(text), false)
+  assert.match(text, /#!python\.exe/)
+  assert.match(text, /from RxyCode\.RxyCode1_1_0\.entrypoint import main/)
 })
 
 test('windowsVersionedDllName maps CPython X.Y to pythonXY.dll', () => {

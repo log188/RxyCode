@@ -76,6 +76,7 @@ rxycode gui
 - `rxycode-1.2.10-py3-none-any.whl`
 - `rxycode-1.2.10.tar.gz`
 - `rxycode-desktop-1.2.10-setup.exe`（Windows 安装版）
-- `rxycode-desktop-1.2.10-win.zip`（Windows 便携版）
+- `RxyCode.Desktop-1.2.10-win.zip`（Windows 便携版；解压后是 `RxyCode.Desktop-1.2.10-win/rxycode-desktop.exe`）
+- `RxyCode.Desktop-1.2.10-arm64-mac.zip`（macOS Apple Silicon 便携包）
 - `rxycode-desktop-1.2.10.dmg`（macOS，未签名）
 - `rxycode-desktop-1.2.10.AppImage`（Linux）
