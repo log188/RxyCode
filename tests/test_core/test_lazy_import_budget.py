@@ -38,12 +38,12 @@ def test_core_package_imports_without_cycle() -> None:
     import importlib
 
     modules = [
-        "core.session",
-        "core.graph",
-        "core.agent_v2",
-        "core.safety.audit",
-        "core.safety.policy",
-        "core.builtin_tool_registration",
+        "RxyCode.RxyCode1_1_0.core.session",
+        "RxyCode.RxyCode1_1_0.core.graph",
+        "RxyCode.RxyCode1_1_0.core.agent_v2",
+        "RxyCode.RxyCode1_1_0.core.safety.audit",
+        "RxyCode.RxyCode1_1_0.core.safety.policy",
+        "RxyCode.RxyCode1_1_0.core.builtin_tool_registration",
     ]
     for name in modules:
         importlib.import_module(name)
