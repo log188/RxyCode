@@ -13,6 +13,14 @@ from protocol.notifications import ErrorNotification, FinalAnswer, TokenUsage
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 
 
+@pytest.fixture
+def session_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path / "data"))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    return workspace
+
+
 class _FakeAgent:
     def __init__(self, answer: str = "ok", *, fail: bool = False):
         self._answer = answer
@@ -38,11 +46,11 @@ class _UsageAgent(_FakeAgent):
 
 
 @pytest.mark.asyncio
-async def test_session_prompt_emits_final_answer():
+async def test_session_prompt_emits_final_answer(session_workspace):
     emitted: list[BaseModel] = []
     session = Session(
         session_id="s1",
-        workspace_root=Path("/tmp/ws"),
+        workspace_root=session_workspace,
         emit=emitted.append,
         session_schema_version=3,
     )
@@ -64,12 +72,18 @@ async def test_session_prompt_emits_final_answer():
 
 
 @pytest.mark.asyncio
-async def test_session_prompt_forwards_provider_cache_usage_for_this_turn():
+async def test_session_prompt_forwards_provider_cache_usage_for_this_turn(
+    session_workspace,
+):
     """Desktop reports require a per-turn provider-cache metric, not globals."""
     token_stats.reset()
     try:
         emitted: list[BaseModel] = []
-        session = Session(session_id="s-cache", workspace_root=Path("/tmp/ws"), emit=emitted.append)
+        session = Session(
+            session_id="s-cache",
+            workspace_root=session_workspace,
+            emit=emitted.append,
+        )
 
         result = await session.prompt(_UsageAgent("cached"), "hi", mode="build", run_id="run-cache")
 
@@ -83,9 +97,9 @@ async def test_session_prompt_forwards_provider_cache_usage_for_this_turn():
 
 
 @pytest.mark.asyncio
-async def test_session_prompt_emits_error_on_exception():
+async def test_session_prompt_emits_error_on_exception(session_workspace):
     emitted: list[BaseModel] = []
-    session = Session(session_id="s1", workspace_root=Path("/tmp/ws"), emit=emitted.append)
+    session = Session(session_id="s1", workspace_root=session_workspace, emit=emitted.append)
     result = await session.prompt(
         _FakeAgent(fail=True),
         "hi",
@@ -144,9 +158,27 @@ def test_notification_to_sse_event_preserves_unreported_usage_as_null():
 
 def test_session_interrupt_delegates_to_agent():
     agent = _FakeAgent()
-    session = Session(session_id="s1", workspace_root=Path("/tmp/ws"), emit=lambda _: None)
+    session = Session(session_id="s1", workspace_root=Path("."), emit=lambda _: None)
     assert session.interrupt(agent) is True
     assert agent._cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_session_prompt_binds_workspace_for_tools(session_workspace):
+    """HTTP /chat must not write into the installed package tree."""
+    from RxyCode.RxyCode1_1_0.core.session_runtime import current_working_directory
+
+    seen: dict[str, Path] = {}
+
+    class _CwdAgent(_FakeAgent):
+        async def run(self, text: str, mode: str = "build") -> str:
+            seen["cwd"] = current_working_directory()
+            return await super().run(text, mode)
+
+    session = Session(session_id="ws-bind", workspace_root=session_workspace, emit=lambda _: None)
+    result = await session.prompt(_CwdAgent("ok"), "write hello", mode="build", run_id="run-ws")
+    assert result.status == "succeeded"
+    assert seen["cwd"] == session_workspace.resolve()
 
 
 def test_thinking_since_returns_delta():

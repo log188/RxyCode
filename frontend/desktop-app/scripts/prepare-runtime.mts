@@ -166,6 +166,42 @@ function keepSitePackages(parts: string[], name: string): boolean {
   return true
 }
 
+export function writeRelocatableRxycodeLaunchers(pythonRoot: string, platform: string): void {
+  // pip's Windows .exe launchers embed the build-machine python path
+  // (e.g. D:\a\RxyCode\...\python.exe). After the runtime is copied into a
+  // portable zip those launchers exit 1 with no output. Replace them with
+  // wrappers that resolve python next to the script.
+  if (platform === 'win32') {
+    const scripts = join(pythonRoot, 'Scripts')
+    mkdirSync(scripts, { recursive: true })
+    writeFileSync(
+      join(scripts, 'rxycode.cmd'),
+      '@echo off\r\n' +
+        'setlocal\r\n' +
+        'set "PY=%~dp0..\\python.exe"\r\n' +
+        'if not exist "%PY%" set "PY=%~dp0python.exe"\r\n' +
+        '"%PY%" -m RxyCode %*\r\n'
+    )
+    for (const name of ['rxycode.exe', 'rxycode-script.py']) {
+      const stale = join(scripts, name)
+      if (existsSync(stale)) rmSync(stale, { force: true })
+    }
+    return
+  }
+  const bin = join(pythonRoot, 'bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(
+    join(bin, 'rxycode'),
+    '#!/bin/sh\n' +
+      'DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n' +
+      'if [ -x "$DIR/python3" ]; then exec "$DIR/python3" -m RxyCode "$@"\n' +
+      'elif [ -x "$DIR/../bin/python3" ]; then exec "$DIR/../bin/python3" -m RxyCode "$@"\n' +
+      'else exec python3 -m RxyCode "$@"\n' +
+      'fi\n',
+    { mode: 0o755 }
+  )
+}
+
 export { keepPythonFile, keepSitePackages, keepVendoredFile }
 
 function keepVendoredFile(repo: string, src: string, isDirectory: boolean): boolean {
@@ -504,6 +540,7 @@ async function main(argv: string[]): Promise<void> {
         `error ${String(pip.error)}): ${pip.stderr}${pip.stdout}`
     )
   }
+  writeRelocatableRxycodeLaunchers(join(outDir, 'python'), platform)
 
   // 5) manifest + versions
   const pythonVersion = runPython(pythonExe, [

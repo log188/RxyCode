@@ -3043,6 +3043,8 @@ class AgentV2:
         output dict, so the OpenAI API receives it and provider-side KV
         caching is activated even in streaming mode.
         """
+        if max_tokens != 1:
+            await self._cancel_background_prewarm()
         client = self._openai_client()
         # Apply cache_control before conversion (was missing: _raw_stream
         # bypassed _apply_cache_control, so streaming calls never got the
@@ -3896,11 +3898,25 @@ class AgentV2:
         self._prewarm_last_attempt_at = now
         try:
             task = asyncio.create_task(self._prewarm_async())
+            self._prewarm_task = task
             task.add_done_callback(
                 lambda t: None if t.cancelled() else t.exception()
             )
         except RuntimeError:
             pass  # 无事件循环（同步上下文）——跳过预热，不阻塞
+
+    async def _cancel_background_prewarm(self) -> bool:
+        """Drop an in-flight prewarm so it cannot occupy the provider slot."""
+        task = getattr(self, "_prewarm_task", None)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        self._prewarm_task = None
+        return True
 
     async def _prewarm_async(self) -> None:
         """B5: 后台预热——FX4 双槽（chat/agent）并行写新前缀；成功 confirm。

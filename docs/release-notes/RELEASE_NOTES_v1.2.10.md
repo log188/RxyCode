@@ -35,6 +35,12 @@ RxyCode 是一个规划执行型的 AI 编程助手：把复杂任务自动拆�
 - **完全访问确认关不掉** —— Escape 可取消
 - **附件路径丢失** —— 选中的文件路径会写入 prompt（`promptWithAttachment`）
 - **权限标签** —— Desktop UI 使用中文：更改前询问 / 自动编辑 / 完全访问
+- **Windows 终端鼠标乱码** —— 关掉全量移动追踪（SGR 1003），保留点击、滚轮、框选和边界自动滚
+- **首次打开很慢 / 首击无反馈** —— 进程启动即预热 Agent；首击立刻显示「收到，正在回复…」
+- **工具后 FirstTokenTimeout** —— 用户正式请求会取消后台预热，避免和模型连接抢槽
+- **回复被整段叠在第一块** —— 工具之后的正文新开一段，和工具调用穿插显示
+- **打包后 `rxycode` 打不开** —— Windows 便携运行时改用相对路径的 `rxycode.cmd`，不再依赖 CI 机器上的 python 路径
+- **便携 zip 找不到桌面程序** —— `rxycode gui` 能识别 `RxyCode.Desktop-*-win` 包装目录
 
 ### 变更
 
@@ -76,6 +82,6 @@ rxycode gui
 - `rxycode-1.2.10-py3-none-any.whl`
 - `rxycode-1.2.10.tar.gz`
 - `rxycode-desktop-1.2.10-setup.exe`（Windows 安装版）
-- `rxycode-desktop-1.2.10-win.zip`（Windows 便携版）
+- `RxyCode.Desktop-1.2.10-win.zip`（Windows 便携版；解压后是同名包装目录）
 - `rxycode-desktop-1.2.10.dmg`（macOS，未签名）
 - `rxycode-desktop-1.2.10.AppImage`（Linux）

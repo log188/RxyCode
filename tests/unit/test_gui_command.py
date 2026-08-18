@@ -25,6 +25,18 @@ def test_resolve_desktop_exe_explicit_dir(tmp_path, monkeypatch):
     assert resolved == str(exe)
 
 
+def test_resolve_desktop_exe_inside_portable_zip_wrapper(tmp_path):
+    """Official win.zip extracts to RxyCode.Desktop-<ver>-win/rxycode-desktop.exe."""
+    wrapper = tmp_path / "RxyCode.Desktop-1.2.10-win"
+    wrapper.mkdir()
+    exe = wrapper / "rxycode-desktop.exe"
+    exe.write_text("", encoding="utf-8")
+    exe.chmod(0o755)
+    assert main._resolve_desktop_executable(desktop_dir=str(tmp_path)) == str(exe)
+    assert main._resolve_desktop_executable(desktop_dir=str(wrapper)) == str(exe)
+    assert main._resolve_desktop_executable(desktop_dir=str(exe)) == str(exe)
+
+
 def test_resolve_desktop_exe_default_dir(monkeypatch, tmp_path):
     home = tmp_path / "home"
     desktop = home / ".rxycode" / "desktop"
@@ -68,6 +80,7 @@ def test_gui_without_packaged_or_sources_points_to_release(monkeypatch, tmp_path
     assert "does not include the Electron app" in message
     assert f"releases/tag/v{main.__version__}" in message
     assert "RXYCODE_DESKTOP_DIR" in message
+    assert "RxyCode.Desktop-" in message
 
 
 def test_gui_falls_back_to_dev_without_packaged_build(monkeypatch, tmp_path):

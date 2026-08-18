@@ -21,7 +21,7 @@ import {
   sendCommand,
 } from "./chatApi.ts";
 import { resolveTransportKind } from "./transport/config.ts";
-import { warmStdioBootstrap } from "./transport/stdioTransport.ts";
+import { startStdioWarmOnOpen } from "./transport/stdioTransport.ts";
 import { ApprovalDialog, type ApprovalInfo } from "./ApprovalDialog.tsx";
 import { QuestionDialog } from "./QuestionDialog.tsx";
 import type { QuestionInfo, QuestionReply } from "./questionInfo.ts";
@@ -424,9 +424,7 @@ export default function App() {
     void fetchStatus(setStatus);
     const iv = setInterval(() => void fetchStatus(setStatus), 30000);
     if (resolveTransportKind() === "stdio") {
-      void warmStdioBootstrap().catch(() => {
-        // first prompt will bootstrap; ignore warm failures
-      });
+      startStdioWarmOnOpen();
     }
     return () => clearInterval(iv);
   }, []);

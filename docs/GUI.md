@@ -39,9 +39,11 @@ English everywhere else.
 
 ### Option B — portable zip (Windows)
 
-Download `rxycode-desktop-<version>-win.zip`, extract anywhere, and run
-`rxycode-desktop.exe`. No installer and no shortcut are created. Drop it into
-`~/.rxycode/desktop` to make `rxycode gui` find it automatically.
+Download `RxyCode.Desktop-<version>-win.zip`, extract anywhere, and run
+`rxycode-desktop.exe` inside the wrapper folder (for v1.2.10 that folder is
+`RxyCode.Desktop-1.2.10-win`). No installer and no shortcut are created.
+Point `--desktop-dir` / `RXYCODE_DESKTOP_DIR` / `~/.rxycode/desktop` at the
+wrapper folder, or at the folder that contains it.
 
 ### Option C — macOS / Linux
 

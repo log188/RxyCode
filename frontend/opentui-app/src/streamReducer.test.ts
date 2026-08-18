@@ -68,6 +68,20 @@ describe("applyStreamEvent thinking timing", () => {
     expect(settled.find((m) => m.id === "tool")!.toolStatus).toBe("cancelled");
   });
 
+  test("tokens after a tool open a new assistant segment", () => {
+    let s = base();
+    s = applyStreamEvent(s, { type: "token", text: "先查官网" }, nid);
+    s = applyStreamEvent(s, { type: "tool_call", name: "websearch", args: "gz sha" }, nid);
+    s = applyStreamEvent(s, { type: "tool_result", name: "websearch", result: "ok" }, nid);
+    s = applyStreamEvent(s, { type: "token", text: "再打开携程" }, nid);
+    s = applyStreamEvent(s, { type: "final", text: "先查官网再打开携程完整总结" }, nid);
+    const roles = s.messages.map((m) => (m.role === "tool" ? `tool:${m.toolName}` : m.role));
+    expect(roles).toEqual(["thinking", "assistant", "tool:websearch", "assistant"]);
+    const assistants = s.messages.filter((m) => m.role === "assistant");
+    expect(assistants[0]?.content).toBe("先查官网");
+    expect(assistants[1]?.content).toBe("再打开携程");
+  });
+
   test("question tool_call shows the prompt instead of raw JSON", () => {
     const next = applyStreamEvent(
       base(),

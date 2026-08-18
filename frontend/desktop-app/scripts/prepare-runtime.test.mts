@@ -1,6 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { keepPythonFile, keepVendoredFile, windowsVersionedDllName } from './prepare-runtime.mts'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  keepPythonFile,
+  keepVendoredFile,
+  windowsVersionedDllName,
+  writeRelocatableRxycodeLaunchers
+} from './prepare-runtime.mts'
 
 function win(src: string): boolean {
   return keepPythonFile('C:/Python', src, 'win32', false)
@@ -86,6 +94,23 @@ test('windowsVersionedDllName maps CPython X.Y to pythonXY.dll', () => {
   assert.equal(windowsVersionedDllName('Python 3.12.10'), 'python312.dll')
   assert.equal(windowsVersionedDllName('3.14.2'), 'python314.dll')
   assert.equal(windowsVersionedDllName('not-a-version'), null)
+})
+
+test('writeRelocatableRxycodeLaunchers replaces hardcoded Windows exe', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rxycode-runtime-'))
+  try {
+    const scripts = join(root, 'Scripts')
+    mkdirSync(scripts, { recursive: true })
+    writeFileSync(join(scripts, 'rxycode.exe'), 'fake-ci-launcher')
+    writeRelocatableRxycodeLaunchers(root, 'win32')
+    assert.equal(existsSync(join(scripts, 'rxycode.exe')), false)
+    const cmd = readFileSync(join(scripts, 'rxycode.cmd'), 'utf8')
+    assert.match(cmd, /%~dp0\.\.\\python\.exe/)
+    assert.match(cmd, /-m RxyCode/)
+    assert.doesNotMatch(cmd, /D:\\a\\/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('vendored app tree keeps appserver and drops repo junk', () => {

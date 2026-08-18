@@ -659,3 +659,28 @@ class TestPrewarmNonBlocking:
         agent._prewarm_last_attempt_at = None
         agent._schedule_prewarm()  # 无 llm → 直接返回，不创建任务
         assert agent._prewarm_last_attempt_at is None
+
+    async def test_user_stream_cancels_inflight_prewarm(self):
+        import asyncio
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        agent = object.__new__(AgentV2)
+        agent._llm = object()
+        agent._prewarm_last_attempt_at = None
+        hung = asyncio.Event()
+
+        async def slow_prewarm():
+            await hung.wait()
+
+        agent._prewarm_async = slow_prewarm
+        agent._schedule_prewarm()
+        await asyncio.sleep(0)
+        assert agent._prewarm_task is not None
+        assert not agent._prewarm_task.done()
+        cancelled = await agent._cancel_background_prewarm()
+        assert cancelled is True
+        assert agent._prewarm_task is None
+        import inspect
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2 as AgentCls
+
+        assert "_cancel_background_prewarm" in inspect.getsource(AgentCls._raw_stream)

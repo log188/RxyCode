@@ -459,6 +459,11 @@ class AgentWorker:
                 session_id=self._session_id,
                 workspace_root=self._workspace_root,
             )
+            # Warm chat+agent prefixes on open, never on the first user turn.
+            # Scheduling from run() races the greeting LLM call (90s hang).
+            schedule = getattr(self._agent, "_schedule_prewarm", None)
+            if callable(schedule):
+                schedule()
         finally:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

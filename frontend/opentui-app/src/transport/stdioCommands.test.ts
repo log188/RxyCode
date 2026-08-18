@@ -125,4 +125,22 @@ describe("stdio transport model switch regression", () => {
     expect(fetchStatus).not.toMatch(/httpFetchStatus/);
     expect(src).toMatch(/raceWithAbort/);
   });
+
+  test("stdio warms on open and acks the first keystroke immediately", () => {
+    const transport = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "stdioTransport.ts"),
+      "utf8",
+    );
+    const index = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "../index.tsx"),
+      "utf8",
+    );
+    expect(transport).toMatch(/DEFAULT_INIT_TIMEOUT_MS = 60_000/);
+    expect(transport).toMatch(/startStdioWarmOnOpen/);
+    expect(transport).toMatch(/收到，正在回复/);
+    expect(index).toMatch(/startStdioWarmOnOpen/);
+    expect(index).toMatch(/writeDisableAllMotion/);
+    expect(index).toMatch(/writeDisableMouseTracking/);
+    expect(index).not.toMatch(/enableMouseMovement:\s*true/);
+  });
 });

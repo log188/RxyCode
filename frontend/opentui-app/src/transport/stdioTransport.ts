@@ -38,8 +38,9 @@ import type {
   SubagentResult,
 } from "./types.ts";
 
-const DEFAULT_INIT_TIMEOUT_MS = 10_000;
-const DEFAULT_SESSION_TIMEOUT_MS = 10_000;
+const DEFAULT_INIT_TIMEOUT_MS = 60_000;
+const DEFAULT_SESSION_TIMEOUT_MS = 60_000;
+let warmOnOpenStarted = false;
 
 function newId(suffix: string): string {
   return `${Date.now()}-${suffix}-${Math.random().toString().slice(2, 7)}`;
@@ -545,7 +546,7 @@ class StdioAppserverSession {
     };
     callbacks.onMessages((prev) => [...prev, userMsg]);
     callbacks.onStreaming(true);
-    callbacks.onProgress?.("Connecting...");
+    callbacks.onProgress?.("收到，正在回复…");
 
     // FX7: draw the thought placeholder BEFORE ensureReady so the assistant
     // row is on screen while the worker boots (aligned with HTTP transport).
@@ -872,6 +873,15 @@ export async function warmStdioBootstrap(): Promise<void> {
   await sharedSession.warmBootstrap();
 }
 
+/** Kick appserver spawn as soon as the OpenTUI process starts. */
+export function startStdioWarmOnOpen(): void {
+  if (warmOnOpenStarted) return;
+  warmOnOpenStarted = true;
+  void warmStdioBootstrap().catch(() => {
+    // first prompt will bootstrap; ignore warm failures
+  });
+}
+
 /** Configured models + persisted active id (no HTTP agent required). */
 export async function listStdioModels(): Promise<ModelsListPayload> {
   return sharedSession.listModels();
@@ -887,4 +897,5 @@ export function __resetStdioSessionForTests(): void {
   sharedSession = new StdioAppserverSession();
   pythonCmdOverride = null;
   thinkingExpandedPref = false;
+  warmOnOpenStarted = false;
 }

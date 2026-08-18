@@ -102,31 +102,34 @@ export function applyStreamEvent(
     }
     case "token": {
       if (!event.text) return next;
-      const acc = next.acc + event.text;
-      if (!next.assistantCreated) {
+      const last = next.messages.at(-1);
+      const attachToTail = last?.role === "assistant" && last.id === next.assistantId;
+      if (attachToTail) {
+        const acc = next.acc + event.text;
         return {
           ...next,
           acc,
-          assistantCreated: true,
-          // CRITICAL: do NOT mark thinking done on first token
-          messages: [
-            ...next.messages,
-            {
-              id: next.assistantId,
-              role: "assistant",
-              content: acc,
-              timestamp: Date.now(),
-              done: false,
-            },
-          ],
+          messages: next.messages.map((m) =>
+            m.id === next.assistantId ? { ...m, content: acc } : m,
+          ),
         };
       }
+      const id = next.assistantCreated ? newId("assistant") : next.assistantId;
       return {
         ...next,
-        acc,
-        messages: next.messages.map((m) =>
-          m.id === next.assistantId ? { ...m, content: acc } : m,
-        ),
+        acc: event.text,
+        assistantCreated: true,
+        assistantId: id,
+        messages: [
+          ...next.messages,
+          {
+            id,
+            role: "assistant" as const,
+            content: event.text,
+            timestamp: Date.now(),
+            done: false,
+          },
+        ],
       };
     }
     case "tool_call": {
@@ -190,12 +193,9 @@ export function applyStreamEvent(
             }
           : m,
       );
-      const hasAssistant = messages.some((m) => m.id === next.assistantId);
-      if (hasAssistant) {
-        messages = messages.map((m) =>
-          m.id === next.assistantId ? { ...m, content: finalText, done: false } : m,
-        );
-      } else if (finalText) {
+      const hasAssistant = messages.some((m) => m.role === "assistant");
+      // Keep streamed segments. Do not dump the full final essay into the first bubble.
+      if (!hasAssistant && finalText) {
         messages = [
           ...messages,
           {

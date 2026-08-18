@@ -184,6 +184,13 @@ def test_run_does_not_schedule_competing_prewarm():
     assert "_schedule_prewarm" not in src
 
 
+def test_worker_bootstrap_schedules_prewarm_on_open():
+    from appserver.agent_worker import AgentWorker
+
+    src = inspect.getsource(AgentWorker._handle_bootstrap)
+    assert "_schedule_prewarm" in src
+
+
 def test_run_does_not_await_mcp_refresh():
     src = inspect.getsource(AgentV2.run)
     assert "_schedule_mcp_refresh" in src

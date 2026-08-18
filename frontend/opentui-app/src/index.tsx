@@ -12,8 +12,16 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import App from "./App.tsx";
+import {
+  consumeSgrMouseInput,
+  resolveCliRendererMouseOptions,
+  writeDisableAllMotion,
+  writeDisableMouseTracking,
+} from "./cliRendererOptions.ts";
 import { DialogProvider } from "./dialog/DialogHost.tsx";
+import { resolveTransportKind } from "./transport/config.ts";
 import { getChatTransport } from "./transport/index.ts";
+import { startStdioWarmOnOpen } from "./transport/stdioTransport.ts";
 
 if (!process.stdin.isTTY && process.env.RXYCODE_E2E_BYPASS_TTY !== "1") {
   console.log("RxyCode OpenTUI requires an interactive terminal (TTY).");
@@ -21,19 +29,29 @@ if (!process.stdin.isTTY && process.env.RXYCODE_E2E_BYPASS_TTY !== "1") {
   process.exit(1);
 }
 
+// Spawn / initialize appserver before the renderer so first paint overlaps warm.
+if (resolveTransportKind() === "stdio") {
+  startStdioWarmOnOpen();
+}
+
+const mouse = resolveCliRendererMouseOptions();
+writeDisableAllMotion();
+
 type CliRendererConfig = Parameters<typeof createCliRenderer>[0];
 
 const renderer = await createCliRenderer({
   // Ctrl+C handled in App (copy selection / cancel stream / exit).
   exitOnCtrlC: false,
   useAlternateScreen: true,
-  useMouse: true,
-  enableMouseMovement: true,
+  useMouse: mouse.useMouse,
+  enableMouseMovement: mouse.enableMouseMovement,
+  prependInputHandlers: [consumeSgrMouseInput],
 } as CliRendererConfig);
 
 const root = createRoot(renderer);
 
 const cleanup = () => {
+  writeDisableMouseTracking();
   try {
     void getChatTransport().shutdown?.();
   } catch {
@@ -49,6 +67,7 @@ const cleanup = () => {
   } catch {
     // destroy restores alternate screen / cursor when possible
   }
+  writeDisableMouseTracking();
 };
 
 process.once("exit", cleanup);

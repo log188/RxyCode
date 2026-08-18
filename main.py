@@ -131,23 +131,56 @@ def _default_desktop_dir() -> str:
     return os.path.join(home, ".rxycode", "desktop")
 
 
+def _desktop_executable_names() -> tuple[str, ...]:
+    return ("rxycode-desktop.exe", "rxycode-desktop")
+
+
+def _is_runnable_desktop_exe(path: str) -> bool:
+    name = os.path.basename(path).casefold()
+    if name not in {item.casefold() for item in _desktop_executable_names()}:
+        return False
+    return os.path.isfile(path) and os.access(path, os.X_OK | os.R_OK)
+
+
+def _desktop_exe_in_dir(directory: str) -> str | None:
+    for name in _desktop_executable_names():
+        candidate = os.path.join(directory, name)
+        if _is_runnable_desktop_exe(candidate):
+            return candidate
+    return None
+
+
 def _resolve_desktop_executable(desktop_dir: str | None = None) -> str | None:
     """Locate the packaged desktop executable.
 
     Search order: explicit *desktop_dir*, then the default
     ``~/.rxycode/desktop`` directory (both ``rxycode-desktop.exe`` on
-    Windows and ``rxycode-desktop`` on POSIX). Returns None when not found.
+    Windows and ``rxycode-desktop`` on POSIX). The official portable zip
+    unwraps to a single wrapper folder, so this also accepts:
+
+    - the wrapper directory itself
+    - the directory that contains that wrapper (Explorer "Extract All")
+    - a path that already points at ``rxycode-desktop[.exe]``
+
+    Returns None when not found.
     """
-    candidates: list[str] = []
     dirs = [desktop_dir] if desktop_dir else [_default_desktop_dir()]
     for d in dirs:
         if not d:
             continue
-        candidates.append(os.path.join(d, "rxycode-desktop.exe"))
-        candidates.append(os.path.join(d, "rxycode-desktop"))
-    for candidate in candidates:
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK | os.R_OK):
-            return candidate
+        if _is_runnable_desktop_exe(d):
+            return d
+        found = _desktop_exe_in_dir(d)
+        if found:
+            return found
+        try:
+            child_names = os.listdir(d)
+        except OSError:
+            continue
+        for name in child_names:
+            found = _desktop_exe_in_dir(os.path.join(d, name))
+            if found:
+                return found
     # Fall back to PATH lookup.
     import shutil
 
@@ -691,7 +724,8 @@ def gui(desktop_dir):
             "Download the Desktop build for your OS from:\n"
             f"  https://github.com/xin-yi33/RxyCode/releases/tag/v{__version__}\n"
             "Windows setup.exe installs to ~/.rxycode/desktop so `rxycode gui` works.\n"
-            "Or unpack the portable zip and pass --desktop-dir, or set RXYCODE_DESKTOP_DIR."
+            "Or unpack RxyCode.Desktop-<version>-win.zip and pass --desktop-dir "
+            "(wrapper folder or its parent), or set RXYCODE_DESKTOP_DIR."
         )
     _log.info("Launching desktop from source", extra={"app_dir": app_dir})
     npm_exe = _npm_executable()
