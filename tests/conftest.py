@@ -23,34 +23,47 @@ from types import SimpleNamespace
 # checkout under test (worktree/branch).  Bind the canonical package to THIS
 # checkout's root instead and drop the editable meta-path finder so every
 # nested import resolves here too.
+#
+# Do not gate this on ``_RXYCODE_TEST_CHECKOUT``: pytest-xdist workers inherit
+# that env from the parent and would skip binding, then PathFinder-load ``core``
+# while ``resolve()`` still returns versioned provider instances.
 # ---------------------------------------------------------------------------
-if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
+if not getattr(sys, "_rxycode_test_checkout_ready", False):
     import importlib
     import types as _types
 
     _checkout_root = Path(__file__).resolve().parent.parent
     os.environ["RXYCODE_CHECKOUT_ROOT"] = str(_checkout_root)
+    os.environ["_RXYCODE_TEST_CHECKOUT"] = str(_checkout_root)
     _editable_finder_types = ("_EditableFinder",)
     sys.meta_path = [
         finder
         for finder in sys.meta_path
         if type(finder).__name__ not in _editable_finder_types
     ]
-    if "RxyCode" not in sys.modules:
-        _parent_mod = _types.ModuleType("RxyCode")
-        sys.modules["RxyCode"] = _parent_mod
+    _canonical_init = _checkout_root / "__init__.py"
     _canonical = sys.modules.get("RxyCode.RxyCode1_1_0")
-    if _canonical is None:
+    _canonical_file = getattr(_canonical, "__file__", None) if _canonical is not None else None
+    _bound_here = False
+    if _canonical is not None and _canonical_file:
+        try:
+            _bound_here = Path(_canonical_file).resolve().parent == _checkout_root
+        except OSError:
+            _bound_here = False
+    if not _bound_here:
+        if "RxyCode" not in sys.modules:
+            _parent_mod = _types.ModuleType("RxyCode")
+            sys.modules["RxyCode"] = _parent_mod
         _canonical = _types.ModuleType("RxyCode.RxyCode1_1_0")
         sys.modules["RxyCode.RxyCode1_1_0"] = _canonical
+        sys.modules["RxyCode"].RxyCode1_1_0 = _canonical  # noqa: B010 - dynamic module namespace
+        _canonical.__file__ = str(_canonical_init)
+        _canonical.__path__ = [str(_checkout_root)]
+        _canonical.__package__ = "RxyCode.RxyCode1_1_0"
+        if _canonical_init.exists():
+            _canonical_source = _canonical_init.read_text(encoding="utf-8-sig")
+            exec(compile(_canonical_source, str(_canonical_init), "exec"), _canonical.__dict__)  # noqa: S102
     sys.modules["RxyCode"].RxyCode1_1_0 = _canonical  # noqa: B010 - dynamic module namespace
-    _canonical.__file__ = str(_checkout_root / "__init__.py")
-    _canonical.__path__ = [str(_checkout_root)]
-    _canonical.__package__ = "RxyCode.RxyCode1_1_0"
-    _canonical_init = _checkout_root / "__init__.py"
-    if _canonical_init.exists():
-        _canonical_source = _canonical_init.read_text(encoding="utf-8-sig")
-        exec(compile(_canonical_source, str(_canonical_init), "exec"), _canonical.__dict__)  # noqa: S102
     _unify = getattr(_canonical, "unify_bare_package_aliases", None)
     if callable(_unify):
         _unify()
@@ -65,7 +78,7 @@ if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
     _hook = getattr(_canonical, "install_test_import_unify_hook", None)
     if callable(_hook):
         _hook()
-    os.environ["_RXYCODE_TEST_CHECKOUT"] = str(_checkout_root)
+    sys._rxycode_test_checkout_ready = True  # type: ignore[attr-defined]
 
 import pytest
 from langchain_core.messages import AIMessage

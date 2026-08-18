@@ -94,6 +94,37 @@ def test_bare_protocol_alias_registered_without_repo_root_on_path() -> None:
     )
 
 
+def test_inherited_checkout_env_still_binds_provider_identity() -> None:
+    """xdist workers inherit ``_RXYCODE_TEST_CHECKOUT`` from the parent.
+
+    Binding used to skip in that case, so ``from core import providers`` and
+    ``from core.providers.anthropic import AnthropicProvider`` were two classes.
+    """
+    env = dict(os.environ)
+    env["_RXYCODE_TEST_CHECKOUT"] = str(REPO_ROOT)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_providers/test_anthropic_provider.py::test_unknown_model_does_not_match_anthropic",
+            "-q",
+            "--timeout=60",
+            "-p",
+            "no:xdist",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(REPO_ROOT),
+        timeout=120,
+    )
+    assert proc.returncode == 0, (
+        "worker-style checkout env split provider identity\n"
+        f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+
+
 def test_bare_and_versioned_provider_classes_are_identical() -> None:
     import importlib
 

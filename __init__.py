@@ -108,7 +108,44 @@ def _apply_bare_alias(key: str, short: str, module: _types.ModuleType) -> None:
     canon_parent = _sys.modules.get(canon_parent_name)
     if canon_parent is not None and canon_child:
         setattr(canon_parent, canon_child, module)
+    _remap_descendant_aliases(key, short, module)
     _mirrored_canonical[key] = id(module)
+
+
+def _remap_descendant_aliases(key: str, short: str, module: _types.ModuleType) -> None:
+    """Point leftover ``core.foo.bar`` keys at the winner package's children.
+
+    PathFinder can exec ``core.providers.anthropic`` before the versioned
+    package is imported.  After ``core.providers`` is unified, that stale
+    child key would still supply a second ``AnthropicProvider`` class.
+    """
+    if not hasattr(module, "__path__"):
+        return
+    short_prefix = f"{short}."
+    key_prefix = f"{key}."
+    for name in list(_sys.modules):
+        if name.startswith(short_prefix):
+            rest = name[len(short_prefix) :]
+        elif name.startswith(key_prefix):
+            rest = name[len(key_prefix) :]
+        else:
+            continue
+        if not rest:
+            continue
+        winner = module
+        for part in rest.split("."):
+            nxt = getattr(winner, part, None)
+            if not isinstance(nxt, _types.ModuleType):
+                winner = None
+                break
+            winner = nxt
+        if winner is None:
+            continue
+        child = _sys.modules.get(name)
+        if child is not None and child is not winner and not _same_source(child, winner):
+            continue
+        _sys.modules[f"{short}.{rest}"] = winner
+        _sys.modules[f"{key}.{rest}"] = winner
 
 
 def _mirror_canonical_module(key: str, module: _types.ModuleType) -> None:
