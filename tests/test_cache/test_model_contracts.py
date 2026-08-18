@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -20,9 +19,10 @@ from RxyCode.RxyCode1_1_0.core.catalog import (
     hit_discount,
     read_cached_tokens,
 )
+from tests.conftest import REPO_ROOT
 
-CATALOG_PATH = Path("config/model_catalog.json")
-SCHEMA_PATH = Path("config/model_catalog.schema.json")
+CATALOG_PATH = REPO_ROOT / "config" / "model_catalog.json"
+SCHEMA_PATH = REPO_ROOT / "config" / "model_catalog.schema.json"
 
 
 # ============================================================================
@@ -98,9 +98,8 @@ def test_contract_single_read_entry():
 def test_no_scattered_provider_branches_in_catalog():
     """providers/ 不散落 cache_mode 判模型代码（唯一入口在 core/catalog.py）。"""
     import re
-    from pathlib import Path
 
-    for path in Path("core/providers").glob("*.py"):
+    for path in (REPO_ROOT / "core" / "providers").glob("*.py"):
         src = path.read_text(encoding="utf-8")
         # 不允许在 provider 里硬编码 cache_mode 字符串常量（B9 通配红线）
         assert "cache_mode" not in src, f"scattered cache_mode in {path.name}"

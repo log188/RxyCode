@@ -55,6 +55,9 @@ if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
 import pytest
 from langchain_core.messages import AIMessage
 
+# RLI-3: resource paths must be anchored here, never to the process CWD.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 #: On CI set to "1". Missing required external tools fail instead of skip,
 #: so distribution gates cannot silently report green.
