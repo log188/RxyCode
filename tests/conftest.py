@@ -188,7 +188,7 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.serial)
     unify = getattr(sys.modules.get("RxyCode.RxyCode1_1_0"), "unify_bare_package_aliases", None)
     if callable(unify):
-        unify()
+        unify(force=True)
 
 
 # ─── sys.stdout protection ──────────────────────────────────────
@@ -222,7 +222,7 @@ def _isolate_process_singletons():
     from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
     unify = getattr(sys.modules.get("RxyCode.RxyCode1_1_0"), "unify_bare_package_aliases", None)
     if callable(unify):
-        unify()
+        unify(force=True)
 
     previous_broker = approval.get_approval_broker()
     previous_question_broker = question.get_question_broker()

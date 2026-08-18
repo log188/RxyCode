@@ -12,9 +12,10 @@ import types as _types
 
 __version__ = "1.2.10"
 
-__all__ = ["__version__", "unify_bare_package_aliases"]
+__all__ = ["__version__", "unify_bare_package_aliases", "install_test_import_unify_hook"]
 
 _CANONICAL_PREFIX = "RxyCode.RxyCode1_1_0"
+_CHECKOUT_ROOT = __file__.rsplit("\\", 1)[0] if "\\" in __file__ else __file__.rsplit("/", 1)[0]
 _BARE_PACKAGES = frozenset(
     {
         "appserver",
@@ -48,10 +49,69 @@ def _is_bare_name(name: str) -> bool:
     return name.split(".", 1)[0] in _BARE_PACKAGES
 
 
-_mirrored_canonical: set[str] = set()
+_mirrored_canonical: dict[str, int] = {}
 
 
-def unify_bare_package_aliases() -> None:
+def _is_checkout_module(module: _types.ModuleType | None) -> bool:
+    if module is None:
+        return False
+    path = getattr(module, "__file__", None)
+    if not path:
+        return False
+    normalized = path.replace("\\", "/")
+    root = _CHECKOUT_ROOT.replace("\\", "/")
+    return normalized == root or normalized.startswith(f"{root}/")
+
+
+def _same_source(left: _types.ModuleType | None, right: _types.ModuleType | None) -> bool:
+    if left is None or right is None:
+        return False
+    if left is right:
+        return True
+    left_file = getattr(left, "__file__", None)
+    right_file = getattr(right, "__file__", None)
+    return bool(left_file) and left_file == right_file
+
+
+def _apply_bare_alias(key: str, short: str, module: _types.ModuleType) -> None:
+    current_short = _sys.modules.get(short)
+    current_canon = _sys.modules.get(key)
+    # Prefer the already-bound short module so ``from ..core.question`` in
+    # top-level ``appserver`` keeps the same function object as
+    # ``from RxyCode.RxyCode1_1_0.core.question``.
+    if current_short is not None and _same_source(current_short, module):
+        module = current_short
+    elif current_canon is not None and _same_source(current_canon, module):
+        module = current_canon
+    parent_name, _, child = short.rpartition(".")
+    parent = _sys.modules.get(parent_name)
+    if short == "appserver" or short.startswith("appserver."):
+        _sys.modules.setdefault(short, module)
+        if parent is not None and child and not hasattr(parent, child):
+            setattr(parent, child, module)
+    else:
+        _sys.modules[short] = module
+        if parent is not None and child:
+            setattr(parent, child, module)
+    _sys.modules[key] = module
+    canon_parent_name, _, canon_child = key.rpartition(".")
+    canon_parent = _sys.modules.get(canon_parent_name)
+    if canon_parent is not None and canon_child:
+        setattr(canon_parent, canon_child, module)
+    _mirrored_canonical[key] = id(module)
+
+
+def _mirror_canonical_module(key: str, module: _types.ModuleType) -> None:
+    prefix = f"{_CANONICAL_PREFIX}."
+    if not key.startswith(prefix):
+        return
+    short = key[len(prefix) :]
+    if not _is_bare_name(short):
+        return
+    _apply_bare_alias(key, short, module)
+
+
+def unify_bare_package_aliases(*, force: bool = False) -> None:
     """Point bare names at already-imported versioned modules.
 
     ``from core import providers`` uses the ``core.providers`` attribute when
@@ -63,11 +123,36 @@ def unify_bare_package_aliases() -> None:
     ``appserver`` is only filled when missing: ``python -m appserver`` and
     tests that patch ``appserver.server`` need the top-level package loader.
 
-    Only newly seen canonical modules are mirrored.  Scanning the whole
-    ``sys.modules`` table on every import made Agent worker bootstrap miss
-    the ``session/new`` deadline under Linux py3.11 xdist.
+    Newly seen canonical modules are mirrored, and previously mirrored short
+    names are repaired when they drift to a second copy of the same file.
+    Production ``python -m appserver`` does not wrap ``__import__``; the
+    finder calls ``_mirror_canonical_module`` in O(1).
     """
     prefix = f"{_CANONICAL_PREFIX}."
+    if force:
+        _mirrored_canonical.clear()
+    else:
+        for key, mirrored_id in list(_mirrored_canonical.items()):
+            module = _sys.modules.get(key)
+            if module is None:
+                _mirrored_canonical.pop(key, None)
+                continue
+            short = key[len(prefix) :]
+            parent_name, _, child = short.rpartition(".")
+            parent = _sys.modules.get(parent_name) if child else None
+            short_ok = _sys.modules.get(short) is module
+            parent_ok = (not child) or (
+                parent is not None and getattr(parent, child, None) is module
+            )
+            canon_parent_name, _, canon_child = key.rpartition(".")
+            canon_parent = _sys.modules.get(canon_parent_name)
+            canon_parent_ok = (not canon_child) or (
+                canon_parent is not None and getattr(canon_parent, canon_child, None) is module
+            )
+            keys_ok = _sys.modules.get(key) is module
+            if short_ok and parent_ok and canon_parent_ok and keys_ok and id(module) == mirrored_id:
+                continue
+            _apply_bare_alias(key, short, module)
     new_items: list[tuple[str, str, _types.ModuleType]] = []
     for key, module in list(_sys.modules.items()):
         if key in _mirrored_canonical or not key.startswith(prefix):
@@ -78,17 +163,7 @@ def unify_bare_package_aliases() -> None:
         new_items.append((key, short, module))
     new_items.sort(key=lambda item: item[0].count("."))
     for key, short, module in new_items:
-        parent_name, _, child = short.rpartition(".")
-        parent = _sys.modules.get(parent_name)
-        if short == "appserver" or short.startswith("appserver."):
-            _sys.modules.setdefault(short, module)
-            if parent is not None and child and not hasattr(parent, child):
-                setattr(parent, child, module)
-        else:
-            _sys.modules[short] = module
-            if parent is not None and child:
-                setattr(parent, child, module)
-        _mirrored_canonical.add(key)
+        _apply_bare_alias(key, short, module)
 
 
 class _ReuseLoader(importlib.abc.Loader):
@@ -122,6 +197,24 @@ class _BareChildAliasFinder(importlib.abc.MetaPathFinder):
     _mark = "_rxycode_bare_child_alias"
 
     def find_spec(self, fullname, path, target=None):  # noqa: ANN001
+        if fullname.startswith(f"{_CANONICAL_PREFIX}."):
+            short = fullname[len(_CANONICAL_PREFIX) + 1 :]
+            if not _is_bare_name(short) or short == "appserver" or short.startswith("appserver."):
+                return None
+            existing_short = _sys.modules.get(short)
+            if existing_short is None or not _is_checkout_module(existing_short):
+                return None
+            _sys.modules[fullname] = existing_short
+            _mirror_canonical_module(fullname, existing_short)
+            spec = importlib.util.spec_from_loader(
+                fullname,
+                _ReuseLoader(existing_short),
+                origin=getattr(existing_short, "__file__", None),
+                is_package=hasattr(existing_short, "__path__"),
+            )
+            if spec is not None and hasattr(existing_short, "__path__"):
+                spec.submodule_search_locations = list(existing_short.__path__)
+            return spec
         if fullname.startswith("RxyCode") or not _is_bare_name(fullname):
             return None
         if fullname == "appserver" or fullname.startswith("appserver."):
@@ -129,21 +222,34 @@ class _BareChildAliasFinder(importlib.abc.MetaPathFinder):
         if fullname.rsplit(".", 1)[-1] == "__main__":
             return None
         canonical_name = f"{_CANONICAL_PREFIX}.{fullname}"
+        existing = _sys.modules.get(canonical_name) or _sys.modules.get(fullname)
+        if existing is not None:
+            _sys.modules.setdefault(canonical_name, existing)
+            _mirror_canonical_module(canonical_name, existing)
+            spec = importlib.util.spec_from_loader(
+                fullname,
+                _ReuseLoader(existing),
+                origin=getattr(existing, "__file__", None),
+                is_package=hasattr(existing, "__path__"),
+            )
+            if spec is not None and hasattr(existing, "__path__"):
+                spec.submodule_search_locations = list(existing.__path__)
+            return spec
         parent_name, sep, _child = fullname.rpartition(".")
         if sep:
             parent = _sys.modules.get(parent_name)
-            parent_mod_name = getattr(parent, "__name__", "") or ""
-            if parent is None or not (
-                parent_mod_name == _CANONICAL_PREFIX
-                or parent_mod_name.startswith(f"{_CANONICAL_PREFIX}.")
-            ):
-                return None
-        elif canonical_name not in _sys.modules:
-            return None
+            if parent is not None:
+                parent_mod_name = getattr(parent, "__name__", "") or ""
+                if not (
+                    parent_mod_name == _CANONICAL_PREFIX
+                    or parent_mod_name.startswith(f"{_CANONICAL_PREFIX}.")
+                ):
+                    return None
         try:
             module = importlib.import_module(canonical_name)
         except ImportError:
             return None
+        _mirror_canonical_module(canonical_name, module)
         spec = importlib.util.spec_from_loader(
             fullname,
             _ReuseLoader(module),
@@ -155,12 +261,43 @@ class _BareChildAliasFinder(importlib.abc.MetaPathFinder):
         return spec
 
 
-def _install_canonical_import_mirror() -> None:
-    if not any(
+def _install_bare_child_finder() -> None:
+    if any(
         getattr(finder, "_mark", None) == _BareChildAliasFinder._mark
         for finder in _sys.meta_path
     ):
-        _sys.meta_path.insert(0, _BareChildAliasFinder())
+        return
+    _sys.meta_path.insert(0, _BareChildAliasFinder())
+
+
+def _install_o1_import_mirror() -> None:
+    """Keep one module object per source file after each import.
+
+    This is O(1) per import (no ``sys.modules`` scan).  The previous
+    full-table unify-on-import wrapper made ``session/new`` miss its
+    deadline under Linux py3.11 xdist.
+    """
+    current = _builtins.__import__
+    if getattr(current, "_rxycode_o1_alias", False):
+        return
+
+    def _import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: ANN001
+        module = current(name, globals, locals, fromlist, level)
+        imported = name if isinstance(name, str) else ""
+        mod_name = getattr(module, "__name__", "") or ""
+        if _is_checkout_module(module):
+            if mod_name.startswith(f"{_CANONICAL_PREFIX}."):
+                _mirror_canonical_module(mod_name, module)
+            elif imported and _is_bare_name(imported):
+                _mirror_canonical_module(f"{_CANONICAL_PREFIX}.{imported}", module)
+        return module
+
+    _import._rxycode_o1_alias = True  # type: ignore[attr-defined]
+    _builtins.__import__ = _import
+
+
+def install_test_import_unify_hook() -> None:
+    """Full remirror after canonical imports.  Tests only."""
     current = _builtins.__import__
     if getattr(current, "_rxycode_bare_alias_mirror", False):
         return
@@ -192,7 +329,8 @@ def _register_bare_protocol_alias() -> None:
     ``RxyCode.RxyCode1_1_0.protocol`` and the bare name is missing.  Registering
     the alias here means ``rxycode`` works from any working directory.
     """
-    _install_canonical_import_mirror()
+    _install_bare_child_finder()
+    _install_o1_import_mirror()
     try:
         protocol = importlib.import_module(f"{_CANONICAL_PREFIX}.protocol")
     except ImportError:

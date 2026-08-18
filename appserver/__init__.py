@@ -67,4 +67,6 @@ _register_bare_core_alias()
 
 from .server import AppServer
 
+_register_bare_core_alias()
+
 __all__ = ["AppServer"]

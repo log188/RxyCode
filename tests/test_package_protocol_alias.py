@@ -148,3 +148,13 @@ def test_appserver_import_does_not_split_core_identity() -> None:
 
     assert BareAnthropic is VersionedAnthropic
     assert appserver.AppServer is not None
+
+
+def test_protocol_tui_progress_update_is_the_bare_protocol_class() -> None:
+    """CI py3.11/3.12 failed when ProtocolTui emitted a second ProgressUpdate."""
+    from appserver.tui import ProgressUpdate as TuiProgress
+    from appserver.tui import ReasoningSnapshot as TuiSnapshot
+    from protocol.notifications import ProgressUpdate, ReasoningSnapshot
+
+    assert TuiProgress is ProgressUpdate
+    assert TuiSnapshot is ReasoningSnapshot
