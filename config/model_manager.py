@@ -697,6 +697,23 @@ def discover_provider_models(*, api_key: str, base_url: str) -> dict:
         }
 
 
+def _provider_error_message(resp: httpx.Response) -> str:
+    """Prefer a provider JSON error body over a generic HTTP status label."""
+    raw = (resp.text or "")[:400]
+    try:
+        payload = resp.json()
+    except ValueError:
+        return raw
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        message = str(error.get("message") or "").strip()
+        if message:
+            return message
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    return raw
+
+
 def probe_model_connection(
     *,
     api_key: str,
@@ -739,13 +756,20 @@ def probe_model_connection(
                 reply = data["choices"][0]["message"]["content"]
                 return {"success": True, "elapsed": elapsed, "reply": reply}
             else:
+                detail = safe_error(_provider_error_message(resp))
+                if re.search(
+                    r"not supported|unknown model|does not exist|invalid model",
+                    detail,
+                    flags=re.IGNORECASE,
+                ):
+                    return {"success": False, "elapsed": elapsed, "error": detail}
                 friendly = HTTP_CODE_MESSAGES.get(resp.status_code)
                 if friendly:
                     return {"success": False, "elapsed": elapsed, "error": friendly}
                 return {
                     "success": False,
                     "elapsed": elapsed,
-                    "error": safe_error(f"HTTP {resp.status_code}: {resp.text[:200]}"),
+                    "error": detail or safe_error(f"HTTP {resp.status_code}"),
                 }
     except Exception as e:
         elapsed = round(time.time() - start, 2)

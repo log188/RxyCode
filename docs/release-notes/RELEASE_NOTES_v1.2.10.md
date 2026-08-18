@@ -39,8 +39,9 @@ RxyCode 是一个规划执行型的 AI 编程助手：把复杂任务自动拆�
 - **首次打开很慢 / 首击无反馈** —— 进程启动即预热 Agent；首击立刻显示「收到，正在回复…」
 - **工具后 FirstTokenTimeout** —— 用户正式请求会取消后台预热，避免和模型连接抢槽
 - **回复被整段叠在第一块** —— 工具之后的正文新开一段，和工具调用穿插显示
-- **打包后 `rxycode` 打不开** —— Windows 便携运行时改用相对路径的 `rxycode.cmd`，不再依赖 CI 机器上的 python 路径
-- **便携 zip 找不到桌面程序** —— `rxycode gui` 能识别 `RxyCode.Desktop-*-win` 包装目录
+- **便携 zip 找不到 exe** —— `rxycode gui` 能识别包装目录及其父目录
+- **捆绑 rxycode 指向 CI 路径** —— 打包后改为可搬迁启动器（含相对路径 `rxycode.cmd`）
+- **`rxycode --api` 写进安装包** —— 文件写入调用方工作区，不再 `chdir` 到 site-packages
 
 ### 变更
 
@@ -82,6 +83,7 @@ rxycode gui
 - `rxycode-1.2.10-py3-none-any.whl`
 - `rxycode-1.2.10.tar.gz`
 - `rxycode-desktop-1.2.10-setup.exe`（Windows 安装版）
-- `RxyCode.Desktop-1.2.10-win.zip`（Windows 便携版；解压后是同名包装目录）
+- `RxyCode.Desktop-1.2.10-win.zip`（Windows 便携版；解压后是 `RxyCode.Desktop-1.2.10-win/rxycode-desktop.exe`）
+- `RxyCode.Desktop-1.2.10-arm64-mac.zip`（macOS Apple Silicon 便携包）
 - `rxycode-desktop-1.2.10.dmg`（macOS，未签名）
 - `rxycode-desktop-1.2.10.AppImage`（Linux）

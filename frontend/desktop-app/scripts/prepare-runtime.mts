@@ -202,7 +202,71 @@ export function writeRelocatableRxycodeLaunchers(pythonRoot: string, platform: s
   )
 }
 
-export { keepPythonFile, keepSitePackages, keepVendoredFile }
+const BUILD_MACHINE_PATH_RE =
+  /(?:\/home\/runner\/|\/Users\/runner\/|[A-Za-z]:\\a\\)/i
+
+const POSIX_RELOCATABLE_SHEBANG =
+  '#!/bin/sh\n' +
+  '\'\'\'exec\' "$(dirname -- "$(realpath -- "$0")")/python3" "$0" "$@"\n' +
+  '\' \'\'\'\n'
+
+export function posixRelocatableShebang(): string {
+  return POSIX_RELOCATABLE_SHEBANG
+}
+
+export function scriptContainsBuildMachinePath(text: string): boolean {
+  return BUILD_MACHINE_PATH_RE.test(text)
+}
+
+export function rewritePosixConsoleScript(text: string): string {
+  if (!text.startsWith('#!')) return text
+  const newline = text.indexOf('\n')
+  const first = newline === -1 ? text : text.slice(0, newline)
+  if (!/python/i.test(first)) return text
+  if (first.includes('realpath') && first.includes('dirname')) return text
+  const rest = newline === -1 ? '' : text.slice(newline + 1)
+  return POSIX_RELOCATABLE_SHEBANG + rest
+}
+
+export function rewriteWindowsLauncherShebang(buffer: Buffer): Buffer {
+  const text = buffer.toString('latin1')
+  const match = /#![^\r\n]*python(?:w)?\.exe/i.exec(text)
+  if (match === null) return buffer
+  const old = match[0]
+  if (/^#!python(?:w)?\.exe$/i.test(old.trim()) && !scriptContainsBuildMachinePath(old)) {
+    return buffer
+  }
+  const replacement = '#!python.exe'.padEnd(old.length, ' ')
+  const out = Buffer.from(buffer)
+  out.write(replacement, match.index, replacement.length, 'latin1')
+  return out
+}
+
+function rewriteStagedConsoleScripts(pythonDir: string, platform: string): void {
+  const scriptDir = platform === 'win32' ? join(pythonDir, 'Scripts') : join(pythonDir, 'bin')
+  if (!existsSync(scriptDir)) return
+  for (const name of readdirSync(scriptDir)) {
+    const full = join(scriptDir, name)
+    const stat = lstatSync(full)
+    if (!stat.isFile()) continue
+    if (platform === 'win32') {
+      if (!name.toLowerCase().endsWith('.exe')) continue
+      const rewritten = rewriteWindowsLauncherShebang(readFileSync(full))
+      writeFileSync(full, rewritten)
+      continue
+    }
+    if (/^python3(\.\d+)?$/.test(name)) continue
+    const raw = readFileSync(full)
+    if (raw[0] !== 0x23 || raw[1] !== 0x21) continue
+    const text = raw.toString('utf8')
+    const rewritten = rewritePosixConsoleScript(text)
+    if (rewritten !== text) {
+      writeFileSync(full, rewritten, { encoding: 'utf8', mode: stat.mode })
+    }
+  }
+}
+
+export { keepPythonFile, keepSitePackages, keepVendoredFile, rewriteStagedConsoleScripts }
 
 function keepVendoredFile(repo: string, src: string, isDirectory: boolean): boolean {
   void isDirectory // signature parity with keepPythonFile
@@ -541,6 +605,11 @@ async function main(argv: string[]): Promise<void> {
     )
   }
   writeRelocatableRxycodeLaunchers(join(outDir, 'python'), platform)
+
+  // pip writes absolute shebangs / Windows launcher paths that point at the
+  // CI machine. Rewrite them so the portable zip / AppImage / dmg still
+  // find the bundled interpreter after the archive is moved.
+  rewriteStagedConsoleScripts(join(outDir, 'python'), platform)
 
   // 5) manifest + versions
   const pythonVersion = runPython(pythonExe, [

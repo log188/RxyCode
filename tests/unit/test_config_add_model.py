@@ -9,6 +9,14 @@ from RxyCode.RxyCode1_1_0 import main
 from RxyCode.RxyCode1_1_0.config.settings import get_active_model_config
 
 
+def test_config_help_advertises_add_model_and_base_url():
+    result = CliRunner().invoke(main.cli, ["config", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "add-model" in result.output
+    assert "--base-url" in result.output
+    assert "RXYCODE_API_KEY" in result.output
+
+
 def test_empty_config_error_points_at_real_add_model_command():
     with pytest.raises(ValueError, match="rxycode config add-model") as exc:
         get_active_model_config({"models": {}, "active_model": ""})
