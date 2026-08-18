@@ -400,6 +400,45 @@ def test_unsaved_probe_uses_provider_id_and_redacts_provider_errors(monkeypatch)
     assert observed["headers"]["Authorization"] == f"Bearer {credential}"
 
 
+def test_probe_surfaces_unsupported_model_instead_of_generic_401(monkeypatch):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    class Response:
+        status_code = 401
+        text = '{"error":{"type":"ModelError","message":"Model mimo-v2.5 is not supported"}}'
+
+        def json(self):
+            return {
+                "error": {
+                    "type": "ModelError",
+                    "message": "Model mimo-v2.5 is not supported",
+                }
+            }
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, *, json, headers):
+            return Response()
+
+    monkeypatch.setattr(model_manager.httpx, "Client", Client)
+    result = model_manager.probe_model_connection(
+        api_key="fake-key",
+        base_url="https://opencode.ai/zen/v1",
+        provider_model_id="mimo-v2.5",
+    )
+    assert result["success"] is False
+    assert "not supported" in result["error"]
+    assert "401" not in result["error"]
+
+
 def test_unsaved_probe_redacts_credentials_from_transport_exceptions(monkeypatch):
     from RxyCode.RxyCode1_1_0.config import model_manager
 

@@ -131,24 +131,89 @@ def _default_desktop_dir() -> str:
     return os.path.join(home, ".rxycode", "desktop")
 
 
+_DESKTOP_EXE_NAMES = ("rxycode-desktop.exe", "rxycode-desktop")
+
+
+def _is_runnable_desktop_file(path: str) -> bool:
+    if not path or not os.path.isfile(path):
+        return False
+    name = os.path.basename(path)
+    lowered = name.casefold()
+    if lowered.endswith(".appimage") and "rxycode" in lowered:
+        return os.access(path, os.R_OK)
+    if lowered in _DESKTOP_EXE_NAMES:
+        return os.access(path, os.X_OK | os.R_OK)
+    parent = os.path.basename(os.path.dirname(path))
+    if parent == "MacOS" and "rxycode" in lowered:
+        return os.access(path, os.X_OK | os.R_OK)
+    return False
+
+
+def _desktop_executables_in(root: str) -> list[str]:
+    """Find packaged Desktop binaries in *root* (not nested wrappers)."""
+    if not root or not os.path.isdir(root):
+        return []
+    found: list[str] = []
+    for name in _DESKTOP_EXE_NAMES:
+        candidate = os.path.join(root, name)
+        if _is_runnable_desktop_file(candidate):
+            found.append(candidate)
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return found
+    for name in entries:
+        if name.casefold().endswith(".app"):
+            macos_dir = os.path.join(root, name, "Contents", "MacOS")
+            if not os.path.isdir(macos_dir):
+                continue
+            try:
+                binaries = os.listdir(macos_dir)
+            except OSError:
+                continue
+            for binary in binaries:
+                candidate = os.path.join(macos_dir, binary)
+                if _is_runnable_desktop_file(candidate):
+                    found.append(candidate)
+        lowered = name.casefold()
+        if lowered.endswith(".appimage") and "rxycode" in lowered:
+            candidate = os.path.join(root, name)
+            if _is_runnable_desktop_file(candidate):
+                found.append(candidate)
+    return found
+
+
 def _resolve_desktop_executable(desktop_dir: str | None = None) -> str | None:
     """Locate the packaged desktop executable.
 
-    Search order: explicit *desktop_dir*, then the default
-    ``~/.rxycode/desktop`` directory (both ``rxycode-desktop.exe`` on
-    Windows and ``rxycode-desktop`` on POSIX). Returns None when not found.
+    Search order: explicit *desktop_dir* (file or directory), then the
+    default ``~/.rxycode/desktop`` directory. Accepts a flat install, the
+    portable zip wrapper folder (``RxyCode.Desktop-<ver>-win/``), a macOS
+    ``.app`` bundle, or a Linux AppImage. Returns None when not found.
     """
-    candidates: list[str] = []
     dirs = [desktop_dir] if desktop_dir else [_default_desktop_dir()]
-    for d in dirs:
-        if not d:
+    for raw in dirs:
+        if not raw:
             continue
-        candidates.append(os.path.join(d, "rxycode-desktop.exe"))
-        candidates.append(os.path.join(d, "rxycode-desktop"))
-    for candidate in candidates:
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK | os.R_OK):
-            return candidate
-    # Fall back to PATH lookup.
+        if _is_runnable_desktop_file(raw):
+            return raw
+        found = _desktop_executables_in(raw)
+        if found:
+            return found[0]
+        if not os.path.isdir(raw):
+            continue
+        try:
+            children = os.listdir(raw)
+        except OSError:
+            continue
+        for child in children:
+            if child.startswith("."):
+                continue
+            child_path = os.path.join(raw, child)
+            if os.path.isdir(child_path):
+                found = _desktop_executables_in(child_path)
+                if found:
+                    return found[0]
     import shutil
 
     return shutil.which("rxycode-desktop") or shutil.which("rxycode-desktop.exe")
@@ -603,7 +668,7 @@ class _CaseInsensitiveCommandGroup(click.Group):
 def cli(ctx, model, api, api_port, log_level, print_logs):
     """RxyCode - General-Purpose AI Agent"""
     if ctx.invoked_subcommand is None:
-        # Non-TTY guard: Ink requires an interactive terminal.
+        # Non-TTY guard: OpenTUI/Ink require an interactive terminal.
         # Must run before setup_logging to avoid hangs in CI pipes.
         # On Windows PowerShell, isatty() may return True even when piped,
         # so also check the CI environment variable as a fallback.
@@ -616,7 +681,7 @@ def cli(ctx, model, api, api_port, log_level, print_logs):
         ):
             _msg = (
                 "RxyCode requires an interactive terminal (TTY) to run the "
-                "Ink frontend. Use --api for headless/server mode.\n"
+                "OpenTUI frontend. Use --api for headless/server mode.\n"
             )
             os.write(2, _msg.encode("utf-8"))
             os._exit(1)
@@ -691,7 +756,8 @@ def gui(desktop_dir):
             "Download the Desktop build for your OS from:\n"
             f"  https://github.com/xin-yi33/RxyCode/releases/tag/v{__version__}\n"
             "Windows setup.exe installs to ~/.rxycode/desktop so `rxycode gui` works.\n"
-            "Or unpack the portable zip and pass --desktop-dir, or set RXYCODE_DESKTOP_DIR."
+            "Or unpack RxyCode.Desktop-<version>-win.zip (wrapper folder or contents)\n"
+            "and pass --desktop-dir, or set RXYCODE_DESKTOP_DIR."
         )
     _log.info("Launching desktop from source", extra={"app_dir": app_dir})
     npm_exe = _npm_executable()

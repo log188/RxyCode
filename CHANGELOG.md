@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.2.10] - 2026-08-16
 
+### Republish
+
+- `rxycode gui` finds the portable zip wrapper folder, a dropped macOS `.app`,
+  or a Linux AppImage instead of only a flat `rxycode-desktop.exe`.
+- Desktop runtime staging rewrites pip console-script launchers so zip / dmg /
+  AppImage no longer point `rxycode` at the GitHub Actions runner path.
+- `rxycode --api` / `Session.prompt` bind the caller workspace so writes do not
+  land in the installed package tree.
+- Release notes and GUI docs use the published Windows zip name
+  `RxyCode.Desktop-<version>-win.zip`.
+
 ### Highlights
 
 Desktop GUI release. RxyCode now ships a real Electron app (`rxycode gui`)

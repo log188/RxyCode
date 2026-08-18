@@ -57,6 +57,48 @@ def test_resolve_desktop_exe_posix_name(monkeypatch, tmp_path):
     assert resolved == str(exe)
 
 
+def test_resolve_desktop_exe_portable_zip_wrapper(tmp_path):
+    """v1.2.10 win zip extracts to RxyCode.Desktop-<ver>-win/rxycode-desktop.exe."""
+    wrapper = tmp_path / "RxyCode.Desktop-1.2.10-win"
+    wrapper.mkdir()
+    exe = wrapper / "rxycode-desktop.exe"
+    exe.write_text("", encoding="utf-8")
+    exe.chmod(0o755)
+    assert main._resolve_desktop_executable(desktop_dir=str(wrapper)) == str(exe)
+    dropped = tmp_path / "desktop"
+    dropped.mkdir()
+    nested = dropped / "RxyCode.Desktop-1.2.10-win"
+    nested.mkdir()
+    nested_exe = nested / "rxycode-desktop.exe"
+    nested_exe.write_text("", encoding="utf-8")
+    nested_exe.chmod(0o755)
+    assert main._resolve_desktop_executable(desktop_dir=str(dropped)) == str(nested_exe)
+
+
+def test_resolve_desktop_exe_macos_app_bundle(tmp_path):
+    macos_dir = tmp_path / "RxyCode Desktop.app" / "Contents" / "MacOS"
+    macos_dir.mkdir(parents=True)
+    exe = macos_dir / "RxyCode Desktop"
+    exe.write_text("", encoding="utf-8")
+    exe.chmod(0o755)
+    assert main._resolve_desktop_executable(desktop_dir=str(tmp_path)) == str(exe)
+    parent = tmp_path / "dropped"
+    bundled = parent / "RxyCode Desktop.app" / "Contents" / "MacOS"
+    bundled.mkdir(parents=True)
+    nested_exe = bundled / "RxyCode Desktop"
+    nested_exe.write_text("", encoding="utf-8")
+    nested_exe.chmod(0o755)
+    assert main._resolve_desktop_executable(desktop_dir=str(parent)) == str(nested_exe)
+
+
+def test_resolve_desktop_exe_appimage_and_direct_file(tmp_path):
+    image = tmp_path / "rxycode-desktop-1.2.10.AppImage"
+    image.write_text("", encoding="utf-8")
+    image.chmod(0o644)
+    assert main._resolve_desktop_executable(desktop_dir=str(tmp_path)) == str(image)
+    assert main._resolve_desktop_executable(desktop_dir=str(image)) == str(image)
+
+
 def test_gui_without_packaged_or_sources_points_to_release(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_resolve_desktop_executable", lambda d=None: None)
     monkeypatch.setattr(main, "_frontend_dir", lambda: str(tmp_path))

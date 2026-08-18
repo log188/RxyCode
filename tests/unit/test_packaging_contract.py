@@ -125,6 +125,12 @@ def test_ci_smokes_the_installed_package_without_namespace_links():
     assert "ln -s" not in workflow
 
 
+def test_api_server_init_does_not_chdir_into_the_installed_package():
+    source = (PROJECT_ROOT / "api_server.py").read_text(encoding="utf-8")
+    assert "os.chdir(_project_root)" not in source
+    assert "Keep the caller's cwd" in source
+
+
 def test_release_waits_for_cross_platform_installed_smoke_tests():
     workflow = _workflow("release.yml")
 
@@ -152,3 +158,23 @@ def test_release_waits_for_cross_platform_installed_smoke_tests():
     assert "python -m twine check dist/*" in build_commands
     assert "gh release create" in publish_commands
     assert "--verify-tag" in publish_commands
+
+
+def test_published_desktop_asset_names_match_electron_builder():
+    builder = (PROJECT_ROOT / "frontend" / "desktop-app" / "electron-builder.yml").read_text(
+        encoding="utf-8"
+    )
+    notes = (PROJECT_ROOT / "docs" / "release-notes" / "RELEASE_NOTES_v1.2.10.md").read_text(
+        encoding="utf-8"
+    )
+    gui = (PROJECT_ROOT / "docs" / "GUI.md").read_text(encoding="utf-8")
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "artifactName: RxyCode.Desktop-${version}-win.${ext}" in builder
+    assert "artifactName: rxycode-desktop-${version}-setup.${ext}" in builder
+    assert "RxyCode.Desktop-1.2.10-win.zip" in notes
+    assert "RxyCode.Desktop-1.2.10-arm64-mac.zip" in notes
+    assert "rxycode-desktop-1.2.10-win.zip" not in notes
+    assert "RxyCode.Desktop-<version>-win.zip" in gui
+    assert "rxycode-desktop-<version>-win.zip" not in gui
+    assert "RxyCode.Desktop-1.2.10-win.zip" in readme
