@@ -23,6 +23,17 @@ tests/stress_test/test_phase4_harness.py`，跳过项为需要 `RXYCODE_APPSERVE
 
 `tests/conftest.py` 根据 `tests/<layer>/` 目录自动增加同名 marker，并把 system 层标为 `serial`。仍位于 `tests/test_*.py`、`tests/test_core/` 等旧目录的测试属于 legacy regression 集；Linux CI 用排除所有分层 marker 的表达式补跑，避免迁移期间漏测或重复执行。并行 lane 使用两个 xdist worker 和 `loadscope` 分发；串行 lane 从整个测试树选择 `serial`，因此不限于当前的 system 层。
 
+## 进程全局状态门（RL5）
+
+每个测试结束后，`tests/conftest.py` 的 autouse fixture 检查两件事：
+
+1. 进程 CWD 与测试开始时一致；
+2. `sys.modules` 没有新增 `core` / `core.*` 条目。
+
+失败信息带测试 nodeid 以及旧值/新值（或新增的模块名）。不要写 `Path("config/...")` 这类依赖 CWD 的相对路径（RLI-3）；资源路径用 `REPO_ROOT`。
+
+需要在测试体内改 CWD、且自己负责还原的，可以标 `@pytest.mark.allows_cwd_change`。只豁免 CWD 检查，不豁免 bare-core 别名泄漏。这个 marker 只用于进程入口或明确要验证 chdir 的用例，不能用来掩盖库函数里的 `os.chdir`。
+
 ## Scripted LLM
 
 项目中的 ScriptedLLM 实现名为 `ScriptedChatModel`，位于 `tests/support/scripted_llm.py`。它基于 LangChain `GenericFakeChatModel`，按固定顺序返回 `AIMessage`，同时保留生产代码使用的 `bind_tools()` 接口。

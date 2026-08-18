@@ -59,6 +59,37 @@ from langchain_core.messages import AIMessage
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _bare_core_module_keys() -> frozenset[str]:
+    return frozenset(
+        name for name in sys.modules if name == "core" or name.startswith("core.")
+    )
+
+
+@pytest.fixture(autouse=True)
+def _fail_leaked_process_globals(request: pytest.FixtureRequest):
+    """Fail the test that leaked CWD or a new bare-core sys.modules alias.
+
+    A leaked chdir / ``sys.modules['core*']`` entry shows up as a failure in
+    some later unrelated test.  Name the culprit at the moment it leaks.
+    Opt out of the CWD check with ``@pytest.mark.allows_cwd_change``.
+    """
+    before_cwd = os.getcwd()
+    before_keys = _bare_core_module_keys()
+    yield
+    after_cwd = os.getcwd()
+    after_keys = _bare_core_module_keys()
+    nodeid = request.node.nodeid
+    if after_cwd != before_cwd and request.node.get_closest_marker("allows_cwd_change") is None:
+        pytest.fail(
+            f"{nodeid} leaked process CWD: {before_cwd!r} -> {after_cwd!r}"
+        )
+    added = after_keys - before_keys
+    if added:
+        pytest.fail(
+            f"{nodeid} added bare-core sys.modules keys: {sorted(added)}"
+        )
+
+
 #: On CI set to "1". Missing required external tools fail instead of skip,
 #: so distribution gates cannot silently report green.
 STRICT_TOOLING = os.environ.get("RXYCODE_STRICT_TOOLING") == "1"
