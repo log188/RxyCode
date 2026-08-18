@@ -47,6 +47,14 @@ except ImportError:
     from RxyCode.RxyCode1_1_0.core.session import Session
     from appserver.question import PipeQuestionBroker
 
+try:
+    import RxyCode.RxyCode1_1_0 as _rxy_pkg
+except ImportError:
+    _rxy_pkg = None
+_unify = getattr(_rxy_pkg, "unify_bare_package_aliases", None) if _rxy_pkg is not None else None
+if callable(_unify):
+    _unify()
+
 _logger = logging.getLogger(__name__)
 
 

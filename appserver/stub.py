@@ -37,11 +37,22 @@ class StubAgent:
             thought = text[6:] or "stub-thought"
             self._last_thinking = thought
             self._thinking_history.append(thought)
+            tui = None
             try:
-                from utils.tui import get_tui
+                from .runtime import get_bound_tui
+                tui = get_bound_tui()
             except ImportError:
-                from ..utils.tui import get_tui
-            tui = get_tui()
+                try:
+                    from appserver.runtime import get_bound_tui
+                    tui = get_bound_tui()
+                except ImportError:
+                    tui = None
+            if tui is None:
+                try:
+                    from utils.tui import get_tui
+                except ImportError:
+                    from ..utils.tui import get_tui
+                tui = get_tui()
             if tui is not None and hasattr(tui, "write_reasoning"):
                 tui.write_reasoning(thought)
             return f"stub:{thought}"

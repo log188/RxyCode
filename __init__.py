@@ -270,32 +270,6 @@ def _install_bare_child_finder() -> None:
     _sys.meta_path.insert(0, _BareChildAliasFinder())
 
 
-def _install_o1_import_mirror() -> None:
-    """Keep one module object per source file after each import.
-
-    This is O(1) per import (no ``sys.modules`` scan).  The previous
-    full-table unify-on-import wrapper made ``session/new`` miss its
-    deadline under Linux py3.11 xdist.
-    """
-    current = _builtins.__import__
-    if getattr(current, "_rxycode_o1_alias", False):
-        return
-
-    def _import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: ANN001
-        module = current(name, globals, locals, fromlist, level)
-        imported = name if isinstance(name, str) else ""
-        mod_name = getattr(module, "__name__", "") or ""
-        if _is_checkout_module(module):
-            if mod_name.startswith(f"{_CANONICAL_PREFIX}."):
-                _mirror_canonical_module(mod_name, module)
-            elif imported and _is_bare_name(imported):
-                _mirror_canonical_module(f"{_CANONICAL_PREFIX}.{imported}", module)
-        return module
-
-    _import._rxycode_o1_alias = True  # type: ignore[attr-defined]
-    _builtins.__import__ = _import
-
-
 def install_test_import_unify_hook() -> None:
     """Full remirror after canonical imports.  Tests only."""
     current = _builtins.__import__
@@ -330,7 +304,6 @@ def _register_bare_protocol_alias() -> None:
     the alias here means ``rxycode`` works from any working directory.
     """
     _install_bare_child_finder()
-    _install_o1_import_mirror()
     try:
         protocol = importlib.import_module(f"{_CANONICAL_PREFIX}.protocol")
     except ImportError:
