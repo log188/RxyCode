@@ -25,6 +25,7 @@ from types import SimpleNamespace
 # nested import resolves here too.
 # ---------------------------------------------------------------------------
 if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
+    import importlib
     import types as _types
 
     _checkout_root = Path(__file__).resolve().parent.parent
@@ -53,6 +54,17 @@ if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
     _unify = getattr(_canonical, "unify_bare_package_aliases", None)
     if callable(_unify):
         _unify()
+    try:
+        importlib.import_module("RxyCode.RxyCode1_1_0.core")
+        importlib.import_module("RxyCode.RxyCode1_1_0.core.providers")
+        importlib.import_module("RxyCode.RxyCode1_1_0.protocol")
+    except ImportError:
+        pass
+    if callable(_unify):
+        _unify()
+    _hook = getattr(_canonical, "install_test_import_unify_hook", None)
+    if callable(_hook):
+        _hook()
     os.environ["_RXYCODE_TEST_CHECKOUT"] = str(_checkout_root)
 
 import pytest
@@ -188,7 +200,7 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.serial)
     unify = getattr(sys.modules.get("RxyCode.RxyCode1_1_0"), "unify_bare_package_aliases", None)
     if callable(unify):
-        unify(force=True)
+        unify()
 
 
 # ─── sys.stdout protection ──────────────────────────────────────
@@ -222,7 +234,7 @@ def _isolate_process_singletons():
     from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
     unify = getattr(sys.modules.get("RxyCode.RxyCode1_1_0"), "unify_bare_package_aliases", None)
     if callable(unify):
-        unify(force=True)
+        unify()
 
     previous_broker = approval.get_approval_broker()
     previous_question_broker = question.get_question_broker()

@@ -74,17 +74,27 @@ def _same_source(left: _types.ModuleType | None, right: _types.ModuleType | None
 
 
 def _apply_bare_alias(key: str, short: str, module: _types.ModuleType) -> None:
-    current_short = _sys.modules.get(short)
-    current_canon = _sys.modules.get(key)
-    # Prefer the already-bound short module so ``from ..core.question`` in
-    # top-level ``appserver`` keeps the same function object as
-    # ``from RxyCode.RxyCode1_1_0.core.question``.
-    if current_short is not None and _same_source(current_short, module):
-        module = current_short
-    elif current_canon is not None and _same_source(current_canon, module):
-        module = current_canon
     parent_name, _, child = short.rpartition(".")
     parent = _sys.modules.get(parent_name)
+    canon_parent_name, _, canon_child = key.rpartition(".")
+    canon_parent = _sys.modules.get(canon_parent_name)
+    # Keep the submodule object already bound on a package.  ``core.providers``
+    # instantiates provider classes at import; replacing that module later
+    # splits ``isinstance`` against the leftover ``_PROVIDERS`` instances.
+    for owner, attr in ((parent, child), (canon_parent, canon_child)):
+        if owner is None or not attr:
+            continue
+        bound = getattr(owner, attr, None)
+        if isinstance(bound, _types.ModuleType) and _same_source(bound, module):
+            module = bound
+            break
+    else:
+        current_canon = _sys.modules.get(key)
+        current_short = _sys.modules.get(short)
+        if current_canon is not None and _same_source(current_canon, module):
+            module = current_canon
+        elif current_short is not None and _same_source(current_short, module):
+            module = current_short
     if short == "appserver" or short.startswith("appserver."):
         _sys.modules.setdefault(short, module)
         if parent is not None and child and not hasattr(parent, child):
@@ -197,24 +207,6 @@ class _BareChildAliasFinder(importlib.abc.MetaPathFinder):
     _mark = "_rxycode_bare_child_alias"
 
     def find_spec(self, fullname, path, target=None):  # noqa: ANN001
-        if fullname.startswith(f"{_CANONICAL_PREFIX}."):
-            short = fullname[len(_CANONICAL_PREFIX) + 1 :]
-            if not _is_bare_name(short) or short == "appserver" or short.startswith("appserver."):
-                return None
-            existing_short = _sys.modules.get(short)
-            if existing_short is None or not _is_checkout_module(existing_short):
-                return None
-            _sys.modules[fullname] = existing_short
-            _mirror_canonical_module(fullname, existing_short)
-            spec = importlib.util.spec_from_loader(
-                fullname,
-                _ReuseLoader(existing_short),
-                origin=getattr(existing_short, "__file__", None),
-                is_package=hasattr(existing_short, "__path__"),
-            )
-            if spec is not None and hasattr(existing_short, "__path__"):
-                spec.submodule_search_locations = list(existing_short.__path__)
-            return spec
         if fullname.startswith("RxyCode") or not _is_bare_name(fullname):
             return None
         if fullname == "appserver" or fullname.startswith("appserver."):
@@ -243,6 +235,7 @@ class _BareChildAliasFinder(importlib.abc.MetaPathFinder):
                 if not (
                     parent_mod_name == _CANONICAL_PREFIX
                     or parent_mod_name.startswith(f"{_CANONICAL_PREFIX}.")
+                    or _is_checkout_module(parent)
                 ):
                     return None
         try:
@@ -285,6 +278,7 @@ def install_test_import_unify_hook() -> None:
             or mod_name.startswith(f"{_CANONICAL_PREFIX}.")
             or imported == _CANONICAL_PREFIX
             or imported.startswith(f"{_CANONICAL_PREFIX}.")
+            or (imported and _is_bare_name(imported))
         ):
             unify_bare_package_aliases()
         return module

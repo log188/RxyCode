@@ -35,25 +35,24 @@ except ImportError:
     )
 
 try:
-    from ..core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
-    from ..core.safety.approval import set_approval_broker
-    from ..core.question import set_question_broker
-    from ..core.session import Session
-    from .question import PipeQuestionBroker
-except ImportError:
     from RxyCode.RxyCode1_1_0.core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
     from RxyCode.RxyCode1_1_0.core.safety.approval import set_approval_broker
     from RxyCode.RxyCode1_1_0.core.question import set_question_broker
     from RxyCode.RxyCode1_1_0.core.session import Session
-    from appserver.question import PipeQuestionBroker
-
-try:
-    import RxyCode.RxyCode1_1_0 as _rxy_pkg
+    from .question import PipeQuestionBroker
 except ImportError:
-    _rxy_pkg = None
-_unify = getattr(_rxy_pkg, "unify_bare_package_aliases", None) if _rxy_pkg is not None else None
-if callable(_unify):
-    _unify()
+    try:
+        from ..core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
+        from ..core.safety.approval import set_approval_broker
+        from ..core.question import set_question_broker
+        from ..core.session import Session
+        from .question import PipeQuestionBroker
+    except ImportError:
+        from core.safety.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
+        from core.safety.approval import set_approval_broker
+        from core.question import set_question_broker
+        from core.session import Session
+        from appserver.question import PipeQuestionBroker
 
 _logger = logging.getLogger(__name__)
 
