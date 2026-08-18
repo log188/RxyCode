@@ -11,13 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `rxycode gui` finds the v1.2.10 portable zip wrapper folder
-  (`RxyCode.Desktop-<ver>-win/`), a dropped macOS `.app`, or a Linux
-  AppImage instead of only a flat `rxycode-desktop.exe`.
-- Desktop runtime staging rewrites pip console-script shebangs so AppImage /
-  zip / dmg no longer point `rxycode` at the GitHub Actions runner path.
-- Release notes and GUI docs use the published Windows zip name
-  `RxyCode.Desktop-<version>-win.zip`.
 - Weekly scheduled CI no longer treats live-provider 401/quota/circuit-breaker
   as an AgentV2 quality regression (eval gate skips; live test skips).
 - Provider 401/quota text no longer echoes `sk-` / `ark-` keys (including
@@ -28,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## [1.2.10] - 2026-08-16
+
+### Republish
+
+- `rxycode gui` finds the portable zip wrapper folder, a dropped macOS `.app`,
+  or a Linux AppImage instead of only a flat `rxycode-desktop.exe`.
+- Desktop runtime staging rewrites pip console-script launchers so zip / dmg /
+  AppImage no longer point `rxycode` at the GitHub Actions runner path.
+- `rxycode --api` / `Session.prompt` bind the caller workspace so writes do not
+  land in the installed package tree.
+- Release notes and GUI docs use the published Windows zip name
+  `RxyCode.Desktop-<version>-win.zip`.
 
 ### Highlights
 

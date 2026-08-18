@@ -35,6 +35,9 @@ RxyCode 是一个规划执行型的 AI 编程助手：把复杂任务自动拆�
 - **完全访问确认关不掉** —— Escape 可取消
 - **附件路径丢失** —— 选中的文件路径会写入 prompt（`promptWithAttachment`）
 - **权限标签** —— Desktop UI 使用中文：更改前询问 / 自动编辑 / 完全访问
+- **便携 zip 找不到 exe** —— `rxycode gui` 能识别包装目录及其父目录
+- **捆绑 rxycode 指向 CI 路径** —— 打包后改为可搬迁启动器
+- **`rxycode --api` 写进安装包** —— 文件写入调用方工作区，不再 `chdir` 到 site-packages
 
 ### 变更
 

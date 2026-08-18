@@ -131,17 +131,86 @@ class Session:
         previous_output = token_stats.output_tokens
         previous_cache_hit_tokens = token_stats.cache_hit_tokens
         cursor = thinking_cursor(agent)
+        workspace = Path(self.workspace_root).expanduser().resolve()
+        workspace.mkdir(parents=True, exist_ok=True)
+        if hasattr(agent, "_session_id"):
+            agent._session_id = self.session_id
+        if hasattr(agent, "_workspace_root"):
+            agent._workspace_root = workspace
 
+        from RxyCode.RxyCode1_1_0.core.session_runtime import (
+            bind_session,
+            reset_session_binding,
+            set_working_directory,
+        )
+
+        session_token = bind_session(self.session_id)
         try:
-            if permission_mode is None:
-                answer = await agent.run(text, mode=mode)
-            else:
-                from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import permission_mode_override
-
-                with permission_mode_override(permission_mode):
+            set_working_directory(workspace)
+            try:
+                if permission_mode is None:
                     answer = await agent.run(text, mode=mode)
-        except Exception as exc:
-            detail = str(exc)
+                else:
+                    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import permission_mode_override
+
+                    with permission_mode_override(permission_mode):
+                        answer = await agent.run(text, mode=mode)
+            except Exception as exc:
+                detail = str(exc)
+                if tui is not None and hasattr(tui, "exhaust_active_recovery"):
+                    tui.exhaust_active_recovery(detail)
+                self.emit(
+                    ErrorNotification(
+                        session_id=self.session_id,
+                        run_id=run_id,
+                        message=detail,
+                        status="failed",
+                    )
+                )
+                return PromptResult(answer="", status="failed", detail=detail)
+
+            status, detail = classify_agent_result(answer)
+            delta_input = token_stats.input_tokens - previous_input
+            delta_output = token_stats.output_tokens - previous_output
+            delta_cache_hit_tokens = token_stats.cache_hit_tokens - previous_cache_hit_tokens
+            cache_hit_rate = (
+                max(delta_cache_hit_tokens, 0) / max(delta_input, 1) * 100
+                if delta_input > 0
+                else 0.0
+            )
+            thinking = thinking_since(agent, cursor)
+
+            usage_reported = bool(delta_input or delta_output or delta_cache_hit_tokens)
+            usage_kwargs = {
+                "input_tokens": max(delta_input, 0) if usage_reported else None,
+                "output_tokens": max(delta_output, 0) if usage_reported else None,
+                "cache_hit_tokens": max(delta_cache_hit_tokens, 0) if usage_reported else None,
+                "cache_hit_rate": cache_hit_rate if usage_reported else None,
+                "reporting_status": "reported" if usage_reported else "not_reported",
+            }
+            self.emit(TokenUsage(session_id=self.session_id, **usage_kwargs))
+
+            if status == "succeeded":
+                if tui is not None and hasattr(tui, "resolve_active_recovery"):
+                    tui.resolve_active_recovery()
+                self.emit(
+                    FinalAnswer(
+                        session_id=self.session_id,
+                        run_id=run_id,
+                        text=answer,
+                        thinking=thinking or None,
+                        **usage_kwargs,
+                        session_schema_version=self.session_schema_version,
+                    )
+                )
+                return PromptResult(
+                    answer=answer,
+                    status=status,
+                    detail=detail,
+                    thinking=thinking,
+                    **usage_kwargs,
+                )
+
             if tui is not None and hasattr(tui, "exhaust_active_recovery"):
                 tui.exhaust_active_recovery(detail)
             self.emit(
@@ -149,43 +218,7 @@ class Session:
                     session_id=self.session_id,
                     run_id=run_id,
                     message=detail,
-                    status="failed",
-                )
-            )
-            return PromptResult(answer="", status="failed", detail=detail)
-
-        status, detail = classify_agent_result(answer)
-        delta_input = token_stats.input_tokens - previous_input
-        delta_output = token_stats.output_tokens - previous_output
-        delta_cache_hit_tokens = token_stats.cache_hit_tokens - previous_cache_hit_tokens
-        cache_hit_rate = (
-            max(delta_cache_hit_tokens, 0) / max(delta_input, 1) * 100
-            if delta_input > 0
-            else 0.0
-        )
-        thinking = thinking_since(agent, cursor)
-
-        usage_reported = bool(delta_input or delta_output or delta_cache_hit_tokens)
-        usage_kwargs = {
-            "input_tokens": max(delta_input, 0) if usage_reported else None,
-            "output_tokens": max(delta_output, 0) if usage_reported else None,
-            "cache_hit_tokens": max(delta_cache_hit_tokens, 0) if usage_reported else None,
-            "cache_hit_rate": cache_hit_rate if usage_reported else None,
-            "reporting_status": "reported" if usage_reported else "not_reported",
-        }
-        self.emit(TokenUsage(session_id=self.session_id, **usage_kwargs))
-
-        if status == "succeeded":
-            if tui is not None and hasattr(tui, "resolve_active_recovery"):
-                tui.resolve_active_recovery()
-            self.emit(
-                FinalAnswer(
-                    session_id=self.session_id,
-                    run_id=run_id,
-                    text=answer,
-                    thinking=thinking or None,
-                    **usage_kwargs,
-                    session_schema_version=self.session_schema_version,
+                    status=status,
                 )
             )
             return PromptResult(
@@ -193,26 +226,10 @@ class Session:
                 status=status,
                 detail=detail,
                 thinking=thinking,
-                    **usage_kwargs,
-                )
-
-        if tui is not None and hasattr(tui, "exhaust_active_recovery"):
-            tui.exhaust_active_recovery(detail)
-        self.emit(
-            ErrorNotification(
-                session_id=self.session_id,
-                run_id=run_id,
-                message=detail,
-                status=status,
+                **usage_kwargs,
             )
-        )
-        return PromptResult(
-            answer=answer,
-            status=status,
-            detail=detail,
-            thinking=thinking,
-            **usage_kwargs,
-        )
+        finally:
+            reset_session_binding(session_token)
 
     def interrupt(self, agent: Any) -> bool:
         """Request cancellation on the underlying agent, if supported."""

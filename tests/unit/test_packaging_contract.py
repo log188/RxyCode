@@ -125,6 +125,12 @@ def test_ci_smokes_the_installed_package_without_namespace_links():
     assert "ln -s" not in workflow
 
 
+def test_api_server_init_does_not_chdir_into_the_installed_package():
+    source = (PROJECT_ROOT / "api_server.py").read_text(encoding="utf-8")
+    assert "os.chdir(_project_root)" not in source
+    assert "Keep the caller's cwd" in source
+
+
 def test_release_waits_for_cross_platform_installed_smoke_tests():
     workflow = _workflow("release.yml")
 
