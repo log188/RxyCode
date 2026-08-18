@@ -10,6 +10,8 @@ The gui command must:
 
 from __future__ import annotations
 
+import os
+
 import click
 import pytest
 from click.testing import CliRunner
@@ -109,6 +111,27 @@ def test_resolve_desktop_exe_appimage_and_direct_file(tmp_path):
     image.chmod(0o644)
     assert main._resolve_desktop_executable(desktop_dir=str(tmp_path)) == str(image)
     assert main._resolve_desktop_executable(desktop_dir=str(image)) == str(image)
+
+
+def test_packaged_desktop_popen_spec_prepares_linux_appimage(tmp_path, monkeypatch):
+    image = tmp_path / "rxycode-desktop-1.2.10.AppImage"
+    image.write_text("", encoding="utf-8")
+    image.chmod(0o644)
+    monkeypatch.delenv("APPIMAGE_EXTRACT_AND_RUN", raising=False)
+    cmd, env = main._packaged_desktop_popen_spec(str(image))
+    assert cmd == [str(image)]
+    assert env["APPIMAGE_EXTRACT_AND_RUN"] == "1"
+    if os.name != "nt":
+        assert image.stat().st_mode & 0o111
+
+
+def test_packaged_desktop_popen_spec_leaves_windows_exe_env_alone(tmp_path, monkeypatch):
+    exe = tmp_path / "rxycode-desktop.exe"
+    exe.write_text("", encoding="utf-8")
+    monkeypatch.delenv("APPIMAGE_EXTRACT_AND_RUN", raising=False)
+    cmd, env = main._packaged_desktop_popen_spec(str(exe))
+    assert cmd == [str(exe)]
+    assert "APPIMAGE_EXTRACT_AND_RUN" not in env
 
 
 def test_gui_without_packaged_or_sources_points_to_release(monkeypatch, tmp_path):

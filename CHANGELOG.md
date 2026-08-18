@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Release notes no longer tell a CLI-only install to run `rxycode gui`.
+  Desktop is a separate GitHub Release download; the wheel does not ship
+  Electron.
+- Published wheel / sdist / Desktop runtime no longer ship `evals`,
+  `.coveragerc`, `AGENTS.md`, or repo test scripts.
+- Linux AppImage startup: `rxycode gui` marks the image executable and
+  sets `APPIMAGE_EXTRACT_AND_RUN=1`; the packaged app passes `--no-sandbox`
+  so missing FUSE / unsigned chrome-sandbox no longer abort launch.
 - Weekly scheduled CI no longer treats live-provider 401/quota/circuit-breaker
   as an AgentV2 quality regression (eval gate skips; live test skips).
 - Provider 401/quota text no longer echoes `sk-` / `ark-` keys (including

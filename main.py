@@ -220,6 +220,31 @@ def _resolve_desktop_executable(desktop_dir: str | None = None) -> str | None:
     return shutil.which("rxycode-desktop") or shutil.which("rxycode-desktop.exe")
 
 
+def _ensure_unix_executable(path: str) -> None:
+    """Best-effort +x so a browser-downloaded AppImage can be launched."""
+    if os.name == "nt":
+        return
+    try:
+        mode = os.stat(path).st_mode
+        os.chmod(path, mode | 0o111)
+    except OSError:
+        pass
+
+
+def _packaged_desktop_popen_spec(exe: str) -> tuple[list[str], dict[str, str]]:
+    """Command + env for a packaged Desktop binary.
+
+    Linux AppImages from GitHub often arrive without the execute bit and
+    fail immediately on distros without FUSE. Mark +x and prefer extract-
+    and-run so ``rxycode gui`` can start the window.
+    """
+    env = dict(os.environ)
+    if exe.casefold().endswith(".appimage"):
+        _ensure_unix_executable(exe)
+        env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
+    return [exe], env
+
+
 def _resolve_transport() -> str:
     """OpenTUI backend transport: stdio (default) or http (fallback)."""
     raw = (os.environ.get("RXYCODE_TRANSPORT") or "stdio").strip().lower()
@@ -739,7 +764,8 @@ def gui(desktop_dir):
     exe = _resolve_desktop_executable(desktop_dir)
     if exe is not None:
         _log.info("Launching packaged desktop", extra={"exe": exe})
-        proc = subprocess.Popen([exe], shell=False)
+        cmd, env = _packaged_desktop_popen_spec(exe)
+        proc = subprocess.Popen(cmd, env=env, shell=False)
         try:
             proc.wait()
         except KeyboardInterrupt:

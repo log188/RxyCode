@@ -10,7 +10,8 @@ Windows/macOS/Linux builds from the [GitHub Release](https://github.com/xin-yi33
 
 ## How it launches
 
-`rxycode gui` resolves the packaged desktop executable in this order:
+`rxycode gui` resolves the packaged desktop executable in this order
+(CLI/`uv`/`install.sh` alone is not enough — download a Desktop asset first):
 
 1. `--desktop-dir <path>` if given,
 2. `~/.rxycode/desktop` (the installer's default install directory),
@@ -51,7 +52,13 @@ parent directory.
 
 - macOS: mount the `.dmg` and copy **RxyCode Desktop** into Applications
   (the app is unsigned; right-click → Open the first time).
-- Linux: `chmod +x rxycode-desktop-<version>.AppImage` and run it.
+- Linux: `chmod +x rxycode-desktop-<version>.AppImage` then run it.
+  Modern distros often lack FUSE (`libfuse.so.2`); if the AppImage exits
+  immediately, use `APPIMAGE_EXTRACT_AND_RUN=1 ./rxycode-desktop-<version>.AppImage`.
+  Putting the file in `~/.rxycode/desktop` and running `rxycode gui` does
+  the executable bit and extract-and-run for you. The packaged app also
+  passes `--no-sandbox` on Linux so the AppImage is not blocked by the
+  unsigned chrome-sandbox helper.
 
 ## Main window
 

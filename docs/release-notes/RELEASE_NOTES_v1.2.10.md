@@ -51,7 +51,7 @@ RxyCode 是一个规划执行型的 AI 编程助手：把复杂任务自动拆�
 
 ## 安装 / Install
 
-**推荐（v1.2.10）：**
+**CLI / OpenTUI（不含 Electron）：** 下面三步只装终端。装完输入 `rxycode`。**不要**指望这时 `rxycode gui` 能打开——CLI 包里没有桌面程序。
 
 ```powershell
 # Windows
@@ -70,11 +70,15 @@ uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.10"
 rxycode
 ```
 
-**桌面 GUI：**
+**桌面 GUI（需另下本页 Desktop 资产）：**
 
-```bash
-rxycode gui
-```
+| 系统 | 怎么开 |
+|------|--------|
+| Windows | 运行 `rxycode-desktop-1.2.10-setup.exe`，或解压 `RxyCode.Desktop-1.2.10-win.zip` 后运行 `rxycode-desktop.exe` |
+| macOS | 打开 `.dmg`，把 **RxyCode Desktop** 拖进 Applications（未签名，首次请右键打开） |
+| Linux | `chmod +x rxycode-desktop-1.2.10.AppImage && ./rxycode-desktop-1.2.10.AppImage`。没有 FUSE 时加 `APPIMAGE_EXTRACT_AND_RUN=1` |
+
+装到 `~/.rxycode/desktop`（或设置 `RXYCODE_DESKTOP_DIR` / `--desktop-dir`）之后，**已经有 Desktop 的机器**才可以用 `rxycode gui` 当启动器。
 
 **下载策略：** 仅本页（v1.2.10）提供 wheel / sdist 与桌面打包产物。更早版本的 GitHub Release **不开放**安装包下载（v1.2.9 及更早仅 wheel / sdist）。
 

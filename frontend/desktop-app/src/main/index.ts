@@ -17,6 +17,7 @@ import {
 import { isSafeExternalUrl } from './external-url'
 import { isAllowedNavigation } from './navigation'
 import { pickWorkspaceDirectory } from './workspace-dialog'
+import { shouldDisableLinuxSandbox } from './linuxStartup'
 
 const SMOKE = process.env.RXYCODE_DESKTOP_SMOKE === '1'
 const KEEPALIVE = process.env.RXYCODE_DESKTOP_KEEPALIVE === '1'
@@ -32,6 +33,9 @@ const APP_INDEX_URL = pathToFileURL(join(__dirname, '../renderer/index.html')).h
 // the explicit --disable-gpu switch (verified equivalent). The impact on
 // this text-first UI is negligible; packaging (D6) may refine per environment.
 app.commandLine.appendSwitch('disable-gpu')
+if (shouldDisableLinuxSandbox(process.platform, app.isPackaged)) {
+  app.commandLine.appendSwitch('no-sandbox')
+}
 
 if (USER_DATA_OVERRIDE !== undefined && USER_DATA_OVERRIDE !== '') {
   app.setPath('userData', USER_DATA_OVERRIDE)

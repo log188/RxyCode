@@ -78,6 +78,24 @@ def test_manifest_includes_opentui_and_ink_runtimes_and_excludes_node_modules():
     assert "prune frontend/node_modules" in manifest
     assert "prune frontend/opentui-app/node_modules" in manifest
     assert "prune frontend/protocol-client/node_modules" in manifest
+    assert "prune evals" in manifest
+    assert "prune tests" in manifest
+    assert "prune scripts" in manifest
+    assert "exclude AGENTS.md" in manifest
+    assert "global-exclude .coveragerc" in manifest
+    assert "recursive-include evals" not in manifest
+
+
+def test_pyproject_does_not_ship_evals_or_repo_harness_files():
+    packages = set(_pyproject()["tool"]["setuptools"]["packages"])
+    assert "RxyCode.RxyCode1_1_0.evals" not in packages
+    excluded = "\n".join(
+        _pyproject()["tool"]["setuptools"]["exclude-package-data"][VERSIONED_PACKAGE]
+    )
+    assert "evals/**" in excluded
+    assert "scripts/**" in excluded
+    assert "AGENTS.md" in excluded
+    assert ".coveragerc" in excluded
 
 
 def test_package_data_ships_opentui_sources():
@@ -178,3 +196,16 @@ def test_published_desktop_asset_names_match_electron_builder():
     assert "RxyCode.Desktop-<version>-win.zip" in gui
     assert "rxycode-desktop-<version>-win.zip" not in gui
     assert "RxyCode.Desktop-1.2.10-win.zip" in readme
+
+
+def test_release_notes_separate_cli_install_from_desktop_gui():
+    import re
+
+    notes = (
+        PROJECT_ROOT / "docs" / "release-notes" / "RELEASE_NOTES_v1.2.10.md"
+    ).read_text(encoding="utf-8")
+    assert "不含 Electron" in notes
+    assert "需另下本页 Desktop 资产" in notes
+    assert "CLI 包里没有桌面程序" in notes
+    fences = re.findall(r"```[^\n]*\n(.*?)```", notes, flags=re.S)
+    assert not any(block.strip() == "rxycode gui" for block in fences)

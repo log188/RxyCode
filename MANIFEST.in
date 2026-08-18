@@ -13,7 +13,6 @@ include frontend/opentui-app/bun.lock
 recursive-include frontend/protocol-client/src *
 include frontend/protocol-client/package.json
 include frontend/protocol-client/tsconfig.json
-recursive-include evals/tasks *.yaml
 global-exclude *.py[cod]
 global-exclude *.log
 global-exclude *.key
@@ -21,6 +20,16 @@ global-exclude *.pem
 global-exclude .env
 global-exclude *.test.ts
 global-exclude *.test.tsx
+global-exclude .coveragerc
+exclude AGENTS.md
+exclude pytest.ini
+exclude CONTRIBUTING.md
+exclude Dockerfile
+exclude docker-compose.yml
+exclude .dockerignore
+prune evals
+prune tests
+prune scripts
 prune artifacts
 prune data
 prune frontend/node_modules

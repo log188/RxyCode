@@ -4,6 +4,10 @@
 
 The evals module runs **real AgentV2 tasks** against a curated suite of coding scenarios, verifies outcomes with machine-checkable assertions, and optionally scores answers with LLM-as-judge. Results can be saved, compared against baselines, and rendered as markdown reports.
 
+Evals is a **source-checkout harness**. The published CLI wheel / sdist and the
+Desktop bundled `app/` tree do not ship `evals/`. Run it from a git clone:
+`python -m evals.run`.
+
 **Design goals (Phase 1):**
 
 - Measure **RxyCode** (AgentV2 + tools + graph), not just the underlying model

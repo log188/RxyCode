@@ -132,7 +132,7 @@ Desktop 需要从 [GitHub Releases](https://github.com/xin-yi33/RxyCode/releases
 |------|------|
 | Windows | `rxycode-desktop-1.2.10-setup.exe`（安装包）或 `RxyCode.Desktop-1.2.10-win.zip`（便携包） |
 | macOS | `.dmg`（未签名） |
-| Linux | `.AppImage` |
+| Linux | `.AppImage`（先 `chmod +x`；立刻退出则加 `APPIMAGE_EXTRACT_AND_RUN=1`） |
 
 `rxycode gui` 只会启动已经装好的 Desktop（`~/.rxycode/desktop`、`RXYCODE_DESKTOP_DIR` 或 `--desktop-dir`）。只装 CLI 无法打开桌面端。任务区底部是 Composer。点 `+` 会打开：
 

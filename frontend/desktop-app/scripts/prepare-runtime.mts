@@ -268,6 +268,39 @@ function rewriteStagedConsoleScripts(pythonDir: string, platform: string): void 
 
 export { keepPythonFile, keepSitePackages, keepVendoredFile, rewriteStagedConsoleScripts }
 
+/** Top-level repo entries that the packaged Desktop appserver actually needs. */
+const VENDORED_TOP_LEVEL = new Set([
+  'appserver',
+  'cache',
+  'config',
+  'core',
+  'execution',
+  'history',
+  'log',
+  'lsp',
+  'mcp',
+  'memory',
+  'planning',
+  'protocol',
+  'rag',
+  'recovery',
+  'scheduler',
+  'synthesis',
+  'tools',
+  'utils',
+  'validation',
+  '_package_root',
+  'api_server.py',
+  'api_server_models.py',
+  'api_server_stream.py',
+  'entrypoint.py',
+  'main.py',
+  '__init__.py',
+  '__main__.py',
+  'LICENSE',
+  'requirements.txt'
+])
+
 function keepVendoredFile(repo: string, src: string, isDirectory: boolean): boolean {
   void isDirectory // signature parity with keepPythonFile
   if (src === repo) return true
@@ -275,22 +308,7 @@ function keepVendoredFile(repo: string, src: string, isDirectory: boolean): bool
   const name = basename(src)
   if (name === '__pycache__' || name.endsWith('.pyc')) return false
   const top = parts[0]
-  if (
-    top === '.git' ||
-    top === '.github' ||
-    top === '.pytest_cache' ||
-    top === '.worktrees' ||
-    top === '.cursor' ||
-    top === '.codex' ||
-    top === '.agents' ||
-    top === 'docs' ||
-    top === 'tests' ||
-    top === 'evals' ||
-    top === 'frontend' ||
-    top === 'rxycode.egg-info'
-  ) {
-    return false
-  }
+  if (!VENDORED_TOP_LEVEL.has(top)) return false
   if (top === 'log' && (name.endsWith('.out') || name === 'status.json' || name.endsWith('.log'))) {
     return false
   }

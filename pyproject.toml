@@ -49,7 +49,6 @@ packages = [
   "RxyCode.RxyCode1_1_0.core.subagents",
   "RxyCode.RxyCode1_1_0.appserver",
   "RxyCode.RxyCode1_1_0.protocol",
-  "RxyCode.RxyCode1_1_0.evals",
   "RxyCode.RxyCode1_1_0.execution",
   "RxyCode.RxyCode1_1_0.history",
   "RxyCode.RxyCode1_1_0.log",
@@ -86,12 +85,16 @@ dependencies = { file = ["requirements.txt"] }
   "frontend/protocol-client/tsconfig.json",
   "frontend/protocol-client/src/**/*.ts",
 ]
-"RxyCode.RxyCode1_1_0.evals" = ["tasks/*.yaml"]
 
 [tool.setuptools.exclude-package-data]
 "RxyCode.RxyCode1_1_0" = [
   "frontend/opentui-app/src/**/*.test.ts",
   "frontend/opentui-app/src/**/*.test.tsx",
+  "AGENTS.md",
+  ".coveragerc",
+  "evals/**",
+  "scripts/**",
+  "tests/**",
 ]
 
 [tool.ruff]

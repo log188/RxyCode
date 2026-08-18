@@ -132,7 +132,7 @@ Desktop is a **separate download** from [GitHub Releases](https://github.com/xin
 |----|--------|
 | Windows | `rxycode-desktop-1.2.10-setup.exe` (installer) or `RxyCode.Desktop-1.2.10-win.zip` (portable) |
 | macOS | `.dmg` (unsigned) |
-| Linux | `.AppImage` |
+| Linux | `.AppImage` (`chmod +x`; if it exits immediately, `APPIMAGE_EXTRACT_AND_RUN=1 ./rxycode-desktop-1.2.10.AppImage`) |
 
 `rxycode gui` only launches that installed app (`~/.rxycode/desktop`, `RXYCODE_DESKTOP_DIR`, or `--desktop-dir`). A CLI-only install cannot start Desktop. Composer sits at the bottom of the task pane. The `+` button opens:
 

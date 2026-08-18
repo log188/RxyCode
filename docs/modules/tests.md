@@ -75,8 +75,8 @@ python -m twine check dist/*
 `test_installed_package.py` 在临时目录构建 wheel 和 sdist，创建带空格的独立 venv，
 使用 `pip --no-deps` 安装后清空 `PYTHONPATH` 并离开源码 CWD。它验证
 `rxycode --version`、`--help`、`python -m RxyCode` 和无模型首启，还会
-检查 wheel 没有夹带 tests、data、runtime logs、credentials、artifacts 或
-`node_modules`。
+检查 wheel / sdist 没有夹带 tests、evals、scripts、`.coveragerc`、`AGENTS.md`、
+data、runtime logs、credentials、artifacts 或 `node_modules`。
 
 CI coverage 不用单次 pytest 混跑共享状态。`.github/workflows/ci.yml` 依次运行 unit、integration、contract、serial、legacy regression，并为每层设置独立 `COVERAGE_FILE`，最后执行 `coverage combine`。本地生成合并报告时沿用该五 lane 命令，再运行：
 

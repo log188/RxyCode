@@ -198,14 +198,12 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
         assert VERSIONED_ROOT / "frontend/protocol-client/package.json" in paths
         assert VERSIONED_ROOT / "frontend/package.json" in paths
         assert VERSIONED_ROOT / "frontend/dist/index.js" in paths
-        assert any(
-            path.parent == VERSIONED_ROOT / "evals/tasks"
-            and path.suffix in {".yaml", ".yml"}
-            for path in paths
-        )
+        assert not any(path.parts[:3] == (*VERSIONED_ROOT.parts, "evals") for path in paths)
 
         forbidden_directories = {
             "tests",
+            "evals",
+            "scripts",
             "data",
             "node_modules",
             "artifacts",
@@ -221,7 +219,8 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
                 part.casefold() for part in path.parts
             )
             or path.suffix.casefold() in {".log", ".key", ".pem"}
-            or path.name.casefold() in {".env", "credentials.yaml"}
+            or path.name.casefold()
+            in {".env", "credentials.yaml", ".coveragerc", "agents.md", "pytest.ini"}
         ]
         assert not leaked, f"wheel contains workspace state or credentials: {leaked}"
 
@@ -270,13 +269,14 @@ def test_sdist_contains_bootstraps_without_runtime_state(
     ):
         assert required in relative
 
-    forbidden = {"artifacts", "data", "node_modules", "__pycache__"}
+    forbidden = {"artifacts", "data", "node_modules", "__pycache__", "evals", "tests", "scripts"}
     leaked = [
         str(path)
         for path in relative
         if forbidden.intersection(part.casefold() for part in path.parts)
         or path.suffix.casefold() in {".log", ".key", ".pem"}
-        or path.name.casefold() in {".env", "credentials.yaml"}
+        or path.name.casefold()
+        in {".env", "credentials.yaml", ".coveragerc", "agents.md", "pytest.ini"}
     ]
     assert not leaked, f"sdist contains runtime state or credentials: {leaked}"
 
