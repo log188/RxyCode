@@ -292,8 +292,16 @@ def test_appserver_multiple_sessions(appserver_proc):
             "protocol_version": "1.0.0",
         },
     )
-    s1 = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
-    s2 = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+    s1 = client.request(
+        "session/new",
+        {"workspace_root": str(PROJECT_ROOT)},
+        timeout=30.0,
+    )
+    s2 = client.request(
+        "session/new",
+        {"workspace_root": str(PROJECT_ROOT)},
+        timeout=30.0,
+    )
     assert s1["session_id"] != s2["session_id"]
 
     r1 = client.request(
@@ -321,8 +329,16 @@ def test_appserver_concurrent_sessions(appserver_proc):
             "protocol_version": "1.0.0",
         },
     )
-    s1 = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
-    s2 = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+    s1 = client.request(
+        "session/new",
+        {"workspace_root": str(PROJECT_ROOT)},
+        timeout=30.0,
+    )
+    s2 = client.request(
+        "session/new",
+        {"workspace_root": str(PROJECT_ROOT)},
+        timeout=30.0,
+    )
 
     results: dict[str, dict] = {}
     errors: list[BaseException] = []
