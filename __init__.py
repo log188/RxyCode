@@ -48,6 +48,9 @@ def _is_bare_name(name: str) -> bool:
     return name.split(".", 1)[0] in _BARE_PACKAGES
 
 
+_mirrored_canonical: set[str] = set()
+
+
 def unify_bare_package_aliases() -> None:
     """Point bare names at already-imported versioned modules.
 
@@ -59,26 +62,33 @@ def unify_bare_package_aliases() -> None:
 
     ``appserver`` is only filled when missing: ``python -m appserver`` and
     tests that patch ``appserver.server`` need the top-level package loader.
+
+    Only newly seen canonical modules are mirrored.  Scanning the whole
+    ``sys.modules`` table on every import made Agent worker bootstrap miss
+    the ``session/new`` deadline under Linux py3.11 xdist.
     """
     prefix = f"{_CANONICAL_PREFIX}."
-    items = [
-        (key, module)
-        for key, module in _sys.modules.items()
-        if key.startswith(prefix) and _is_bare_name(key[len(prefix) :])
-    ]
-    items.sort(key=lambda item: item[0].count("."))
-    for key, module in items:
+    new_items: list[tuple[str, str, _types.ModuleType]] = []
+    for key, module in list(_sys.modules.items()):
+        if key in _mirrored_canonical or not key.startswith(prefix):
+            continue
         short = key[len(prefix) :]
+        if not _is_bare_name(short):
+            continue
+        new_items.append((key, short, module))
+    new_items.sort(key=lambda item: item[0].count("."))
+    for key, short, module in new_items:
         parent_name, _, child = short.rpartition(".")
         parent = _sys.modules.get(parent_name)
         if short == "appserver" or short.startswith("appserver."):
             _sys.modules.setdefault(short, module)
             if parent is not None and child and not hasattr(parent, child):
                 setattr(parent, child, module)
-            continue
-        _sys.modules[short] = module
-        if parent is not None and child:
-            setattr(parent, child, module)
+        else:
+            _sys.modules[short] = module
+            if parent is not None and child:
+                setattr(parent, child, module)
+        _mirrored_canonical.add(key)
 
 
 class _ReuseLoader(importlib.abc.Loader):
