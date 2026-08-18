@@ -12,7 +12,7 @@ messages to **stdout**, and sends all logs to **stderr** only.
 
 | File | Role |
 |------|------|
-| `__init__.py` | Package marker |
+| `__init__.py` | Package marker；把当前 checkout 绑到 `RxyCode.RxyCode1_1_0`，并调用 `unify_bare_package_aliases()`（覆盖已导入的短名 `core`，不只 `setdefault`） |
 | `__main__.py` | CLI entry (`python -m appserver`) |
 | `server.py` | `AppServer` dispatch loop, watchdog heartbeat, session handlers |
 | `agent_host.py` | Parent-side client for one killable worker subprocess per session (T1) |

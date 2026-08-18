@@ -46,9 +46,14 @@ def _register_bare_core_alias() -> None:
     ``sys.path``; under an installed/editable package the canonical name is
     ``RxyCode.RxyCode1_1_0.core`` and the bare name would load a second copy
     of the same files (splitting module singletons such as the approval
-    broker).  Registering the alias keeps both spellings the same object.
+    broker).  Unifying both spellings — including already-imported
+    submodules — keeps ``isinstance``, patches, and process singletons on
+    one object.
     """
-    if "core" in sys.modules:
+    pkg = sys.modules.get("RxyCode.RxyCode1_1_0")
+    unify = getattr(pkg, "unify_bare_package_aliases", None)
+    if callable(unify):
+        unify()
         return
     try:
         import RxyCode.RxyCode1_1_0.core as _core_pkg

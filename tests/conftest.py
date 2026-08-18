@@ -50,6 +50,9 @@ if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
     if _canonical_init.exists():
         _canonical_source = _canonical_init.read_text(encoding="utf-8-sig")
         exec(compile(_canonical_source, str(_canonical_init), "exec"), _canonical.__dict__)  # noqa: S102
+    _unify = getattr(_canonical, "unify_bare_package_aliases", None)
+    if callable(_unify):
+        _unify()
     os.environ["_RXYCODE_TEST_CHECKOUT"] = str(_checkout_root)
 
 import pytest
@@ -183,6 +186,9 @@ def pytest_collection_modifyitems(items):
             item.add_marker(getattr(pytest.mark, layer))
         if layer == "system":
             item.add_marker(pytest.mark.serial)
+    unify = getattr(sys.modules.get("RxyCode.RxyCode1_1_0"), "unify_bare_package_aliases", None)
+    if callable(unify):
+        unify()
 
 
 # ─── sys.stdout protection ──────────────────────────────────────
@@ -212,13 +218,19 @@ def _isolate_process_singletons():
     from RxyCode.RxyCode1_1_0.core.safety import approval, audit
     from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
     from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as _circuit_breaker
+    from RxyCode.RxyCode1_1_0.utils import tui as tui_mod
     from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+    unify = getattr(sys.modules.get("RxyCode.RxyCode1_1_0"), "unify_bare_package_aliases", None)
+    if callable(unify):
+        unify()
 
     previous_broker = approval.get_approval_broker()
     previous_question_broker = question.get_question_broker()
     previous_tracer = tracing._tracer
     previous_audit_logger = audit._default_logger
     previous_breaker = _circuit_breaker._default_breaker
+    previous_tui = tui_mod._tui_instance
+    previous_cwd = Path.cwd()
     api_locks = []
     seen_modules: set[int] = set()
     for module_name in ("RxyCode.RxyCode1_1_0.api_server", "api_server"):
@@ -283,9 +295,15 @@ def _isolate_process_singletons():
     run_monitor.reset()
     test_id = _safe_path_segment(os.environ.get("PYTEST_CURRENT_TEST"), "test")
     tracing.reset_tracer(test_id[:120])
+    tui_mod.set_tui(None)
     try:
         yield
     finally:
+        tui_mod.set_tui(previous_tui)
+        try:
+            os.chdir(previous_cwd)
+        except OSError:
+            pass
         approval.set_approval_broker(previous_broker)
         question.set_question_broker(previous_question_broker)
         session_runtime.clear_session_runtime(runtime_session_id)

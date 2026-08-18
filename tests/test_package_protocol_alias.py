@@ -1,14 +1,14 @@
-"""Regression: bare ``import protocol`` must resolve after package import.
+"""Regression: bare imports must resolve to the versioned package objects.
 
-RxyCode ships as the ``RxyCode.RxyCode1_1_0`` package; ``protocol`` is a
-top-level subpackage of the checkout. Several modules use the bare
-``from protocol.subagents import ...`` form, which only works when the repo
-root is on ``sys.path``.  ``RxyCode.RxyCode1_1_0/__init__.py`` registers a
-``sys.modules["protocol"]`` alias so the installed/editable package works from
-any working directory.
+RxyCode ships as the ``RxyCode.RxyCode1_1_0`` package. Several modules use
+bare ``from protocol.subagents import ...`` / ``from core import ...`` forms.
+``RxyCode.RxyCode1_1_0/__init__.py`` registers a finder plus ``sys.modules``
+aliases so both spellings are the same module object.
 
-These tests run in a subprocess so the repo root is NOT on sys.path — exactly
-the scenario where the alias is required.
+The subprocess tests keep the repo root OFF ``sys.path`` — the installed-
+package layout. In-process tests cover the pytest layout (repo root on path)
+where a second copy of ``core.providers`` used to split ``isinstance`` and
+monkeypatches after ``test_appserver`` ran in the same worker.
 """
 
 from __future__ import annotations
@@ -57,6 +57,23 @@ if subagent_task_tool.name != "task":
     print("RESULT:FAIL task tool name")
     raise SystemExit(1)
 
+RxyCode.RxyCode1_1_0.unify_bare_package_aliases()
+versioned_anthropic = importlib.import_module(
+    "RxyCode.RxyCode1_1_0.core.providers.anthropic"
+)
+RxyCode.RxyCode1_1_0.unify_bare_package_aliases()
+bare_anthropic = importlib.import_module("core.providers.anthropic")
+if versioned_anthropic.AnthropicProvider is not bare_anthropic.AnthropicProvider:
+    print("RESULT:FAIL dual-anthropic")
+    raise SystemExit(1)
+
+versioned_tui = importlib.import_module("RxyCode.RxyCode1_1_0.utils.tui")
+RxyCode.RxyCode1_1_0.unify_bare_package_aliases()
+bare_tui = importlib.import_module("utils.tui")
+if versioned_tui.get_tui is not bare_tui.get_tui:
+    print("RESULT:FAIL dual-tui")
+    raise SystemExit(1)
+
 print("RESULT:OK")
 """
 
@@ -75,3 +92,59 @@ def test_bare_protocol_alias_registered_without_repo_root_on_path() -> None:
     assert "RESULT:OK" in proc.stdout, (
         f"bare protocol alias failed\nstdout={proc.stdout}\nstderr={proc.stderr}"
     )
+
+
+def test_bare_and_versioned_provider_classes_are_identical() -> None:
+    import importlib
+
+    import RxyCode.RxyCode1_1_0 as pkg
+
+    importlib.import_module("RxyCode.RxyCode1_1_0.core.providers.anthropic")
+    importlib.import_module("RxyCode.RxyCode1_1_0.core.providers")
+    pkg.unify_bare_package_aliases()
+
+    from core.providers.anthropic import AnthropicProvider as BareAnthropic
+    from RxyCode.RxyCode1_1_0.core.providers.anthropic import (
+        AnthropicProvider as VersionedAnthropic,
+    )
+    from core import providers as bare_providers
+    from RxyCode.RxyCode1_1_0.core import providers as versioned_providers
+
+    assert BareAnthropic is VersionedAnthropic
+    assert bare_providers is versioned_providers
+    assert isinstance(
+        versioned_providers.resolve({"model_name": "claude-opus-5"}),
+        BareAnthropic,
+    )
+
+
+def test_bare_and_versioned_tui_singletons_are_identical() -> None:
+    import importlib
+
+    import RxyCode.RxyCode1_1_0 as pkg
+
+    importlib.import_module("RxyCode.RxyCode1_1_0.utils.tui")
+    pkg.unify_bare_package_aliases()
+
+    from utils.tui import get_tui as bare_get_tui
+    from RxyCode.RxyCode1_1_0.utils.tui import get_tui as versioned_get_tui
+
+    assert bare_get_tui is versioned_get_tui
+
+
+def test_appserver_import_does_not_split_core_identity() -> None:
+    import importlib
+
+    import appserver  # noqa: F401
+    import RxyCode.RxyCode1_1_0 as pkg
+
+    importlib.import_module("RxyCode.RxyCode1_1_0.core.providers.anthropic")
+    pkg.unify_bare_package_aliases()
+
+    from core.providers.anthropic import AnthropicProvider as BareAnthropic
+    from RxyCode.RxyCode1_1_0.core.providers.anthropic import (
+        AnthropicProvider as VersionedAnthropic,
+    )
+
+    assert BareAnthropic is VersionedAnthropic
+    assert appserver.AppServer is not None

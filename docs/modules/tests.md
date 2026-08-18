@@ -23,6 +23,8 @@ tests/stress_test/test_phase4_harness.py`，跳过项为需要 `RXYCODE_APPSERVE
 
 `tests/conftest.py` 根据 `tests/<layer>/` 目录自动增加同名 marker，并把 system 层标为 `serial`。仍位于 `tests/test_*.py`、`tests/test_core/` 等旧目录的测试属于 legacy regression 集；Linux CI 用排除所有分层 marker 的表达式补跑，避免迁移期间漏测或重复执行。并行 lane 使用两个 xdist worker 和 `loadscope` 分发；串行 lane 从整个测试树选择 `serial`，因此不限于当前的 system 层。
 
+短名 `core` / `protocol` / `utils` 与 `RxyCode.RxyCode1_1_0.*` 必须是同一模块对象。包 `__init__.py` 在版本包导入后 `unify_bare_package_aliases()`，并在 `core` 已经是版本包时把 `core.foo` 指到同一对象；每个测试还会 reset `utils.tui` 单例并恢复 cwd。不要用“比 class 名字符串”掩盖双重 import。
+
 ## Scripted LLM
 
 项目中的 ScriptedLLM 实现名为 `ScriptedChatModel`，位于 `tests/support/scripted_llm.py`。它基于 LangChain `GenericFakeChatModel`，按固定顺序返回 `AIMessage`，同时保留生产代码使用的 `bind_tools()` 接口。
