@@ -46,7 +46,7 @@ def _run_agent() -> AgentV2:
     agent._handle_file_operation = AsyncMock()
     agent._handle_download_intent = AsyncMock()
     agent._is_simple_query = MagicMock(return_value=False)
-    agent._should_use_subagents = MagicMock(return_value=False)
+    agent._should_request_parallel_execution = MagicMock(return_value=False)
     agent._fast_reply = AsyncMock(return_value="unsafe fallback")
     agent._fast_reply_with_tools = AsyncMock(return_value="fast answer")
     agent._graph = SimpleNamespace(
@@ -553,8 +553,7 @@ async def test_explicit_parallel_build_uses_validated_graph_not_legacy_subagents
         lambda: {"execution": {"heartbeat_interval_seconds": 0.1}},
     )
     agent = _run_agent()
-    agent._should_use_subagents.return_value = True
-    agent._run_with_subagents = AsyncMock(side_effect=AssertionError("legacy bypass"))
+    agent._should_request_parallel_execution.return_value = True
 
     result = await agent.run(
         "/full analyze these modules in parallel and report the results",
@@ -562,7 +561,7 @@ async def test_explicit_parallel_build_uses_validated_graph_not_legacy_subagents
     )
 
     assert result == "graph answer"
-    agent._run_with_subagents.assert_not_awaited()
+    assert "run_with_subagents" not in type(agent).__dict__
     initial_state = agent._graph.ainvoke.await_args.args[0]
     assert initial_state["parallel_requested"] is True
 

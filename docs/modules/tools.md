@@ -26,7 +26,6 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 | download_tool.py | `download_skill` / `download_mcp` module-level functions + `download_skill_tool` / `download_mcp_tool` (DANGER risk) |
 | open_file.py | OpenFileTool - open allowlisted preview files with the host default application |
 | vision.py | VisionTool - image analysis using multimodal LLM |
-| agent_tool.py | AgentTool - **DEPRECATED**: legacy sub-agent tool; raises `LEGACY_SUBAGENT_DEPRECATED_MSG` when subagents are enabled. Use `task` (subagent dispatch) or `@agent` mention instead |
 | subagent_task_tool.py | `task` tool - the isolated subagent dispatch entry (via `ChildSessionManager`) when `subagents_enabled` |
 | task_manage.py | `task_manage` tool - task-list management (legacy `task` when subagents disabled) |
 | agent_invoke.py | `@agent` mention parsing + dispatch (`parse_mention` / `invoke_mention` / `list_mentionable_agents`) |
@@ -47,8 +46,7 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 | installer.py | ToolInstaller - install packages (npm, pip, etc.) |
 | vision_capture.py | Screen/window capture for the vision tool |
 
-`agent_tool.py` exposes a native async coroutine so cancellation reaches its
-child Agent without a worker thread. Inline Python in `workflow_tool.py` is
+Inline Python in `workflow_tool.py` is
 submitted to `ShellExecutor.execute_argv_async`; it therefore uses the same
 workspace/Docker boundary, memory and PID limits, timeout handling, and
 process-tree cleanup as the bash tool. The production `StructuredTool`

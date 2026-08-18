@@ -13,7 +13,6 @@ Agent 可调用的环境能力集合：文件、Shell、Git、搜索、下载、
 | 文件 | 写了什么 | 功能是什么 |
 |---|---|---|
 | `__init__.py` | 包初始化文件，标记该目录为 Python 包并承载导出入口。 | 包初始化文件，标记该目录为 Python 包并承载导出入口。 |
-| `agent_tool.py` | agent tool - Run sub-tasks with a child AI agent. | agent tool - Run sub-tasks with a child AI agent. |
 | `bash.py` | 定义 BashInput、run_bash 等对象。 | 定义 BashInput、run_bash 等对象。 |
 | `change_directory.py` | 定义 ChangeDirectoryInput、change_directory 等对象。 | 定义 ChangeDirectoryInput、change_directory 等对象。 |
 | `datetime_tool.py` | System datetime tool. | System datetime tool. |
@@ -62,28 +61,6 @@ Agent 可调用的环境能力集合：文件、Shell、Git、搜索、下载、
 ```python
 # tools\__init__.py 没有独立调用入口，通常通过导入所在包触发。
 ```
-
-### `agent_tool.py`
-
-- 写了什么：agent tool - Run sub-tasks with a child AI agent.
-- 功能是什么：agent tool - Run sub-tasks with a child AI agent.
-- 核心原理：`StructuredTool` 同时提供同步兼容入口和原生 async coroutine；Agent 主链使用 async 路径，因此取消会直接传播给子 Agent，不创建后台线程或固定 300 秒 deadline。
-
-关键对象/函数：
-
-- 类 `AgentInput`
-- 函数 `run_agent(prompt)`：无事件循环调用方的同步兼容入口。
-- 协程 `run_agent_async(prompt)`：主链使用的可取消子 Agent 委派入口。
-
-实现方式示例代码：
-
-```python
-from RxyCode.RxyCode1_1_0.tools.agent_tool import run_agent
-
-result = run_agent(prompt=...)
-```
-
-异步调用方应使用 `await run_agent_async(prompt)`；不要在线程或已运行的事件循环中调用同步兼容入口。
 
 ### `bash.py`
 

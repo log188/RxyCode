@@ -33,7 +33,7 @@ def _ctx_agent() -> AgentV2:
     agent._side_effecting_tool_attempted = False
     agent._detect_file_operation = MagicMock(return_value=None)
     agent._detect_download_intent = MagicMock(return_value=None)
-    agent._should_use_subagents = MagicMock(return_value=False)
+    agent._should_request_parallel_execution = MagicMock(return_value=False)
     agent._fast_reply = AsyncMock(return_value="fast")
     agent._fast_reply_with_tools = AsyncMock(return_value="tool path")
     agent._run_plan_only = AsyncMock(return_value="plan only")

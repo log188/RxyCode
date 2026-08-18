@@ -64,7 +64,7 @@ def _run_agent() -> AgentV2:
     agent._has_creation_product_intent = AgentV2._has_creation_product_intent.__get__(
         agent, AgentV2
     )
-    agent._should_use_subagents = MagicMock(return_value=False)
+    agent._should_request_parallel_execution = MagicMock(return_value=False)
     agent._fast_reply = AsyncMock(return_value="cached itinerary")
     agent._fast_reply_with_tools = AsyncMock(return_value="tool path")
     agent._graph = SimpleNamespace(

@@ -685,7 +685,7 @@ async def test_run_nonfresh_tool_failure_falls_through_without_tool_free_reply()
     agent._is_simple_query = MagicMock(return_value=True)
     agent._detect_file_operation = MagicMock(return_value=None)
     agent._detect_download_intent = MagicMock(return_value=None)
-    agent._should_use_subagents = MagicMock(return_value=False)
+    agent._should_request_parallel_execution = MagicMock(return_value=False)
     agent._graph = SimpleNamespace(
         ainvoke=AsyncMock(return_value={"final_response": "pipeline answer"})
     )
@@ -708,7 +708,7 @@ async def test_run_does_not_fallback_to_tool_free_answer_when_research_fails():
     agent._session_loaded = True
     agent._detect_file_operation = MagicMock(return_value=None)
     agent._detect_download_intent = MagicMock(return_value=None)
-    agent._should_use_subagents = MagicMock(return_value=False)
+    agent._should_request_parallel_execution = MagicMock(return_value=False)
     agent._is_simple_query = MagicMock(return_value=True)
     agent._fast_reply_with_tools = AsyncMock(side_effect=RuntimeError("search unavailable"))
     agent._fast_reply = AsyncMock(return_value="unguarded stale guess")

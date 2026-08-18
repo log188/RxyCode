@@ -57,14 +57,12 @@ Session restoration searches the current date, earlier dated records, and the le
   `with_structured_output()` so fast path, graph, and sub-agent calls retain
   both behaviors.
 - AgentV2 (line ~747): The main agent. Handles user input routing, fast-path optimization, compose mode, and the full LangGraph pipeline. Also owns session lifecycle (`set_session`/`reset_session`/`switch_model`/`list_checkpoints`), hooks, trajectory and checkpoint/journal integration. A succeeded run does not mark the durable checkpoint complete while the side-effect journal still has pending WRITE/DANGER rows; otherwise an identical retry rotates `attempt_id` and later writes are blocked as `journal_unavailable`.
-- SubAgentV2 (line ~3763): Legacy sub-agent compatibility shim (`$` prefix commands). Superseded by `core/subagents/` (ChildSessionManager + ChildRuntime).
-
 **How a Request Flows:**
 1. AgentV2.run(user_input, mode) is called
 2. Plan mode uses a dedicated read-only tool loop and never enters the execution graph
 3. Download intent check (_detect_download_intent) for build/compose requests that are not create/build product prompts. A long “create a website” request that mentions an isolated Skill directory must not collapse into `download_skill`. Create/build product requests that also ask for websearch continue after research prefetch failure; pure freshness Q&A still aborts instead of guessing.
 4. Fast path: simple queries go directly to _fast_reply() (with 2-level cache: exact + semantic)
-5. Parallel path: complex multi-task queries set `parallel_requested` on the graph state and execute through LangGraph's parallel executor. The legacy `_run_with_subagents()` is **disabled** (`core/agent_v2.py:2950-2954` raises `RuntimeError`); use `core/subagents/` ChildSessionManager for isolated subagent dispatch.
+5. Parallel path: heuristic `_should_request_parallel_execution()` sets `parallel_requested` on graph state. LangGraph then runs **the same AgentV2** TaskTree leaves concurrently (`asyncio.gather`). Isolated child agents live in `core/subagents/` (Phase D `task` / `@agent`), not this flag. True expert-team orchestration is Phase F (`core/agents/`).
 6. Compose path: plan+build mode uses _run_compose()
 7. Full pipeline: complex build tasks go through the LangGraph pipeline in graph.py
 

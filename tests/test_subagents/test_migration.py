@@ -142,10 +142,6 @@ class TestToolNameFreeze:
         from RxyCode.RxyCode1_1_0.tools.task_tool import task_tool
         assert task_tool.name == "task"
 
-    def test_legacy_agent_tool_is_named_agent(self):
-        from RxyCode.RxyCode1_1_0.tools.agent_tool import agent_tool
-        assert agent_tool.name == "agent"
-
     def test_task_tool_module_keeps_task_list_scope(self):
         """task_tool.py must remain task management, not subagent dispatch."""
         src = (PROJECT_ROOT / "tools" / "task_tool.py").read_text(encoding="utf-8")
@@ -159,44 +155,6 @@ class TestToolNameFreeze:
         src = (PROJECT_ROOT / "tools" / "task_manage.py").read_text(encoding="utf-8")
         assert "manage_tasks" in src  # delegates to task_tool's store
         assert "ChildSessionManager" not in src
-
-
-# ============================================================================
-# Legacy agent tool deprecation
-# ============================================================================
-
-class TestLegacyAgentToolDeprecation:
-    """Legacy agent tool raises a clear migration error when subagents on."""
-
-    def test_deprecated_msg_constant(self):
-        from tools.agent_tool import LEGACY_SUBAGENT_DEPRECATED_MSG
-        assert "deprecated" in LEGACY_SUBAGENT_DEPRECATED_MSG.lower()
-        assert "task" in LEGACY_SUBAGENT_DEPRECATED_MSG
-
-    def test_legacy_raises_when_subagents_enabled(self):
-        reset_manager()
-        try:
-            from RxyCode.RxyCode1_1_0.core.subagents.modes import SubagentConfig, SubagentFeatureFlags
-            config = SubagentConfig(
-                flags=SubagentFeatureFlags(subagents_enabled=True),
-            )
-            init_manager(config=config)
-
-            from RxyCode.RxyCode1_1_0.tools.agent_tool import run_agent_async
-            with pytest.raises(RuntimeError, match="deprecated"):
-                import asyncio
-                asyncio.run(run_agent_async("test task"))
-        finally:
-            reset_manager()
-
-    def test_legacy_allowed_when_subagents_disabled(self):
-        """Feature-flag rollback: legacy path works when subagents are off."""
-        reset_manager()
-        try:
-            from RxyCode.RxyCode1_1_0.tools.agent_tool import _subagents_enabled
-            assert _subagents_enabled() is False
-        finally:
-            reset_manager()
 
 
 # ============================================================================

@@ -35,7 +35,6 @@ _TOOL_IMPORTS = {
     "history": ("RxyCode.RxyCode1_1_0.tools.history_tool", "search_history"),
     "download": ("RxyCode.RxyCode1_1_0.tools.download_tool", "download_skill"),
     "file_download": ("RxyCode.RxyCode1_1_0.tools.file_download", "download_file"),
-    "agent": ("RxyCode.RxyCode1_1_0.tools.agent_tool", "run_agent"),
     "skill": ("RxyCode.RxyCode1_1_0.tools.skill_tool", "load_skill"),
 }
 

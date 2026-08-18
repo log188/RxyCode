@@ -69,8 +69,6 @@ Plan-and-Execute 闭环：目标提炼、任务拆解、调度执行、结果验
 保证同一共享 Agent 跨事件循环的并发安全，不提供跨 Agent、跨进程或跨主机的
 分布式配额协调。
 
-- 类 `SubAgentV2`：Sub-agent for $ prefix commands (compatibility with old SubAgent).；常用方法：`run`
-
 实现方式示例代码：
 
 ```python

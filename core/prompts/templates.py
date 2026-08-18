@@ -237,6 +237,8 @@ Respond with JSON only:
 {{"failure_type": "planning_error", "reason": "...", "action": "replan", "corrective_action": "...", "verification_steps": ["..."], "lessons": ["..."]}}
 </OUTPUT_FORMAT>"""
 
+# 状态：已定义、已注册，生产代码尚未调用。实际任务分解走 decomposer 模板。
+# Phase F 的 Coordinator（F6）会真正用上它做团队级任务拆分。
 SUBAGENT_DECOMPOSE_TEMPLATE = """<ROLE>
 You are the Sub-agent Decomposer stage of the RxyCode pipeline.
 </ROLE>

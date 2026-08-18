@@ -1261,7 +1261,7 @@ uvicorn.run(app, host="127.0.0.1", port={port}, log_level="info")
 
                 _a = object.__new__(AgentV2)
                 parallel_requested = bool(
-                    _a._should_use_subagents(
+                    _a._should_request_parallel_execution(
                         "同时分别读取 README.md 和 AGENTS.md 并各自总结"
                     )
                 )

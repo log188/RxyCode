@@ -72,7 +72,7 @@ Transport
 |     simple query -> _fast_reply() + 2-level cache     |
 | complex task -> LangGraph: goal_planner -> decomposer |
 |        -> executor -> validator -> synthesizer        |
-|  multi-task -> sub-agents / compose -> Plan + Build   |
+|  multi-task -> TaskTree parallel leaves / compose     |
 |     tools -> ToolOrchestrator / memory (memory/)      |
 +-------------------------------------------------------+
                             |
@@ -93,7 +93,7 @@ Transport
    - Simple queries -> `_fast_reply()` with 2-level cache
    - Complex tasks -> LangGraph (core/graph.py): goal_planner -> decomposer ->
      executor -> validator -> synthesizer
-   - Multi-task -> sub-agent delegation
+   - Multi-task -> graph `parallel_requested` (same AgentV2, TaskTree leaves)
    - Compose mode -> Plan + Build
 5. Executor uses tools (tools/) via ToolOrchestrator; memory (memory/) injects
    context; safety gates (core/safety/) raise approval/question requests

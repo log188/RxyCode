@@ -16,22 +16,12 @@ import pytest
 class TestLegacySymbolInventory:
     """Confirm the disposition of every legacy subagent symbol found in B1."""
 
-    def test_run_with_subagents_raises(self):
-        """_run_with_subagents must unconditionally raise RuntimeError."""
+    def test_should_request_parallel_execution_delegates_to_routing(self):
+        """_should_request_parallel_execution delegates to request_routing.should_use_subagents."""
         import inspect
         from core.agent_v2 import AgentV2
 
-        # Verify the method source contains the raise statement
-        src = inspect.getsource(AgentV2._run_with_subagents)
-        assert "raise RuntimeError" in src
-        assert "legacy sub-agent execution is disabled" in src
-
-    def test_should_use_subagents_delegates_to_routing(self):
-        """_should_use_subagents delegates to request_routing.should_use_subagents."""
-        import inspect
-        from core.agent_v2 import AgentV2
-
-        src = inspect.getsource(AgentV2._should_use_subagents)
+        src = inspect.getsource(AgentV2._should_request_parallel_execution)
         assert "should_use_subagents" in src
 
     def test_should_use_subagents_function_returns_bool(self):
@@ -45,16 +35,6 @@ class TestLegacySymbolInventory:
         result2 = should_use_subagents("hello world")
         assert isinstance(result2, bool)
         assert result2 is False
-
-    def test_subagentv2_class_exists(self):
-        """SubAgentV2 class is importable but should have 0 instantiations."""
-        from core.agent_v2 import SubAgentV2
-        assert SubAgentV2 is not None
-
-    def test_agent_tool_has_deprecated_name(self):
-        """Old agent_tool uses name='agent' — must be renamed/migrated in B13."""
-        from tools.agent_tool import agent_tool
-        assert agent_tool.name == "agent"
 
     def test_task_tool_name_is_task(self):
         """Current task_tool uses name='task' — must be renamed to 'task_manage' in B13."""
@@ -183,11 +163,3 @@ class TestNoSecondSubagentImplementation:
         assert "ChildSessionManager" in src
         assert "get_manager" in src
 
-    def test_agent_tool_creates_new_agentv2_instance(self):
-        """agent_tool creates a fresh AgentV2 — NOT a Child Session."""
-        from tools.agent_tool import run_agent_async
-        import inspect
-        source = inspect.getsource(run_agent_async)
-        assert "AgentV2" in source
-        assert "ChildSession" not in source
-        assert "ChildRuntime" not in source

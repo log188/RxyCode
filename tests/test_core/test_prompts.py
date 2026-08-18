@@ -468,13 +468,13 @@ class TestAgentV2Migration:
         src = inspect.getsource(agent_v2)
         assert "get_role_prompt" in src
 
-    def test_legacy_subagent_execution_is_disabled(self):
-        import inspect
+    def test_legacy_subagent_execution_is_removed(self):
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
-        src = inspect.getsource(AgentV2._run_with_subagents)
-        assert "legacy sub-agent execution is disabled" in src
-        assert "subagent_decompose" not in src
+        assert hasattr(AgentV2, "_should_request_parallel_execution")
+        assert "run_with_subagents" not in AgentV2.__dict__
+        import RxyCode.RxyCode1_1_0.core.agent_v2 as agent_mod
+        assert "SubAgentV2" not in agent_mod.__dict__
 
     def test_uses_compose_plan(self):
         import inspect

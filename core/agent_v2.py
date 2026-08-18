@@ -5062,7 +5062,7 @@ class AgentV2:
         if any(marker in text for marker in ("mcp", "model context protocol")):
             selected_names.add("download_mcp")
         if any(marker in text for marker in ("subagent", "child agent", "子代理", "并行", "parallel")):
-            selected_names.update({"task", "agent"})
+            selected_names.update({"task"})
         if any(marker in text for marker in ("ask me", "question", "询问", "让我选择")):
             selected_names.add("question")
         if any(marker in text for marker in ("memory", "记忆", "remember", "history", "历史")):
@@ -5647,14 +5647,17 @@ class AgentV2:
             self._thinking_disabled_this_turn = False
 
 
-    def _should_use_subagents(self, user_input: str) -> bool:
-        return should_use_subagents(user_input)
+    def _should_request_parallel_execution(self, user_input: str) -> bool:
+        """启发式判断用户是否希望并行执行多个任务。
 
-    async def _run_with_subagents(self, user_input: str) -> str:
-        """使用子代理并行执行任务。"""
-        raise RuntimeError(
-            "legacy sub-agent execution is disabled; use the validated TaskTree graph"
-        )
+        命名历史：原名 _should_use_subagents，但它与子代理无关——唯一作用
+        是往 graph state 写 parallel_requested，触发 core/graph.py:1171 的
+        TaskTree 叶节点并行。真正的多 Agent 编排见 core/agents/。
+
+        这是关键词路由（主计划 P6 要消除的 25 处之一），对非中英文输入无效。
+        Phase F 的 ModeRouter（F10）会取代它，届时本方法删除。
+        """
+        return should_use_subagents(user_input)
 
     async def _run_compose(self, user_input: str) -> str:
         """Compose 模式: Plan + Build 结合。
@@ -5720,7 +5723,7 @@ class AgentV2:
                     "current_task_id": None,
                     "execution_results": [],
                     "parallel_tasks": [],
-                    "parallel_requested": self._should_use_subagents(user_input),
+                    "parallel_requested": self._should_request_parallel_execution(user_input),
                     "reflections": [],
                     "failure_attribution": {},
                     "replan_count": 0,
@@ -6539,7 +6542,7 @@ class AgentV2:
                 "current_task_id": None,
                 "execution_results": [],
                 "parallel_tasks": [],
-                "parallel_requested": self._should_use_subagents(user_input),
+                "parallel_requested": self._should_request_parallel_execution(user_input),
                 "reflections": [],
                 "failure_attribution": {},
                 "replan_count": 0,
@@ -6700,17 +6703,6 @@ class AgentV2:
         """Compatibility: flush thinking to TUI."""
         if tui and hasattr(tui, "write_progress") and self._last_thinking:
             tui.write_progress(self._last_thinking)
-
-
-class SubAgentV2:
-    """Sub-agent for $ prefix commands (compatibility with old SubAgent)."""
-
-    def __init__(self, parent: AgentV2, task: str):
-        self._parent = parent
-        self._task = task
-
-    async def run(self) -> str:
-        return await self._parent.run(self._task)
 
 
 
