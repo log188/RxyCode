@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 from RxyCode.RxyCode1_1_0.core.agents.blackboard import Blackboard
+from RxyCode.RxyCode1_1_0.core.agents.budget import BudgetExceeded, BudgetGuard
 from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
 from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
@@ -145,7 +146,7 @@ class Coordinator:
         self._session = session
         self._runtimes = runtimes or {}
         self._verifier = verifier
-        self._budget = budget or _NoopBudget()
+        self._budget = budget or BudgetGuard()
         self._emit_fn = emit if emit is not None else getattr(session, "emit", None)
         self._seq = 0
         self.events: list[Any] = []
@@ -170,26 +171,49 @@ class Coordinator:
     def member_form_team(self, _member: AgentSpec, _team: TeamSpec) -> None:
         raise MemberForbiddenError("members may not create teams")
 
-    async def run_team(self, team: TeamSpec, user_input: str) -> str:
+    async def run_team(
+        self,
+        team: TeamSpec,
+        user_input: str,
+        *,
+        budget_overrides: dict[str, Any] | None = None,
+    ) -> str:
         """跑完一整支专家团。"""
         self.form_team(team)
+        if budget_overrides:
+            self._budget = BudgetGuard(team, overrides=budget_overrides)
         self._budget.start(team)
         self._coordinator_history.append(user_input)
         self.task_ledger.facts.append(user_input)
         self.task_ledger.plan = [stage.name for stage in team.stages]
 
         sop = SopMachine(team)
-        while (stage := sop.current_stage()) is not None:
-            self._budget.check()
-            self._precheck(stage, team)
-            result = await self._dispatch(stage, team, user_input)
-            result = self._apply_verify_gates(stage, result)
-            self.blackboard.put(stage.output_key, result.answer, stage.role)
-            self.record_progress(made_progress=result.ok, looping=not result.ok)
-            nxt = sop.advance(ok=result.ok)
-            if nxt is None:
-                break
+        try:
+            while (stage := sop.current_stage()) is not None:
+                self._budget.check()
+                add = getattr(self._budget, "add_delegation", None)
+                if callable(add):
+                    add()
+                self._precheck(stage, team)
+                result = await self._dispatch(stage, team, user_input)
+                result = self._apply_verify_gates(stage, result)
+                self.blackboard.put(stage.output_key, result.answer, stage.role)
+                self.record_progress(made_progress=result.ok, looping=not result.ok)
+                nxt = sop.advance(ok=result.ok)
+                if nxt is None:
+                    break
+        except BudgetExceeded as exc:
+            return self._partial_result(sop, team, exc)
         return self._synthesize(sop.history())
+
+    def _partial_result(self, sop: SopMachine, team: TeamSpec, exc: BudgetExceeded) -> str:
+        done = len(sop.history())
+        total = max(1, len(team.stages))
+        body = self._synthesize(sop.history())
+        return (
+            f"{body}\n\n因为超出预算而提前停止，已完成 {done}/{total} 个阶段。 "
+            f"({exc})"
+        )
 
     def store_verdict(self, record: VerdictRecord) -> None:
         self._verdicts[record.subject_hash] = record

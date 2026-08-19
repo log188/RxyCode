@@ -1,6 +1,7 @@
 """Phase F expert-team orchestration (Coordinator / specs / SOP)."""
 
 from RxyCode.RxyCode1_1_0.core.agents.blackboard import Blackboard
+from RxyCode.RxyCode1_1_0.core.agents.budget import BudgetExceeded, BudgetGuard
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import Coordinator
 from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
 from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
@@ -24,4 +25,6 @@ __all__ = [
     "Blackboard",
     "MechanicalVerifier",
     "subject_hash",
+    "BudgetGuard",
+    "BudgetExceeded",
 ]

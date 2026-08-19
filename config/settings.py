@@ -242,6 +242,11 @@ def _default_config() -> dict:
         "recovery": {
             "circuit_breaker_enabled": True,
         },
+        "agents": {
+            "total_token_budget": 500_000,
+            "total_timeout_s": 1800.0,
+            "max_delegations": 20,
+        },
         "lifecycle": {
             "hook_timeout_seconds": 5,
         },

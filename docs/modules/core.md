@@ -37,6 +37,7 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | agents/mailbox.py | Phase F append-only mailbox; every message records `relayed_by`. |
 | agents/blackboard.py | Phase F append-only blackboard with authorized `context_keys` and a 1 MB cap. |
 | agents/verifier.py | Phase F mechanical gate (no LLM). Eight low-level checks plus high-level `goal_satisfied`. Verdicts bind `subject_hash`. |
+| agents/budget.py | Phase F `BudgetGuard`: token / wall-clock / delegation fuses. Over-budget returns a truncated partial answer. |
 
 ### Session Runtime Persistence
 
