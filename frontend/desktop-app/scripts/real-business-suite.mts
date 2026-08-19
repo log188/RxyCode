@@ -48,7 +48,7 @@ import {
   type UsageSummary
 } from './real-business-metrics.mts'
 
-/** Hung bash (python http.server / Stop-Process) must not wait out the 15m wall clock. Maven tests may run longer than 30s, so in-flight tools get a longer stall budget. */
+/** Hung bash (python http.server / Stop-Process) must not wait out the scenario wall clock. Maven tests may run longer than 30s, so in-flight tools get a longer stall budget. */
 const IN_FLIGHT_TOOL_STALL_MS = 180_000
 
 const PROTOCOL_CAPTURE_BOOTSTRAP = `(() => {
@@ -791,7 +791,7 @@ const gamePlayExpression = `(() => {
       await sleep(250);
       snapshot = readState();
     }
-    const started = snapshot.score > 0 || /running|playing|run|\\u8fd0\\u884c|\\u8fdb\\u884c|\\u6e38\\u73a9/i.test(snapshot.state) || (snapshot.overlayHidden === true && snapshot.startVisible !== true);
+    const started = snapshot.score > 0 || /running|playing|run|\\u8fd0\\u884c|\\u8fdb\\u884c|\\u6e38\\u73a9/i.test(snapshot.state);
     if (!started) return { ok: false, reason: start instanceof HTMLElement ? 'did not enter a running/playable state' : 'no start control', canvasPainted: canvasPainted(), ...snapshot };
     for (let i = 0; i < 40 && !/over|end|fail|\\u7ed3\\u675f|\\u5931\\u8d25/i.test(snapshot.state); i += 1) {
       press(' '); press('ArrowUp'); press('ArrowRight');
@@ -1086,6 +1086,9 @@ async function playGeneratedWebPage(source: string, port: number, mode: 'game' |
     } else if (parsed.ok !== true) {
       const exceptions = Array.isArray(parsed.pageExceptions) ? parsed.pageExceptions.join('; ') : ''
       return `generated page is not playable: ${parsed.reason ?? 'unknown'} (state=${String(parsed.state ?? '')}, score=${String(parsed.score ?? 0)})${exceptions ? `; page JS exception: ${exceptions}` : ''}`
+    }
+    if (mode === 'game' && Array.isArray(parsed.pageExceptions) && parsed.pageExceptions.length > 0) {
+      return `generated page threw JS exceptions: ${parsed.pageExceptions.join('; ')}`
     }
     if (mode === 'game' && gameMenuStillBlockingPlay({
       overlayHidden: parsed.overlayHidden === true,
@@ -1705,7 +1708,7 @@ async function runCliScenario(
   let promptSentAt: number | null = null
   let runAbortedByWatchdog = false
   const repairAttempts: string[] = []
-  const promptBudgetMs = 15 * 60 * 1000
+  const promptBudgetMs = Math.max(60_000, scenario.timeoutMs)
   try {
     const sent = await harness.prompt(sessionId, prompt, promptBudgetMs, permissionMode)
     promptSentAt = sent.sentAt

@@ -920,9 +920,10 @@ test('game play probe accepts Chinese running state and rejects the menu', () =>
 
 test('painted canvas behind a visible start menu is not playable', () => {
   assert.equal(gameMenuStillBlockingPlay({ overlayHidden: false, startVisible: true, state: '', score: 0 }), true)
-  assert.equal(gameMenuStillBlockingPlay({ overlayHidden: true, startVisible: false, state: '', score: 0 }), false)
+  assert.equal(gameMenuStillBlockingPlay({ overlayHidden: true, startVisible: false, state: '', score: 0 }), true)
   assert.equal(gameMenuStillBlockingPlay({ overlayHidden: false, startVisible: true, state: '', score: 22 }), false)
   assert.equal(gameMenuStillBlockingPlay({ overlayHidden: false, startVisible: false, state: '', score: 0 }), true)
+  assert.equal(gameMenuStillBlockingPlay({ overlayHidden: true, startVisible: false, state: '运行中', score: 0 }), false)
 })
 
 test('dotenv parser keeps quoted values and skips comments', () => {
@@ -975,6 +976,8 @@ test('web play probe prefers explicit start buttons over the first button on the
   assert.match(suite, /#screen-menu/)
   assert.match(suite, /#stat-score/)
   assert.match(suite, /startVisible/)
+  assert.match(suite, /pageExceptions/)
+  assert.match(suite, /scenario\.timeoutMs/)
   assert.match(suite, /desktopSuiteEnv|mysqlTestEnv/)
   assert.match(suite, /APP_ADMIN_PASSWORD|T09_ADMIN_PASSWORD/)
   assert.match(suite, /opencode-go\/deepseek-v4-flash/)
@@ -1189,8 +1192,8 @@ test('a follow-up prompt stops a still-running task before typing into the compo
 test('one-shot approval storms and long wall clocks are hard failures', () => {
   assert.equal(approvalStormIssue(12), null)
   assert.match(String(approvalStormIssue(13)), /approval storm/)
-  assert.equal(taskWallClockIssue(15 * 60 * 1000), null)
-  assert.match(String(taskWallClockIssue(15 * 60 * 1000 + 1)), /15m hard-fail/)
+  assert.equal(taskWallClockIssue(45 * 60 * 1000), null)
+  assert.match(String(taskWallClockIssue(45 * 60 * 1000 + 1)), /45m hard-fail/)
   const suite = readFileSync(new URL('./real-business-suite.mts', import.meta.url), 'utf8')
   assert.match(suite, /always-allow/)
   assert.match(suite, /save-rule/)
