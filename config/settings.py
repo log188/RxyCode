@@ -243,6 +243,9 @@ def _default_config() -> dict:
             "circuit_breaker_enabled": True,
         },
         "agents": {
+            "enabled": False,
+            "router_model": None,
+            "experiment_tag": "E0",
             "total_token_budget": 500_000,
             "total_timeout_s": 1800.0,
             "max_delegations": 20,

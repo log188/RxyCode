@@ -471,7 +471,7 @@ class TestAgentV2Migration:
     def test_legacy_subagent_execution_is_removed(self):
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
-        assert hasattr(AgentV2, "_should_request_parallel_execution")
+        assert not hasattr(AgentV2, "_should_request_parallel_execution")
         assert "run_with_subagents" not in AgentV2.__dict__
         import RxyCode.RxyCode1_1_0.core.agent_v2 as agent_mod
         assert "SubAgentV2" not in agent_mod.__dict__

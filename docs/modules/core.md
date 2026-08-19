@@ -38,6 +38,7 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | agents/blackboard.py | Phase F append-only blackboard with authorized `context_keys` and a 1 MB cap. |
 | agents/verifier.py | Phase F mechanical gate (no LLM). Eight low-level checks plus high-level `goal_satisfied`. Verdicts bind `subject_hash`. |
 | agents/budget.py | Phase F `BudgetGuard`: token / wall-clock / delegation fuses. Over-budget returns a truncated partial answer. |
+| agents/router.py | Phase F `ModeRouter`: /solo /team /team-multi /why-mode, then heuristics, then optional LLM. Default `agents.enabled=false`. |
 
 ### Session Runtime Persistence
 
@@ -70,7 +71,7 @@ Session restoration searches the current date, earlier dated records, and the le
 2. Plan mode uses a dedicated read-only tool loop and never enters the execution graph
 3. Download intent check (_detect_download_intent) for build/compose requests that are not create/build product prompts. A long “create a website” request that mentions an isolated Skill directory must not collapse into `download_skill`. Create/build product requests that also ask for websearch continue after research prefetch failure; pure freshness Q&A still aborts instead of guessing.
 4. Fast path: simple queries go directly to _fast_reply() (with 2-level cache: exact + semantic)
-5. Parallel path: heuristic `_should_request_parallel_execution()` sets `parallel_requested` on graph state. LangGraph then runs **the same AgentV2** TaskTree leaves concurrently (`asyncio.gather`). Isolated child agents live in `core/subagents/` (Phase D `task` / `@agent`), not this flag. True expert-team orchestration is Phase F (`core/agents/`).
+5. Parallel path: `request_routing.should_use_subagents()` sets `parallel_requested` on graph state. LangGraph then runs **the same AgentV2** TaskTree leaves concurrently (`asyncio.gather`). Isolated child agents live in `core/subagents/` (Phase D `task` / `@agent`). Expert-team vs solo is `ModeRouter` (`core/agents/router.py`); `settings.agents.enabled` defaults to false (always SOLO, no L2/L3).
 6. Compose path: plan+build mode uses _run_compose()
 7. Full pipeline: complex build tasks go through the LangGraph pipeline in graph.py
 

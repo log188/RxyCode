@@ -1235,9 +1235,20 @@ async def _execute_command(req: CommandRequest):
             ],
         }
 
+    if c in {"/solo", "/team", "/team-multi", "/why-mode"}:
+        from RxyCode.RxyCode1_1_0.core.agents.router import get_default_router
+
+        raw = c if not args else f"{c} {args}"
+        message = get_default_router().handle_slash(raw)
+        return {"action": "route", "message": message}
+
     if c == "/help":
         help_text = (
             "/help - 帮助\n"
+            "/solo <任务> - 强制单 Agent\n"
+            "/team <任务> - 强制专家团\n"
+            "/team-multi <任务> - 强制专家团+多模型\n"
+            "/why-mode - 上次路由依据\n"
             "/clear - 清除上下文\n"
             "/models - 列出模型\n"
             "/model <name> - 切换模型\n"
@@ -1323,6 +1334,10 @@ async def _execute_command(req: CommandRequest):
     if c == "/" or c == "/help":
         help_text = (
             "/help - 帮助\n"
+            "/solo <任务> - 强制单 Agent\n"
+            "/team <任务> - 强制专家团\n"
+            "/team-multi <任务> - 强制专家团+多模型\n"
+            "/why-mode - 上次路由依据\n"
             "/clear - 清除上下文\n"
             "/models - 列出模型\n"
             "/model <name> - 切换模型\n"
@@ -1800,6 +1815,7 @@ async def _execute_command(req: CommandRequest):
     # 模糊匹配命令
     known_commands = [
         "/help", "/clear", "/models", "/model", "/addmodel",
+        "/solo", "/team", "/team-multi", "/why-mode",
         "/plan", "/build", "/compose", "/language", "/memory",
         "/list-chats", "/save-chat", "/load-chat", "/queue",
         "/schedule", "/cache", "/thinking", "/mode", "/exit",

@@ -16,13 +16,13 @@ import pytest
 class TestLegacySymbolInventory:
     """Confirm the disposition of every legacy subagent symbol found in B1."""
 
-    def test_should_request_parallel_execution_delegates_to_routing(self):
-        """_should_request_parallel_execution delegates to request_routing.should_use_subagents."""
-        import inspect
+    def test_should_request_parallel_execution_was_replaced_by_mode_router(self):
+        """F10 deleted the AgentV2 heuristic; TaskTree still uses should_use_subagents."""
         from core.agent_v2 import AgentV2
+        from core.request_routing import should_use_subagents
 
-        src = inspect.getsource(AgentV2._should_request_parallel_execution)
-        assert "should_use_subagents" in src
+        assert not hasattr(AgentV2, "_should_request_parallel_execution")
+        assert should_use_subagents("同时处理多个文件") is True
 
     def test_should_use_subagents_function_returns_bool(self):
         """The underlying should_use_subagents function returns a bool."""

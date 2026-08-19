@@ -1257,11 +1257,10 @@ uvicorn.run(app, host="127.0.0.1", port={port}, log_level="info")
         if llm_available:
             parallel_requested = False
             try:
-                from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+                from RxyCode.RxyCode1_1_0.core.request_routing import should_use_subagents
 
-                _a = object.__new__(AgentV2)
                 parallel_requested = bool(
-                    _a._should_request_parallel_execution(
+                    should_use_subagents(
                         "同时分别读取 README.md 和 AGENTS.md 并各自总结"
                     )
                 )

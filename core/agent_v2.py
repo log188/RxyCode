@@ -5649,18 +5649,6 @@ class AgentV2:
             self._thinking_disabled_this_turn = False
 
 
-    def _should_request_parallel_execution(self, user_input: str) -> bool:
-        """启发式判断用户是否希望并行执行多个任务。
-
-        命名历史：原名 _should_use_subagents，但它与子代理无关——唯一作用
-        是往 graph state 写 parallel_requested，触发 core/graph.py:1171 的
-        TaskTree 叶节点并行。真正的多 Agent 编排见 core/agents/。
-
-        这是关键词路由（主计划 P6 要消除的 25 处之一），对非中英文输入无效。
-        Phase F 的 ModeRouter（F10）会取代它，届时本方法删除。
-        """
-        return should_use_subagents(user_input)
-
     async def _run_compose(self, user_input: str) -> str:
         """Compose 模式: Plan + Build 结合。
         
@@ -5725,7 +5713,7 @@ class AgentV2:
                     "current_task_id": None,
                     "execution_results": [],
                     "parallel_tasks": [],
-                    "parallel_requested": self._should_request_parallel_execution(user_input),
+                    "parallel_requested": should_use_subagents(user_input),
                     "reflections": [],
                     "failure_attribution": {},
                     "replan_count": 0,
@@ -6544,7 +6532,7 @@ class AgentV2:
                 "current_task_id": None,
                 "execution_results": [],
                 "parallel_tasks": [],
-                "parallel_requested": self._should_request_parallel_execution(user_input),
+                "parallel_requested": should_use_subagents(user_input),
                 "reflections": [],
                 "failure_attribution": {},
                 "replan_count": 0,
