@@ -8,7 +8,9 @@ RxyCode has two application answer caches and a separate provider prompt cache:
 2. `SemanticCache` reuses an answer for a namespace-scoped near duplicate.
    Process defaults are `default_precise_cache` / `default_semantic_cache`
    (`precise_cache` / `semantic_cache` remain aliases). AgentV2 cache keys
-   stay byte-identical when `_agent_namespace` is None.
+   stay byte-identical when `_agent_namespace` is None. Expert-team
+   members use an agent namespace (`agent:<role>`) so two roles cannot
+   hit each other's cache (F2/F17).
 3. The LLM provider may reuse prompt-prefix tokens independently of either answer cache.
 
 Tool-aware turns bypass both application answer caches because tools can observe or

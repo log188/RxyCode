@@ -17,6 +17,7 @@ rollback via `RXYCODE_TUI=ink`.
   - Status bar 上下文/缓存: stdio 消费 `event/token_usage` + `models/list.context_window`（不再依赖 HTTP `/status`）
   - Esc 立即结束 Processing，后台再发 `session/interrupt`
 - Settings dialogs (models, MCP, memory) still use HTTP API in both modes
+- Expert-team settings are layered (F13): hidden until `agents.enabled`; then team / route / router model / budget appear. Multi-model stays disabled until Phase H.
 - OpenTUI: `bun run src/index.tsx`; Ink: Node.js process — both launched by `main.py`
 
 ## Key Files (OpenTUI — default)

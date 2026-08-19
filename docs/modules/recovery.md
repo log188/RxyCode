@@ -7,7 +7,7 @@ Handles errors during task execution with retry logic and error summarization.
 | File | Purpose |
 |------|---------|
 | error_recovery.py | ErrorRecovery + ErrorKind classification + tenacity backoff |
-| circuit_breaker.py | LLMCircuitBreaker - pybreaker-based LLM circuit breaker |
+| circuit_breaker.py | LLMCircuitBreaker - keyed per agent (F2). One role tripping no longer takes down the process. |
 
 ## Core Code: error_recovery.py (ErrorRecovery)
 

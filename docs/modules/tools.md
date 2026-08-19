@@ -12,7 +12,7 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 ## Key Files
 | File | Purpose |
 |------|---------|
-| registry.py | ToolRegistry - per-instance catalog; `default_registry` is the process default, `registry` is a compat alias |
+| registry.py | ToolRegistry - per-agent injectable catalog (F2). `default_registry` is the process default; a Coordinator member gets a scoped copy, not the process table. `registry` is a compat alias |
 | bash.py | BashTool - execute shell commands with timeout and output capture |
 | read.py | ReadTool - read file contents with line range support |
 | write.py | WriteTool - write/create files with directory auto-creation |

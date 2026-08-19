@@ -22,6 +22,7 @@
 | [recovery](docs/modules/recovery.md) | recovery/ | Error recovery - retry logic and error tracking |
 | [safety](docs/modules/safety.md) | core/safety/ | Safety gate - risk levels, approval (TUI/SSE), write whitelist, audit |
 | [evals](docs/modules/evals.md) | evals/ | Evaluation harness - task success rate, LLM-as-judge, baselines |
+| [agents](docs/modules/agents.md) | core/agents/ | Expert team: Coordinator, SOP, verifier, budget, router |
 | [rag](docs/modules/rag.md) | rag/ | Codebase vector search - chunking, embedding, cosine search, repo map |
 | [tracing](docs/modules/tracing.md) | core/tracing.py | Node-level tracing - span collection, JSONL persistence, replay |
 | [utils](docs/modules/utils.md) | utils/ | Shared utilities - TUI, streaming, i18n, shell helpers |
@@ -74,6 +75,8 @@ Transport
 |        -> executor -> validator -> synthesizer        |
 |  multi-task -> TaskTree parallel leaves / compose     |
 |     tools -> ToolOrchestrator / memory (memory/)      |
+|  optional expert team (docs/modules/agents.md, off)   |
+|     Coordinator + SopMachine + BudgetGuard            |
 +-------------------------------------------------------+
                             |
                             v  results -> protocol notifications

@@ -43,6 +43,8 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | tracing.py | Node spans plus team tree (`replay --show-team`). J3 `LlmCallRecord` is opt-in via `settings.distillation.collect`. |
 | agents/client_settings.py | F13 settings projection: nested expert-team fields hidden until `agents.enabled`. |
 
+See `docs/modules/agents.md` for the expert-team module index.
+
 ### Session Runtime Persistence
 
 `core/session_runtime.py` persists the active workspace in two separate dated records:

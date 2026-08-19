@@ -17,7 +17,7 @@ never enumerates another session's private facts.
 ## Key Files
 | File | Purpose |
 |------|---------|
-| manager.py | MemoryManager - orchestrates short/long-term memory, context injection |
+| manager.py | MemoryManager - orchestrates short/long-term memory, context injection. AgentSpec.memory_scope=private gives each expert-team role its own namespace; shared joins the session. |
 | short_term.py | ShortTermMemory - sliding window of recent messages |
 | long_term.py | LongTermMemory - persistent compressed context store |
 | compressor.py | Compresses conversation history into summaries |
