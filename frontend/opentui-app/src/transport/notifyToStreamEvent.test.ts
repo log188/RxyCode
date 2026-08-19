@@ -80,6 +80,21 @@ describe("notifyToStreamEvent", () => {
     });
   });
 
+  test("maps event/team to a current-role progress line", () => {
+    expect(
+      notifyToStreamEvent("event/team", {
+        session_id: "s1",
+        role: "architect",
+        stage: "plan",
+        phase: "stage_started",
+      }),
+    ).toEqual({
+      type: "progress",
+      message: "[architect] plan",
+      text: "[architect] plan",
+    });
+  });
+
   test("returns null for unknown methods", () => {
     expect(notifyToStreamEvent("event/server_heartbeat", {})).toBeNull();
   });

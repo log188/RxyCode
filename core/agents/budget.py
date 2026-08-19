@@ -38,7 +38,9 @@ class BudgetGuard:
     ) -> None:
         self._overrides = dict(overrides or {})
         self._token_budget = 500_000
-        self._deadline = time.monotonic() + 1800.0
+        self._timeout_s = 1800.0
+        self._started_at = time.monotonic()
+        self._deadline = self._started_at + self._timeout_s
         self._max_delegations = 20
         self._tokens_used = 0
         self._delegations = 0
@@ -61,9 +63,21 @@ class BudgetGuard:
             return fallback
 
         self._token_budget = int(pick("total_token_budget", team.total_token_budget))
-        timeout = float(pick("total_timeout_s", team.total_timeout_s))
-        self._deadline = time.monotonic() + timeout
+        self._timeout_s = float(pick("total_timeout_s", team.total_timeout_s))
+        self._started_at = time.monotonic()
+        self._deadline = self._started_at + self._timeout_s
         self._max_delegations = int(pick("max_delegations", team.max_delegations))
+
+    def snapshot(self) -> dict[str, Any]:
+        """Read-only budget view for F12 team-tree headers."""
+        return {
+            "tokens_used": int(self._tokens_used),
+            "token_budget": int(self._token_budget),
+            "elapsed_s": max(0.0, time.monotonic() - self._started_at),
+            "timeout_s": float(self._timeout_s),
+            "delegations": int(self._delegations),
+            "max_delegations": int(self._max_delegations),
+        }
 
     def add_tokens(self, n: int) -> None:
         self._tokens_used += max(0, int(n))

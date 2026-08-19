@@ -9,6 +9,12 @@ export function notifyToStreamEvent(method: string, params: unknown): StreamEven
       return { type: "token", text: String(p.text ?? "") };
     case "event/progress":
       return { type: "progress", message: String(p.text ?? ""), text: String(p.text ?? "") };
+    case "event/team": {
+      const role = String(p.role ?? "");
+      const stage = String(p.stage ?? "");
+      const label = role && stage ? `[${role}] ${stage}` : role || stage;
+      return { type: "progress", message: label, text: label };
+    }
     case "event/reasoning_snapshot":
       return {
         type: "reasoning",

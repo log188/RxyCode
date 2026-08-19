@@ -20,6 +20,8 @@ The tracing module provides node-level execution tracing for RxyCode's LangGraph
 class NodeSpan:
     node_name: str          # "goal_planner" / "executor" / etc.
     task_id: str            # associated task ID (empty for non-task nodes)
+    role / stage / delegation_depth / tokens  # Phase F team fields (optional)
+    kind / parent_id / span_id                # delegate|consult|verify|audit
     run_id: str             # run identifier
     start_ts: float         # unix timestamp
     end_ts: float           # unix timestamp (0 if not finished)
@@ -77,6 +79,7 @@ blocked/rejected/error results cannot be persisted with an `ok` status.
 ```bash
 # Replay a run's execution timeline
 python -m core.tracing replay <run_id>
+python -m core.tracing replay --session <id> --show-team
 ```
 
 **Output format:**

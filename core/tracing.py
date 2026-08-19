@@ -16,9 +16,10 @@ import json
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from RxyCode.RxyCode1_1_0.config.settings import get_data_dir, load_config
 from RxyCode.RxyCode1_1_0.core.log_retention import prune_run_files
@@ -33,6 +34,36 @@ _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 # ---------------------------------------------------------------------------
 
 @dataclass
+class LlmCallRecord:
+    """一次 LLM 调用的完整记录。
+
+    这是蒸馏数据集的原始素材。默认**不采集**（隐私 + 磁盘），由
+    settings.distillation.collect 打开。
+
+    quality 由 J4 回填 QualitySignal；采集时先留空。
+    """
+
+    role: str
+    stage: str
+    model: str
+    provider: str
+    messages: list[dict] | None = None
+    response: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    duration_s: float = 0.0
+    quality: Any | None = None
+    session_id: str = ""
+
+
+DISTILLATION_COLLECT_NOTICE = (
+    "蒸馏采集已打开：本会话的模型输入/输出会写入本地 distillation JSONL，"
+    "仅用于后续训练，默认关闭。"
+)
+
+
+@dataclass
 class NodeSpan:
     """A single node execution span (one row in the trace JSONL)."""
 
@@ -44,6 +75,19 @@ class NodeSpan:
     token_usage: dict       # {"prompt_tokens": N, "completion_tokens": M, "total_tokens": K}
     status: str             # "ok" / "error" / "timeout"
     error_msg: str          # empty if status == "ok"
+    role: str = ""
+    stage: str = ""
+    delegation_depth: int = 0
+    tokens: int = 0
+    span_id: str = ""
+    parent_id: str = ""
+    kind: str = ""
+    detail: str = ""
+    session_id: str = ""
+    team: str = ""
+    mode: str = ""
+    decided_by: str = ""
+    budget: dict = field(default_factory=dict)
 
     @property
     def duration_s(self) -> float:
@@ -62,6 +106,19 @@ class NodeSpan:
             "status": self.status,
             "error_msg": self.error_msg,
             "duration_s": self.duration_s,
+            "role": self.role,
+            "stage": self.stage,
+            "delegation_depth": self.delegation_depth,
+            "tokens": self.tokens,
+            "span_id": self.span_id,
+            "parent_id": self.parent_id,
+            "kind": self.kind,
+            "detail": self.detail,
+            "session_id": self.session_id,
+            "team": self.team,
+            "mode": self.mode,
+            "decided_by": self.decided_by,
+            "budget": dict(self.budget),
         }
 
     @classmethod
@@ -76,6 +133,19 @@ class NodeSpan:
             token_usage=dict(d.get("token_usage", {})),
             status=d.get("status", "ok"),
             error_msg=d.get("error_msg", ""),
+            role=d.get("role", ""),
+            stage=d.get("stage", ""),
+            delegation_depth=int(d.get("delegation_depth", 0) or 0),
+            tokens=int(d.get("tokens", 0) or 0),
+            span_id=d.get("span_id", ""),
+            parent_id=d.get("parent_id", ""),
+            kind=d.get("kind", ""),
+            detail=d.get("detail", ""),
+            session_id=d.get("session_id", ""),
+            team=d.get("team", ""),
+            mode=d.get("mode", ""),
+            decided_by=d.get("decided_by", ""),
+            budget=dict(d.get("budget") or {}),
         )
 
 
@@ -153,7 +223,23 @@ class Tracer:
 
     # -- public API --------------------------------------------------------
 
-    def start_span(self, node_name: str, task_id: str = "") -> NodeSpan:
+    def start_span(
+        self,
+        node_name: str,
+        task_id: str = "",
+        *,
+        role: str = "",
+        stage: str = "",
+        delegation_depth: int = 0,
+        kind: str = "",
+        parent_id: str = "",
+        detail: str = "",
+        session_id: str = "",
+        team: str = "",
+        mode: str = "",
+        decided_by: str = "",
+        budget: dict | None = None,
+    ) -> NodeSpan:
         """Start timing a node execution.
 
         Returns a NodeSpan with ``end_ts=0`` (not yet finished).
@@ -168,6 +254,18 @@ class Tracer:
             token_usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             status="ok",
             error_msg="",
+            role=role,
+            stage=stage,
+            delegation_depth=delegation_depth,
+            span_id=uuid.uuid4().hex[:12],
+            parent_id=parent_id,
+            kind=kind,
+            detail=detail,
+            session_id=session_id or task_id,
+            team=team,
+            mode=mode,
+            decided_by=decided_by,
+            budget=dict(budget or {}),
         )
         self._spans.append(span)
         return span
@@ -190,6 +288,7 @@ class Tracer:
         span.error_msg = redact_sensitive(error_msg) if error_msg else ""
         if token_usage:
             span.token_usage = dict(token_usage)
+            span.tokens = int(span.token_usage.get("total_tokens", 0) or 0)
 
         line = json.dumps(span.to_dict(), ensure_ascii=False)
         self.trace_file.parent.mkdir(parents=True, exist_ok=True)
@@ -245,11 +344,148 @@ class Tracer:
 # Replay CLI
 # ---------------------------------------------------------------------------
 
-def replay(run_id: str) -> None:
+def _collect_enabled() -> bool:
+    try:
+        return bool((load_config().get("distillation") or {}).get("collect", False))
+    except Exception:
+        return False
+
+
+def distillation_ui_notice() -> str | None:
+    """Non-empty only when collection is on — F13/settings must show this."""
+    if _collect_enabled():
+        return DISTILLATION_COLLECT_NOTICE
+    return None
+
+
+def _record_safely(record: LlmCallRecord) -> None:
+    """采集永远不能影响主流程。
+
+    磁盘满、权限不足、路径不存在——任何异常都吞掉并记 warning。用户的
+    任务比我们的训练数据重要。
+    """
+    if not _collect_enabled():
+        return
+    try:
+        day = datetime.now().strftime("%Y-%m-%d")
+        session_id = record.session_id or "unknown"
+        path = get_data_dir() / "distillation" / day / f"{session_id}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = asdict(record)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning("distillation record skipped", exc_info=True)
+
+
+def record_llm_call(record: LlmCallRecord) -> None:
+    """Public J3 bury-point. Safe no-op when collection is off."""
+    _record_safely(record)
+
+
+def _fmt_tokens(n: int) -> str:
+    n = int(n)
+    if abs(n) >= 1000 and n % 1000 == 0:
+        return f"{n // 1000}k"
+    if abs(n) >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
+
+
+def _fmt_seconds(n: float) -> str:
+    if n >= 10:
+        return f"{int(round(n))}s"
+    return f"{n:.1f}s"
+
+
+def format_team_tree(spans: list[NodeSpan]) -> str:
+    """ASCII delegation tree for ``replay --show-team``."""
+    if not spans:
+        return "No team trace"
+    head = next((s for s in spans if s.kind == "team"), spans[0])
+    session = head.session_id or head.run_id
+    budget = dict(head.budget or {})
+    tokens_used = int(
+        budget.get("tokens_used")
+        or sum(s.tokens or s.token_usage.get("total_tokens", 0) for s in spans)
+    )
+    token_budget = int(budget.get("token_budget") or 0)
+    elapsed = float(budget.get("elapsed_s") or head.duration_s)
+    timeout = float(budget.get("timeout_s") or 0)
+    delegations = int(
+        budget.get("delegations")
+        or sum(1 for s in spans if s.kind == "delegate")
+    )
+    max_delegations = int(budget.get("max_delegations") or 0)
+    if token_budget or timeout or max_delegations:
+        budget_line = (
+            f"budget: {_fmt_tokens(tokens_used)}/{_fmt_tokens(token_budget)} tokens · "
+            f"{_fmt_seconds(elapsed)}/{_fmt_seconds(timeout)} · "
+            f"{delegations}/{max_delegations} delegations"
+        )
+    else:
+        budget_line = f"budget: {tokens_used} tokens · {delegations} delegations"
+    lines = [
+        f"session {session}   team={head.team or '-'}   "
+        f"mode={head.mode or 'SOLO'} (decided_by={head.decided_by or '-'})",
+        budget_line,
+        "",
+    ]
+    by_parent: dict[str, list[NodeSpan]] = {}
+    roots: list[NodeSpan] = []
+    for span in spans:
+        if span.parent_id:
+            by_parent.setdefault(span.parent_id, []).append(span)
+        else:
+            roots.append(span)
+
+    def walk(span: NodeSpan, prefix: str, is_last: bool) -> None:
+        branch = "└─ " if is_last else "├─ "
+        who = f"{span.stage or span.node_name} · {span.role}".strip(" ·")
+        if span.kind == "consult":
+            who = f"[consult] {span.detail}"
+        elif span.kind == "verify":
+            who = f"[verify] {span.detail or span.node_name}"
+        elif span.kind == "audit":
+            who = f"[audit] {span.detail or span.node_name}"
+        elif span.kind == "tool":
+            who = f"[tool] {span.detail or span.node_name}"
+        dur = span.duration_s
+        tok = span.tokens or span.token_usage.get("total_tokens", 0)
+        lines.append(
+            f"{prefix}{branch}{who} ({dur:.1f}s, {tok} tok)  {span.status.upper()}"
+        )
+        kids = by_parent.get(span.span_id, [])
+        child_prefix = prefix + ("   " if is_last else "│  ")
+        for i, kid in enumerate(kids):
+            walk(kid, child_prefix, i == len(kids) - 1)
+
+    for i, root in enumerate(roots):
+        walk(root, "", i == len(roots) - 1)
+    return "\n".join(lines)
+
+
+def format_current_role(span: NodeSpan | None) -> str:
+    """CLI/Desktop projection of the live role."""
+    if span is None:
+        return ""
+    stage = span.stage or span.node_name
+    role = span.role or "-"
+    return f"{role} @ {stage}"
+
+
+def replay(run_id: str, *, show_team: bool = False, session: str | None = None) -> None:
     """Print a text replay of a run's spans.
 
     Format: ``[timestamp] node_name  task_id  duration_s  status  tokens``
     """
+    key = session or run_id
+    if show_team:
+        tracer = Tracer(run_id=key, manage_retention=False)
+        print(format_team_tree(tracer.get_spans()))
+        return
     tracer = Tracer(run_id=run_id, manage_retention=False)
     spans = tracer.get_spans()
 
@@ -312,11 +548,13 @@ def main():
     sub = parser.add_subparsers(dest="cmd")
 
     rp = sub.add_parser("replay", help="Replay a run's spans")
-    rp.add_argument("run_id", help="Run ID to replay")
+    rp.add_argument("run_id", nargs="?", default="", help="Run ID to replay")
+    rp.add_argument("--session", default="", help="Session id (team replay)")
+    rp.add_argument("--show-team", action="store_true", help="Print delegation tree")
 
     args = parser.parse_args()
     if args.cmd == "replay":
-        replay(args.run_id)
+        replay(args.run_id or args.session, session=args.session or None, show_team=args.show_team)
     else:
         parser.print_help()
 

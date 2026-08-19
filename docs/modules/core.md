@@ -40,6 +40,7 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | agents/budget.py | Phase F `BudgetGuard`: token / wall-clock / delegation fuses. Over-budget returns a truncated partial answer. |
 | agents/router.py | Phase F `ModeRouter`: /solo /team /team-multi /why-mode, then heuristics, then optional LLM. Default `agents.enabled=false`. |
 | agents/teams/software_dev.yaml | Builtin software_dev SOP (architect → coder → audit). Tool names: `read`/`ls`. |
+| tracing.py | Node spans plus team tree (`replay --show-team`). J3 `LlmCallRecord` is opt-in via `settings.distillation.collect`. |
 
 ### Session Runtime Persistence
 

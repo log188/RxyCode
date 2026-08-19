@@ -250,6 +250,9 @@ def _default_config() -> dict:
             "total_timeout_s": 1800.0,
             "max_delegations": 20,
         },
+        "distillation": {
+            "collect": False,
+        },
         "lifecycle": {
             "hook_timeout_seconds": 5,
         },

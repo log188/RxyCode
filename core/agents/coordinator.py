@@ -27,6 +27,11 @@ from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
 from RxyCode.RxyCode1_1_0.core.agents.spec import validate_team
 from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier, subject_hash
+from RxyCode.RxyCode1_1_0.core.tracing import (
+    Tracer,
+    distillation_ui_notice,
+    format_current_role,
+)
 from RxyCode.RxyCode1_1_0.protocol.agents import (
     AgentSpec,
     ConsultRequest,
@@ -35,7 +40,7 @@ from RxyCode.RxyCode1_1_0.protocol.agents import (
     TeamSpec,
     VerdictRecord,
 )
-from RxyCode.RxyCode1_1_0.protocol.notifications import AgentEvent
+from RxyCode.RxyCode1_1_0.protocol.notifications import AgentEvent, ProgressUpdate
 
 _WRITE_TOOLS = frozenset({"write", "edit", "patch"})
 _WRITE_HINTS = ("write", "edit", "file", "patch", "写文件", "修改文件")
@@ -161,6 +166,13 @@ class Coordinator:
         self.max_consults = 8
         self.max_consult_tokens = 20_000
         self._verdicts: dict[str, VerdictRecord] = {}
+        self._tracer = Tracer(run_id=session.session_id, manage_retention=False)
+        self._trace_parent = ""
+        self._last_delegate_id = ""
+        self._delegate_by_stage: dict[str, str] = {}
+        self.current_role_display = ""
+        self.mode = "TEAM"
+        self.decided_by = "heuristic"
 
     def form_team(self, team: TeamSpec) -> TeamSpec:
         """只有团长能建团。"""
@@ -183,9 +195,23 @@ class Coordinator:
         if budget_overrides:
             self._budget = BudgetGuard(team, overrides=budget_overrides)
         self._budget.start(team)
+        notice = distillation_ui_notice()
+        if notice:
+            self._emit(ProgressUpdate(session_id=self._session.session_id, text=notice))
         self._coordinator_history.append(user_input)
         self.task_ledger.facts.append(user_input)
         self.task_ledger.plan = [stage.name for stage in team.stages]
+        root = self._tracer.start_span(
+            "team",
+            session_id=self._session.session_id,
+            team=team.name,
+            mode=self.mode,
+            decided_by=self.decided_by,
+            kind="team",
+        )
+        self._trace_parent = root.span_id
+        self._last_delegate_id = ""
+        self._delegate_by_stage = {}
 
         sop = SopMachine(team)
         try:
@@ -195,16 +221,86 @@ class Coordinator:
                 if callable(add):
                     add()
                 self._precheck(stage, team)
+                self._emit(
+                    TeamEvent(
+                        session_id=self._session.session_id,
+                        role=stage.role,
+                        stage=stage.name,
+                        phase="stage_started",
+                    )
+                )
+                self._emit_role_progress(stage.role, stage.name)
+                delegated = self._record_span(
+                    "delegate",
+                    kind="delegate",
+                    role=stage.role,
+                    stage=stage.name,
+                )
+                self._last_delegate_id = delegated.span_id
+                self._delegate_by_stage[stage.name] = delegated.span_id
                 result = await self._dispatch(stage, team, user_input)
                 result = self._apply_verify_gates(stage, result)
+                if stage.verify_before_next:
+                    self._record_span(
+                        "verify",
+                        kind="verify",
+                        role=stage.role,
+                        stage=stage.name,
+                        parent_id=delegated.span_id,
+                        detail="; ".join(stage.verify_before_next),
+                        ok=result.ok,
+                    )
+                    self._emit(
+                        TeamEvent(
+                            session_id=self._session.session_id,
+                            role=stage.role,
+                            stage=stage.name,
+                            phase="verified",
+                            detail="; ".join(stage.verify_before_next),
+                        )
+                    )
+                if stage.audit_after_verify:
+                    self._record_span(
+                        "audit",
+                        kind="audit",
+                        role="auditor",
+                        stage=stage.name,
+                        parent_id=delegated.span_id,
+                        ok=result.ok,
+                    )
+                    self._emit(
+                        TeamEvent(
+                            session_id=self._session.session_id,
+                            role="auditor",
+                            stage=stage.name,
+                            phase="audited",
+                        )
+                    )
                 self.blackboard.put(stage.output_key, result.answer, stage.role)
                 self.record_progress(made_progress=result.ok, looping=not result.ok)
                 nxt = sop.advance(ok=result.ok)
                 if nxt is None:
                     break
         except BudgetExceeded as exc:
+            self._finish_root(root)
             return self._partial_result(sop, team, exc)
+        self._finish_root(root)
         return self._synthesize(sop.history())
+
+    def _finish_root(self, root: Any) -> None:
+        snap = getattr(self._budget, "snapshot", None)
+        budget = snap() if callable(snap) else {}
+        if budget:
+            root.budget = dict(budget)
+            root.tokens = int(budget.get("tokens_used") or 0)
+        self._tracer.end_span(
+            root,
+            token_usage={
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": int(root.tokens or 0),
+            },
+        )
 
     def _partial_result(self, sop: SopMachine, team: TeamSpec, exc: BudgetExceeded) -> str:
         done = len(sop.history())
@@ -329,7 +425,63 @@ class Coordinator:
             kind="consult_a",
         )
         self.blackboard.put(f"consult:{request.request_id}", reply, request.to_role)
+        self._record_span(
+            "consult",
+            kind="consult",
+            role=request.from_role,
+            stage=request.stage,
+            parent_id=self._delegate_by_stage.get(request.stage)
+            or self._last_delegate_id
+            or self._trace_parent,
+            detail=f"{request.from_role} → {request.to_role} {request.question[:40]}",
+        )
+        self._emit(
+            TeamEvent(
+                session_id=self._session.session_id,
+                role=request.from_role,
+                stage=request.stage,
+                phase="consulted",
+                detail=request.question[:80],
+            )
+        )
         return reply
+
+    def _record_span(
+        self,
+        name: str,
+        *,
+        kind: str,
+        role: str,
+        stage: str,
+        parent_id: str = "",
+        detail: str = "",
+        ok: bool = True,
+        tokens: int = 0,
+    ):
+        depth = 0 if kind == "team" else 1 if kind == "delegate" else 2
+        span = self._tracer.start_span(
+            name,
+            task_id=self._session.session_id,
+            role=role,
+            stage=stage,
+            kind=kind,
+            parent_id=parent_id or self._trace_parent,
+            detail=detail,
+            session_id=self._session.session_id,
+            delegation_depth=depth,
+        )
+        self._tracer.end_span(
+            span,
+            status="ok" if ok else "error",
+            token_usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": tokens},
+        )
+        self.current_role_display = format_current_role(span)
+        return span
+
+    def _emit_role_progress(self, role: str, stage: str) -> None:
+        label = f"[{role}] {stage}".strip()
+        self.current_role_display = f"{role} @ {stage}".strip(" @")
+        self._emit(ProgressUpdate(session_id=self._session.session_id, text=label))
 
     def choose_failure_target(self, candidates: list[str]) -> str:
         """唯一 LLM 决策点：失败后多个候选。其余转移走 SopMachine。"""
