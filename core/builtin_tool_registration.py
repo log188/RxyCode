@@ -32,6 +32,7 @@ from RxyCode.RxyCode1_1_0.tools.patch import patch_tool
 from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import subagent_task_tool
 from RxyCode.RxyCode1_1_0.tools.open_file import open_file_tool
 from RxyCode.RxyCode1_1_0.tools.download_tool import download_mcp_tool, download_skill_tool
+from RxyCode.RxyCode1_1_0.tools.team_install_tool import team_install_tool
 from RxyCode.RxyCode1_1_0.tools.file_download import file_download_tool
 
 
@@ -94,7 +95,7 @@ def register_builtin_tools(
         task_manage_tool if subagents_enabled else task_tool,
         vision_tool,
     ]
-    danger_tools = [bash_tool, git_tool, question_tool]
+    danger_tools = [bash_tool, git_tool, question_tool, team_install_tool]
 
     for tool in read_tools:
         registry.register(tool, risk="read")
