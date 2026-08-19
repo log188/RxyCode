@@ -52,6 +52,10 @@ CHECK_TYPES = (
     "output_contains",
     "tool_used",
     "tool_not_used",
+    "role_participated",
+    "max_delegations",
+    "verdict_bound",
+    "cache_hit_floor",
 )
 
 #: Checks that need a filesystem workdir to be meaningful.
@@ -75,6 +79,10 @@ class Check:
     pattern: Optional[str] = None
     run: Optional[str] = None
     tool: Optional[str] = None
+    role: Optional[str] = None
+    max: Optional[int] = None
+    floor: Optional[float] = None
+    subject_hash: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict, *, task_id: str) -> "Check":
@@ -95,12 +103,24 @@ class Check:
             raise TaskSchemaError(f"task {task_id}: check command_succeeds requires 'run'")
         if ctype in ("tool_used", "tool_not_used") and not data.get("tool"):
             raise TaskSchemaError(f"task {task_id}: check {ctype} requires 'tool'")
+        if ctype == "role_participated" and not data.get("role"):
+            raise TaskSchemaError(f"task {task_id}: check role_participated requires 'role'")
+        if ctype == "max_delegations" and data.get("max") is None:
+            raise TaskSchemaError(f"task {task_id}: check max_delegations requires 'max'")
+        if ctype == "cache_hit_floor" and data.get("floor") is None:
+            raise TaskSchemaError(f"task {task_id}: check cache_hit_floor requires 'floor'")
+        if ctype == "verdict_bound" and not data.get("subject_hash"):
+            raise TaskSchemaError(f"task {task_id}: check verdict_bound requires 'subject_hash'")
         return cls(
             type=ctype,
             path=data.get("path"),
             pattern=data.get("pattern"),
             run=data.get("run"),
             tool=data.get("tool"),
+            role=data.get("role"),
+            max=data.get("max"),
+            floor=data.get("floor"),
+            subject_hash=data.get("subject_hash"),
         )
 
 

@@ -56,8 +56,8 @@ class ExecutionMode(str, Enum):
 @dataclass
 class L2Thresholds:
     short_question_max_chars: int = 80
-    min_files_for_team: int = 2
-    min_leaves_for_team: int = 4
+    min_files_for_team: int = 4
+    min_leaves_for_team: int = 6
 
 
 @dataclass

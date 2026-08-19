@@ -263,6 +263,7 @@ def _run_single_check(
     workdir: Optional[Path],
     agent_answer: str,
     tools_used: Optional[list[str]] = None,
+    extras: Optional[dict] = None,
 ) -> tuple[bool, str]:
     """Execute one check.  Returns ``(passed, message)``."""
     ct = check.type
@@ -331,6 +332,26 @@ def _run_single_check(
         ok = tool not in normalized
         return ok, "" if ok else f"tool {check.tool!r} was used but should not have been"
 
+    extras = extras if extras is not None else {}
+    if ct == "role_participated":
+        roles = {str(r) for r in extras.get("roles") or []}
+        ok = bool(check.role) and check.role in roles
+        return ok, "" if ok else f"role {check.role!r} did not participate ({sorted(roles)})"
+    if ct == "max_delegations":
+        used = int(extras.get("delegations") or 0)
+        limit = int(check.max or 0)
+        ok = used <= limit
+        return ok, "" if ok else f"delegations {used} exceeded max {limit}"
+    if ct == "verdict_bound":
+        digest = str(extras.get("subject_hash") or "")
+        ok = bool(check.subject_hash) and digest == check.subject_hash
+        return ok, "" if ok else "verdict subject_hash mismatch"
+    if ct == "cache_hit_floor":
+        hit = float(extras.get("cache_hit_rate") or 0.0)
+        floor = float(check.floor or 0.0)
+        ok = hit >= floor
+        return ok, "" if ok else f"cache_hit_rate {hit} < {floor}"
+
     return False, f"unknown check type: {ct}"
 
 
@@ -340,6 +361,7 @@ def run_checks(
     workdir: Optional[Path] = None,
     agent_answer: str = "",
     tools_used: Optional[list[str]] = None,
+    extras: Optional[dict] = None,
 ) -> tuple[bool, list[dict]]:
     """Run all checks for *task*.  Returns ``(all_passed, details)``."""
     details: list[dict] = []
@@ -350,6 +372,7 @@ def run_checks(
             workdir=workdir,
             agent_answer=agent_answer,
             tools_used=tools_used,
+            extras=extras,
         )
         details.append({"type": check.type, "passed": ok, "message": msg})
         if not ok:
@@ -952,6 +975,18 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--mode",
+        choices=["solo", "team", "auto"],
+        default="solo",
+        help="F14 execution mode (solo keeps the single-agent path)",
+    )
+    parser.add_argument(
+        "--experiment-tag",
+        choices=["E0", "E1", "E2"],
+        default="E0",
+        help="F14 experiment stage tag",
+    )
+    parser.add_argument(
         "--max-tasks",
         type=int,
         default=None,
@@ -1006,6 +1041,8 @@ def main() -> int:
         help="Generate the comparison matrix from evals/baselines/<DATE>-agent-*.json (no runs); omit DATE for today",
     )
     args = parser.parse_args()
+    os.environ["RXYCODE_EVAL_MODE"] = args.mode
+    os.environ["RXYCODE_EVAL_EXPERIMENT_TAG"] = args.experiment_tag
 
     if args.models and args.model:
         parser.error("--models and --model are mutually exclusive")
