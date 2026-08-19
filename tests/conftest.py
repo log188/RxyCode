@@ -61,19 +61,43 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 os.environ["RXYCODE_STRICT_ERRORS"] = "1"
 
 
+_CANONICAL_MODULE_PREFIX = "RxyCode.RxyCode1_1_0."
+
+
+def _unified_top_level_packages() -> frozenset[str]:
+    """RL10's measured package list — imported, not copied."""
+    from appserver import _UNIFIED_TOP_LEVEL_PACKAGES
+
+    return _UNIFIED_TOP_LEVEL_PACKAGES
+
+
 def _bare_core_module_keys() -> frozenset[str]:
+    packages = _unified_top_level_packages()
     return frozenset(
-        name for name in sys.modules if name == "core" or name.startswith("core.")
+        name for name in sys.modules if name.partition(".")[0] in packages
     )
+
+
+def _split_identity_keys(names: frozenset[str]) -> list[str]:
+    split: list[str] = []
+    for name in sorted(names):
+        canonical = _CANONICAL_MODULE_PREFIX + name
+        bare_mod = sys.modules.get(name)
+        can_mod = sys.modules.get(canonical)
+        if can_mod is None or bare_mod is not can_mod:
+            split.append(name)
+    return split
 
 
 @pytest.fixture(autouse=True)
 def _fail_leaked_process_globals(request: pytest.FixtureRequest):
-    """Fail the test that leaked CWD or a new bare-core sys.modules alias.
+    """Fail the test that leaked CWD or a split-identity sys.modules alias.
 
-    A leaked chdir / ``sys.modules['core*']`` entry shows up as a failure in
+    A leaked chdir / split ``sys.modules`` entry shows up as a failure in
     some later unrelated test.  Name the culprit at the moment it leaks.
     Opt out of the CWD check with ``@pytest.mark.allows_cwd_change``.
+    Bare keys that resolve to the same object as the canonical spelling
+    are not a leak (RL4/RL10); only a real identity split fails.
     """
     before_cwd = os.getcwd()
     before_keys = _bare_core_module_keys()
@@ -86,9 +110,10 @@ def _fail_leaked_process_globals(request: pytest.FixtureRequest):
             f"{nodeid} leaked process CWD: {before_cwd!r} -> {after_cwd!r}"
         )
     added = after_keys - before_keys
-    if added:
+    split = _split_identity_keys(added)
+    if split:
         pytest.fail(
-            f"{nodeid} added bare-core sys.modules keys: {sorted(added)}"
+            f"{nodeid} added split-identity sys.modules keys: {split}"
         )
 
 

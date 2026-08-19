@@ -28,11 +28,11 @@ tests/stress_test/test_phase4_harness.py`，跳过项为需要 `RXYCODE_APPSERVE
 每个测试结束后，`tests/conftest.py` 的 autouse fixture 检查两件事：
 
 1. 进程 CWD 与测试开始时一致；
-2. `sys.modules` 没有新增 `core` / `core.*` 条目。
+2. 新增的裸顶层包键（清单与 RL10 的 `appserver._UNIFIED_TOP_LEVEL_PACKAGES` 同源，import 不重抄）是否与 `RxyCode.RxyCode1_1_0.<同名>` **不是同一个模块对象**（或规范键根本不存在）。键存在本身无害：RL4/RL10 的 finder 会让两种拼写指向同一对象。有害的是两个键指向两个对象。
 
-失败信息带测试 nodeid 以及旧值/新值（或新增的模块名）。不要写 `Path("config/...")` 这类依赖 CWD 的相对路径（RLI-3）；资源路径用 `REPO_ROOT`。
+失败信息带测试 nodeid 以及旧值/新值（或分裂的模块名）。不要写 `Path("config/...")` 这类依赖 CWD 的相对路径（RLI-3）；资源路径用 `REPO_ROOT`。
 
-需要在测试体内改 CWD、且自己负责还原的，可以标 `@pytest.mark.allows_cwd_change`。只豁免 CWD 检查，不豁免 bare-core 别名泄漏。这个 marker 只用于进程入口或明确要验证 chdir 的用例，不能用来掩盖库函数里的 `os.chdir`。
+需要在测试体内改 CWD、且自己负责还原的，可以标 `@pytest.mark.allows_cwd_change`。只豁免 CWD 检查，不豁免身份分裂。这个 marker 只用于进程入口或明确要验证 chdir 的用例，不能用来掩盖库函数里的 `os.chdir`。
 
 ## Scripted LLM
 
