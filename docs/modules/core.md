@@ -36,6 +36,7 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | agents/coordinator.py | Phase F Coordinator: empty toolset, form_team only, precheck, one LLM route event, dual ledgers + stall replan. |
 | agents/mailbox.py | Phase F append-only mailbox; every message records `relayed_by`. |
 | agents/blackboard.py | Phase F append-only blackboard with authorized `context_keys` and a 1 MB cap. |
+| agents/verifier.py | Phase F mechanical gate (no LLM). Eight low-level checks plus high-level `goal_satisfied`. Verdicts bind `subject_hash`. |
 
 ### Session Runtime Persistence
 

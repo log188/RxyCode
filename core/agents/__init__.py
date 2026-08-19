@@ -10,6 +10,7 @@ from RxyCode.RxyCode1_1_0.core.agents.spec import (
     AgentSpecError,
     validate_team,
 )
+from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier, subject_hash
 
 __all__ = [
     "MAX_DELEGATE_DEPTH",
@@ -21,4 +22,6 @@ __all__ = [
     "Coordinator",
     "Mailbox",
     "Blackboard",
+    "MechanicalVerifier",
+    "subject_hash",
 ]

@@ -10,8 +10,9 @@
 这是刻意的：团长一旦开始干活，就会和成员抢上下文，而且它的上下文是全局
 最宝贵的。
 
-F8 verifier / F9 BudgetGuard / F7 blackboard 由构造函数注入；缺省是
-本卡可测的桩，不提前实现那三张卡。
+F8 MechanicalVerifier 是默认机械门；F9 BudgetGuard 仍可注入（缺省 noop）。
+进入下一阶段前：机械检查不过就打回；audit_after_verify 还要求
+当前产出 hash 上有 passed=True 的 VerdictRecord。
 """
 
 from __future__ import annotations
@@ -24,12 +25,14 @@ from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
 from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
 from RxyCode.RxyCode1_1_0.core.agents.spec import validate_team
+from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier, subject_hash
 from RxyCode.RxyCode1_1_0.protocol.agents import (
     AgentSpec,
     ConsultRequest,
     SopStage,
     TeamEvent,
     TeamSpec,
+    VerdictRecord,
 )
 from RxyCode.RxyCode1_1_0.protocol.notifications import AgentEvent
 
@@ -101,6 +104,8 @@ class StageOutcome:
     answer: str
     error: str = ""
     packet: DispatchPacket | None = None
+    diff: str = ""
+    verify_ctx: Any | None = None
 
 
 @dataclass
@@ -154,6 +159,7 @@ class Coordinator:
         self._consult_tokens = 0
         self.max_consults = 8
         self.max_consult_tokens = 20_000
+        self._verdicts: dict[str, VerdictRecord] = {}
 
     def form_team(self, team: TeamSpec) -> TeamSpec:
         """只有团长能建团。"""
@@ -177,17 +183,34 @@ class Coordinator:
             self._budget.check()
             self._precheck(stage, team)
             result = await self._dispatch(stage, team, user_input)
-            if stage.verify_before_next and self._verifier is not None:
-                verdict = self._verifier.run(stage, result)
-                if not verdict.passed:
-                    result.ok = False
-                    result.error = "; ".join(verdict.findings)
+            result = self._apply_verify_gates(stage, result)
             self.blackboard.put(stage.output_key, result.answer, stage.role)
             self.record_progress(made_progress=result.ok, looping=not result.ok)
             nxt = sop.advance(ok=result.ok)
             if nxt is None:
                 break
         return self._synthesize(sop.history())
+
+    def store_verdict(self, record: VerdictRecord) -> None:
+        self._verdicts[record.subject_hash] = record
+
+    def verdict_allows(self, digest: str) -> bool:
+        record = self._verdicts.get(digest)
+        return bool(record and record.passed and record.subject_hash == digest)
+
+    def _apply_verify_gates(self, stage: SopStage, result: StageOutcome) -> StageOutcome:
+        digest = subject_hash(result.answer, result.diff)
+        if stage.verify_before_next:
+            verifier = self._verifier or MechanicalVerifier()
+            verdict = verifier.run(stage, result)
+            if not verdict.passed:
+                result.ok = False
+                result.error = "; ".join(verdict.findings)
+                return result
+        if stage.audit_after_verify and result.ok and not self.verdict_allows(digest):
+            result.ok = False
+            result.error = "missing or stale VerdictRecord for current subject_hash"
+        return result
 
     def _precheck(self, stage: SopStage, team: TeamSpec) -> None:
         member = next(m for m in team.members if m.role == stage.role)
