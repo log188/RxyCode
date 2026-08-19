@@ -182,6 +182,14 @@ test('missing-file repair prompt writes documents instead of re-reading source',
     selectMissingFileRepair('T03', 'company website has no demo login control (#btn-demo-login)', ['index.html', 'admin.html', 'PLAN.md']),
     []
   )
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T09',
+      'spring-mysql Boot 4 AutoConfigureMockMvc is org.springframework.boot.webmvc.test.autoconfigure, not org.springframework.boot.test.autoconfigure.web.servlet',
+      ['pom.xml', 'src/test/java/com/rxycode/t09coffee/CoffeeShopApplicationTests.java']
+    ),
+    []
+  )
   const adminRepair = buildMissingFileRepairPrompt('T03-company', ['README.md', 'TEST-REPORT.md', 'admin.html'])
   assert.match(adminRepair, /T03-company\/admin\.html/)
   assert.match(adminRepair, /用户管理/)

@@ -233,6 +233,7 @@ export function selectMissingFileRepair(scenarioId: string, error: string, files
   }
   if (scenarioId === 'T09') {
     if (/starter-flyway/i.test(error)) return []
+    if (/AutoConfigureMockMvc|webmvc\.test\.autoconfigure|autoconfigure\.web\.servlet/i.test(error)) return []
     if (/H2\/SQLite|jdbc:h2|org\.h2\.Driver|H2Dialect/i.test(error)) {
       const testCfg = rels.filter((file) => /src\/test\/resources\/application/i.test(file))
       return testCfg.length > 0 ? testCfg : []
