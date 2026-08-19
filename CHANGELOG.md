@@ -35,6 +35,8 @@ reliable. GitHub Release **v1.2.11** publishes **one** asset:
 
 - Expert-team `delegate_request` prompt now has a `<ROLE>` section; architect /
   coder / auditor / delegate stages have few-shot examples.
+- Integration main-chain test no longer patches the removed
+  `AgentV2._should_request_parallel_execution` (ModeRouter / `should_use_subagents`).
 - Stream idle timeout 30s (cap 90s) and tool-arg wait 60s so large writes
   are not cut mid-file.
 - appserver JSON-RPC stdio limit raised to 8MiB (was 64KiB).
