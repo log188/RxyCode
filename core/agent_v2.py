@@ -3310,7 +3310,8 @@ class AgentV2:
             )
             return stream
 
-        try:
+        async def _connect_provider_stream():
+            nonlocal stream_obj
             if _circuit_breaker.circuit_breaker_enabled():
                 agen = await asyncio.wait_for(
                     _circuit_breaker.get_default_breaker().call(_open_provider_stream),
@@ -3321,9 +3322,13 @@ class AgentV2:
                     _open_provider_stream(), timeout=first_chunk_timeout
                 )
             stream_obj = agen
-            ait = agen.__aiter__()
+            return agen.__aiter__()
+
+        try:
+            ait = await _connect_provider_stream()
             useful_deadline = time.monotonic() + first_chunk_timeout
             got_useful = False
+            first_token_retries_left = 1
             while True:
                 try:
                     if got_useful:
@@ -3353,6 +3358,26 @@ class AgentV2:
                         raise StreamIdleTimeoutError(
                             "provider stopped producing stream events before the idle deadline"
                         ) from exc
+                    if first_token_retries_left > 0:
+                        first_token_retries_left -= 1
+                        closer = getattr(stream_obj, "aclose", None)
+                        if callable(closer):
+                            try:
+                                await closer()
+                            except Exception:
+                                _logger.debug(
+                                    "provider stream aclose failed before first-token retry",
+                                    exc_info=True,
+                                )
+                        stream_obj = None
+                        _logger.warning(
+                            "llm_stream first-token timeout; retrying once seq=%d",
+                            request_seq,
+                        )
+                        await asyncio.sleep(0.5)
+                        ait = await _connect_provider_stream()
+                        useful_deadline = time.monotonic() + first_chunk_timeout
+                        continue
                     raise
                 _stream_chunks += 1
                 # First useful packet = reasoning, visible text, or tool_calls.
