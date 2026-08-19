@@ -47,11 +47,13 @@ Handles errors during task execution with retry logic and error summarization.
 - After 5 consecutive failures the breaker opens for 60s; while open, calls
   fail fast with CircuitBreakerError instead of hitting the provider
 - Attached at the UsageTrackingLLM call layer (core/agent_v2.py), so fast
-  path, graph nodes and sub-agents share one process-wide breaker
+  path, graph nodes and sub-agents share the default keyed breaker
+  (`get_breaker("default")`); additional keys isolate AgentRuntimes
 - While open, UsageTrackingLLM returns a "服务暂时不可用" message instead of
   raising (honest hint, no cascade)
 - astream and `_raw_stream` only guard stream *establishment* through the
   breaker so token streaming is not buffered
 - Config switch: recovery.circuit_breaker_enabled (default true)
-- Helpers: `get_default_breaker()` / `reset_breakers()` /
+- Helpers: `get_breaker(key)` / `get_default_breaker()` /
+  `reset_all_breakers()` / `reset_breakers()` /
   `SERVICE_UNAVAILABLE_MESSAGE`

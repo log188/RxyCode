@@ -6,8 +6,11 @@ failures the breaker opens for 60s; while open, calls fail fast with
 ``pybreaker.CircuitBreakerError`` instead of cascading into the provider.
 
 The breaker is attached at the UsageTrackingLLM call layer
-(core/agent_v2.py) so every LLM entry point (fast path, graph nodes,
-sub-agents) shares one breaker per process.
+(core/agent_v2.py). Historically every LLM entry point shared one
+breaker per process. Phase F keys breakers: the single-agent path
+still uses key ``"default"`` (same instance as before); each
+AgentRuntime can hold its own key so one agent opening the breaker
+does not sit out every other agent.
 
 Config switch: ``recovery.circuit_breaker_enabled`` (default true).
 While the breaker is open the fast path returns a "服务暂时不可用"
@@ -119,24 +122,46 @@ class LLMCircuitBreaker:
             raise
 
 
-#: Process-wide shared breaker for the primary LLM.
+#: Keyed breakers. Single-agent path uses ``"default"``.
+_BREAKERS: dict[str, LLMCircuitBreaker] = {}
+
+#: Backward-compat alias for tests that read/write the default slot.
 _default_breaker: LLMCircuitBreaker | None = None
 
 
-def get_default_breaker() -> LLMCircuitBreaker:
-    """Return (and lazily create) the shared LLM circuit breaker."""
+def get_breaker(key: str = "default") -> LLMCircuitBreaker:
+    """Return (and lazily create) the breaker for ``key``."""
     global _default_breaker
-    if _default_breaker is None:
-        _default_breaker = LLMCircuitBreaker(fail_max=5, reset_timeout=60)
-    return _default_breaker
+    breaker = _BREAKERS.get(key)
+    if breaker is None:
+        breaker = LLMCircuitBreaker(fail_max=5, reset_timeout=60, name=key)
+        _BREAKERS[key] = breaker
+        if key == "default":
+            _default_breaker = breaker
+    return breaker
+
+
+def get_default_breaker() -> LLMCircuitBreaker:
+    """Return the single-agent breaker (key ``default``)."""
+    global _default_breaker
+    if _default_breaker is not None:
+        _BREAKERS.setdefault("default", _default_breaker)
+        return _default_breaker
+    return get_breaker("default")
+
+
+def reset_all_breakers() -> None:
+    """Close and drop every keyed breaker. Tests only."""
+    global _default_breaker
+    for breaker in list(_BREAKERS.values()):
+        try:
+            breaker.breaker.close()
+        except Exception:
+            pass
+    _BREAKERS.clear()
+    _default_breaker = None
 
 
 def reset_breakers() -> None:
     """Reset the shared breaker (test hook / manual recovery)."""
-    global _default_breaker
-    if _default_breaker is not None:
-        try:
-            _default_breaker.breaker.close()
-        except Exception:
-            pass
-    _default_breaker = None
+    reset_all_breakers()
