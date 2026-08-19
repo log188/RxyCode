@@ -91,7 +91,20 @@ def _worker_env() -> dict[str, str]:
     return env
 
 
+def test_worker_stdio_limit_covers_large_write_payloads():
+    """T01 final/write JSON-RPC lines exceed asyncio's default 64 KiB reader."""
+    import inspect
+
+    from appserver.agent_host import WORKER_STDIO_LIMIT_BYTES, AgentHost
+
+    assert WORKER_STDIO_LIMIT_BYTES >= 1024 * 1024
+    source = inspect.getsource(AgentHost._start_async)
+    assert "limit=WORKER_STDIO_LIMIT_BYTES" in source
+
+
 async def _spawn_worker() -> tuple[asyncio.subprocess.Process, AsyncRpcPipe]:
+    from appserver.agent_host import WORKER_STDIO_LIMIT_BYTES
+
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -101,6 +114,7 @@ async def _spawn_worker() -> tuple[asyncio.subprocess.Process, AsyncRpcPipe]:
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        limit=WORKER_STDIO_LIMIT_BYTES,
     )
     pipe = AsyncRpcPipe(proc.stdin, proc.stdout)
     await pipe.start()
