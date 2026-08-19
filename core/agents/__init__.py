@@ -5,6 +5,7 @@ from RxyCode.RxyCode1_1_0.core.agents.budget import BudgetExceeded, BudgetGuard
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import Coordinator
 from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
 from RxyCode.RxyCode1_1_0.core.agents.router import ExecutionMode, ModeRouter, get_default_router
+from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
 from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
 from RxyCode.RxyCode1_1_0.core.agents.spec import (
@@ -31,4 +32,5 @@ __all__ = [
     "ModeRouter",
     "ExecutionMode",
     "get_default_router",
+    "load_builtin_team",
 ]

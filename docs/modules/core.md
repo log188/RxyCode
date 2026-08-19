@@ -39,6 +39,7 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | agents/verifier.py | Phase F mechanical gate (no LLM). Eight low-level checks plus high-level `goal_satisfied`. Verdicts bind `subject_hash`. |
 | agents/budget.py | Phase F `BudgetGuard`: token / wall-clock / delegation fuses. Over-budget returns a truncated partial answer. |
 | agents/router.py | Phase F `ModeRouter`: /solo /team /team-multi /why-mode, then heuristics, then optional LLM. Default `agents.enabled=false`. |
+| agents/teams/software_dev.yaml | Builtin software_dev SOP (architect → coder → audit). Tool names: `read`/`ls`. |
 
 ### Session Runtime Persistence
 

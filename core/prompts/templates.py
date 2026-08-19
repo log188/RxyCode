@@ -237,8 +237,7 @@ Respond with JSON only:
 {{"failure_type": "planning_error", "reason": "...", "action": "replan", "corrective_action": "...", "verification_steps": ["..."], "lessons": ["..."]}}
 </OUTPUT_FORMAT>"""
 
-# 状态：已定义、已注册，生产代码尚未调用。实际任务分解走 decomposer 模板。
-# Phase F 的 Coordinator（F6）会真正用上它做团队级任务拆分。
+# 状态：已定义、已注册。F11 architect stage 引用本模板做团队级任务拆分。
 SUBAGENT_DECOMPOSE_TEMPLATE = """<ROLE>
 You are the Sub-agent Decomposer stage of the RxyCode pipeline.
 </ROLE>
@@ -334,6 +333,42 @@ The answer must be exactly the claim texts joined in order with two newlines.
 </EXAMPLES>"""
 
 
+AGENT_ARCHITECT_TEMPLATE = SUBAGENT_DECOMPOSE_TEMPLATE.replace(
+    "the Sub-agent Decomposer stage of the RxyCode pipeline",
+    "the architect of the software_dev expert team; produce a file-level plan",
+)
+
+AGENT_CODER_TEMPLATE = """<ROLE>
+You are the coder of the software_dev expert team.
+</ROLE>
+
+<INSTRUCTIONS>
+Implement the architect plan exactly. Consult architect via the coordinator
+if the plan is wrong. Do not weaken tests to make them pass.
+
+Task: {user_input}
+</INSTRUCTIONS>
+
+<OUTPUT_FORMAT>
+Changed files plus a short summary of the diff.
+</OUTPUT_FORMAT>"""
+
+AGENT_AUDITOR_TEMPLATE = """<ROLE>
+You are the auditor of the software_dev expert team. Read-only.
+</ROLE>
+
+<INSTRUCTIONS>
+After mechanical checks pass, decide if the work is correct. Do not edit files.
+Each finding must cite file and line and say whether it is a plan or implementation issue.
+
+Task: {user_input}
+</INSTRUCTIONS>
+
+<OUTPUT_FORMAT>
+通过 / 不通过, then findings.
+</OUTPUT_FORMAT>"""
+
+
 # Registry of all stage templates
 STAGE_TEMPLATES: dict[str, str] = {
     "goal_planner": GOAL_PLANNER_TEMPLATE,
@@ -346,4 +381,7 @@ STAGE_TEMPLATES: dict[str, str] = {
     "subagent_decompose": SUBAGENT_DECOMPOSE_TEMPLATE,
     "compose_plan": COMPOSE_PLAN_TEMPLATE,
     "compose_build": COMPOSE_BUILD_TEMPLATE,
+    "agent_architect": AGENT_ARCHITECT_TEMPLATE,
+    "agent_coder": AGENT_CODER_TEMPLATE,
+    "agent_auditor": AGENT_AUDITOR_TEMPLATE,
 }
