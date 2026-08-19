@@ -153,6 +153,8 @@ FAST_LOCAL_BUILD_INSTRUCTION = (
     "Do not write _probe.py or use bash to probe python, node, pip, pandas, "
     "Yahoo Finance, or network connectivity. After the required "
     "websearch/webfetch calls, write the HTML/CSV/markdown artifact immediately. "
+    "T06 market-BI pages and CSVs must literally name gold/黄金, silver/白银, "
+    "Nasdaq/纳斯达克, and S&P/标普; generic Asset A/B/C labels are a hard failure. "
     "Do not append source code with "
     "bash, cat, or PowerShell here-strings. If a write reports a syntax or "
     "validation mismatch, replace the complete file with write or edit it at "
