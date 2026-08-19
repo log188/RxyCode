@@ -93,7 +93,7 @@ from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
 from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as _circuit_breaker
 from RxyCode.RxyCode1_1_0.recovery.tracker import RecoveryKind
-from RxyCode.RxyCode1_1_0.tools.registry import registry
+from RxyCode.RxyCode1_1_0.tools.registry import default_registry
 from RxyCode.RxyCode1_1_0.tools.task_tool import clear_session_tasks
 from RxyCode.RxyCode1_1_0.tools.workflow_tool import clear_session_workflows
 from RxyCode.RxyCode1_1_0.utils.streaming import DEFAULT_CONTEXT_MAX, token_stats
@@ -1544,6 +1544,8 @@ class AgentV2:
     def __init__(self, model_name: Optional[str] = None):
         self._cfg = _settings.load_config()
         self._session_id = "latest"
+        # F2: None keeps single-agent cache keys byte-identical (FX9 / MC1).
+        self._agent_namespace = None
         # B5: 预热状态（惰性初始化；PrewarmState 签名校验 + keep-alive 调度）
         self._prewarm = None
         self._keep_alive_state = None
@@ -1658,7 +1660,7 @@ class AgentV2:
         self._last_thinking = ""
         self._thinking_history: list[str] = []
         # Register tools
-        self._tool_orchestrator = ToolOrchestrator()
+        self._tool_orchestrator = ToolOrchestrator(tool_registry=None)
         self._mcp_lock = threading.RLock()
         self._mcp_clients: dict[str, object] = {}
         self._mcp_tool_names: set[str] = set()
@@ -3458,7 +3460,7 @@ class AgentV2:
             pass
 
         register_builtin_tools(
-            registry,
+            getattr(self._tool_orchestrator, "_registry", None) or default_registry,
             self._tool_orchestrator,
             rag_enabled=bool(getattr(self._memory, "_rag_enabled", False)),
             subagents_enabled=_subagents_on,

@@ -269,5 +269,7 @@ class SemanticCache:
             return removed
 
 
-# Global singleton
-semantic_cache = SemanticCache()
+#: 进程级默认语义缓存。多 Agent 请注入独立实例；单 Agent 继续用这个。
+default_semantic_cache = SemanticCache()
+#: 向后兼容别名。新代码不要用。
+semantic_cache = default_semantic_cache

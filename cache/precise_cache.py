@@ -224,5 +224,7 @@ class PreciseCache:
             self._save_index()
 
 
-# Global singleton
-precise_cache = PreciseCache()
+#: 进程级默认精确缓存。多 Agent 请注入独立实例；单 Agent 继续用这个。
+default_precise_cache = PreciseCache()
+#: 向后兼容别名。新代码不要用。
+precise_cache = default_precise_cache
