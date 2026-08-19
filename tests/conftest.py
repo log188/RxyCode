@@ -57,6 +57,8 @@ from langchain_core.messages import AIMessage
 
 # RLI-3: resource paths must be anchored here, never to the process CWD.
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# RL9: tests re-raise the chat-path fallback. Production leaves this unset.
+os.environ["RXYCODE_STRICT_ERRORS"] = "1"
 
 
 def _bare_core_module_keys() -> frozenset[str]:
