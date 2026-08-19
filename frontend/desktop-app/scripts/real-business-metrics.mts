@@ -109,7 +109,7 @@ export function terminalOutcomeIssue(status: string, finalAnswer: string, artifa
     // passing smoke/play probe (T06 retry3 had CSV + probe ok).
     if (
       artifactOk &&
-      /Tool (?:write|edit) did not complete|Artifact failed format validation/i.test(finalAnswer)
+      /Tool (?:write|edit) did not complete|Artifact failed format validation|FirstTokenTimeoutError|no first response event before the deadline|idle deadline/i.test(finalAnswer)
     ) {
       return null
     }

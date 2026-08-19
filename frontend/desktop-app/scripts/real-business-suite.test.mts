@@ -482,6 +482,14 @@ test('successful GUI runs must expose a non-empty Final Answer', () => {
     String(terminalOutcomeIssue('failed', '[evidence failed: Tool write did not complete: failed]', false)),
     /GUI session failed/
   )
+  assert.equal(
+    terminalOutcomeIssue(
+      'failed',
+      '[error] FirstTokenTimeoutError: provider produced no first response event before the deadline',
+      true
+    ),
+    null
+  )
 })
 
 test('web artifacts cannot pass with only an index.html', () => {

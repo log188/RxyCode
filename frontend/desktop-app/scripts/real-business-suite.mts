@@ -865,8 +865,11 @@ const companyPagePlayExpression = `(() => {
     const statusEl = document.querySelector('#login-status, #authError, #statusMsg, .form-status, .status-msg, [role="alert"]');
     const status = ((statusEl && statusEl.textContent) || '').trim();
     const demo = document.querySelector('#btn-demo-login, [data-demo-login]');
-    if (demo instanceof HTMLElement) demo.click();
-    await sleep(900);
+    if (demo instanceof HTMLElement) {
+      demo.click();
+      demo.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    }
+    await sleep(1500);
     let after = ((document.body && document.body.innerText) || '').trim();
     let adminModules = countModules(after);
     if (adminModules < 4) {
@@ -1605,8 +1608,7 @@ async function runScenario(
     terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
     validationError = artifactError ?? terminalIssue
   } catch {}
-  if (runAbortedByWatchdog) error = error ?? validationError
-  else if (validationError !== null) error = validationError
+  if (validationError !== null) error = validationError
   else if (layout.issues.length > 0) error = `layout issues: ${layout.issues.map((issue) => issue.kind).join(', ')}`
   else error = null
   const allLines = await harness.evaluate<string[]>('window.__rxyRealProtocol ?? []')
@@ -1775,8 +1777,7 @@ async function runCliScenario(
     terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
     validationError = artifactError ?? terminalIssue
   } catch {}
-  if (runAbortedByWatchdog) error = error ?? validationError
-  else if (validationError !== null) error = validationError
+  if (validationError !== null) error = validationError
   else error = null
   const messages = parseProtocol(harness.protocolLines)
   const timing = eventTiming(messages, promptSentAt ?? startedAt, sessionId)
