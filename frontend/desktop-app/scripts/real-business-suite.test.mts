@@ -986,6 +986,7 @@ test('web play probe prefers explicit start buttons over the first button on the
   assert.match(suite, /startVisible/)
   assert.match(suite, /pageExceptions/)
   assert.match(suite, /scenario\.timeoutMs/)
+  assert.match(suite, /error === null && status !== 'succeeded'/)
   assert.match(suite, /desktopSuiteEnv|mysqlTestEnv/)
   assert.match(suite, /APP_ADMIN_PASSWORD|T09_ADMIN_PASSWORD/)
   assert.match(suite, /opencode-go\/deepseek-v4-flash/)

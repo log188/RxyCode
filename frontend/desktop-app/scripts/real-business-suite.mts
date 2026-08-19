@@ -1611,6 +1611,7 @@ async function runScenario(
   if (validationError !== null) error = validationError
   else if (layout.issues.length > 0) error = `layout issues: ${layout.issues.map((issue) => issue.kind).join(', ')}`
   else error = null
+  if (error === null && status !== 'succeeded') status = 'succeeded'
   const allLines = await harness.evaluate<string[]>('window.__rxyRealProtocol ?? []')
   const messages = parseProtocol(allLines)
   // The performance clock starts at Enter/submit, not at the optional
@@ -1779,6 +1780,7 @@ async function runCliScenario(
   } catch {}
   if (validationError !== null) error = validationError
   else error = null
+  if (error === null && status !== 'succeeded') status = 'succeeded'
   const messages = parseProtocol(harness.protocolLines)
   const timing = eventTiming(messages, promptSentAt ?? startedAt, sessionId)
   timing.visible_feedback_ms = visibleFeedbackMs
