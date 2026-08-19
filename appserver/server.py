@@ -1175,6 +1175,26 @@ class AppServer:
             from .model_routes import delete_credential
 
             await self._respond(request_id, delete_credential(params))
+        elif method == "team/list":
+            from .team_routes import team_list
+
+            await self._respond(request_id, team_list())
+        elif method == "team/groups":
+            from .team_routes import team_groups
+
+            await self._respond(request_id, team_groups())
+        elif method == "team/group_rename":
+            from .team_routes import team_group_rename
+
+            await self._respond(request_id, team_group_rename(params))
+        elif method == "team/install":
+            from .team_routes import team_install_rpc
+
+            await self._respond(request_id, team_install_rpc(params))
+        elif method == "team/set_active":
+            from .team_routes import team_set_active
+
+            await self._respond(request_id, team_set_active(params))
 
         else:
             await self._respond_error(request_id, -32601, f"method not found: {method}")

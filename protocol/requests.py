@@ -354,6 +354,44 @@ class CredentialsDeleteRequest(BaseModel):
     id: str
 
 
+class TeamListRequest(BaseModel):
+    """F18b: list registered teams as L1 summaries only."""
+
+    method: Literal["team/list"] = "team/list"
+
+
+class TeamGroupsRequest(BaseModel):
+    """F18b: list groups and member team ids."""
+
+    method: Literal["team/groups"] = "team/groups"
+
+
+class TeamGroupRenameRequest(BaseModel):
+    """F18b: rename a user group. Builtin groups are rejected."""
+
+    method: Literal["team/group_rename"] = "team/group_rename"
+    old: str
+    new: str
+
+
+class TeamInstallRequest(BaseModel):
+    """F18b: expose F18 team_install two-step ask. No second approval UX."""
+
+    method: Literal["team/install"] = "team/install"
+    name: str
+    url: str = ""
+    confirm: bool = False
+    group: str = ""
+
+
+class TeamSetActiveRequest(BaseModel):
+    """F18b: set the session's active team. Idempotent."""
+
+    method: Literal["team/set_active"] = "team/set_active"
+    session_id: str
+    team_id: str
+
+
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InitializeRequest,
     NewSessionRequest,
@@ -387,6 +425,11 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     ModelsTestConnectionRequest,
     CredentialsUpsertRequest,
     CredentialsDeleteRequest,
+    TeamListRequest,
+    TeamGroupsRequest,
+    TeamGroupRenameRequest,
+    TeamInstallRequest,
+    TeamSetActiveRequest,
 )
 
 ClientRequest = Annotated[
