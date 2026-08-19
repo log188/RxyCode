@@ -115,6 +115,10 @@ class Session:
         self.workspace_root = Path(workspace_root)
         self.emit = emit
         self.session_schema_version = session_schema_version
+        # Phase F: Session may hold many expert-role runtimes. Single-agent
+        # is zero or one role="default" entry; prompt() still runs AgentV2.
+        self.agent_runtimes: dict[str, Any] = {}
+        self._shared_agent_memory: dict[str, Any] = {}
 
     async def prompt(
         self,

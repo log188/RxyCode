@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from RxyCode.RxyCode1_1_0.cache.precise_cache import default_precise_cache, precise_cache
 from RxyCode.RxyCode1_1_0.cache.semantic_cache import default_semantic_cache, semantic_cache
 from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
+from RxyCode.RxyCode1_1_0.core.agents.spec import AgentSpecError
+from RxyCode.RxyCode1_1_0.core.session import Session
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+from RxyCode.RxyCode1_1_0.protocol.agents import AgentSpec
 from RxyCode.RxyCode1_1_0.recovery.circuit_breaker import (
     get_breaker,
     get_default_breaker,
@@ -126,3 +131,115 @@ def test_same_breaker_key_returns_same_instance():
 def test_default_breaker_alias_matches_default_key():
     reset_all_breakers()
     assert get_default_breaker() is get_breaker("default")
+
+
+# ---------------------------------------------------------------------------
+# F4 · AgentRuntime role adapter (does not replace D5 isolation tests)
+# ---------------------------------------------------------------------------
+
+def _session(session_id: str = "ses-f4") -> Session:
+    return Session(session_id=session_id, workspace_root=".", emit=lambda _n: None)
+
+
+def _role(
+    role: str,
+    *,
+    tools: list[str] | None = None,
+    memory_scope: str = "private",
+    mechanical: bool = False,
+) -> AgentSpec:
+    return AgentSpec(
+        role=role,
+        display_name=role,
+        goal=f"act as {role}",
+        prompt_stage="default",
+        tools=tools,
+        memory_scope=memory_scope,  # type: ignore[arg-type]
+        mechanical=mechanical,
+    )
+
+
+def test_runtimes_have_separate_tool_registries():
+    session = _session()
+    left = AgentRuntime(_role("architect"), session=session)
+    right = AgentRuntime(_role("coder"), session=session)
+    assert left.registry is not right.registry
+    left.registry.register(_iso_tool("only_architect"))
+    assert left.registry.get("only_architect") is not None
+    assert right.registry.get("only_architect") is None
+    assert default_registry.get("only_architect") is None
+
+
+def test_runtimes_have_separate_cache_namespaces():
+    session = _session()
+    left = AgentRuntime(_role("architect"), session=session)
+    right = AgentRuntime(_role("coder"), session=session)
+    assert left.cache_namespace == "architect"
+    assert right.cache_namespace == "coder"
+    assert (
+        _ns_agent(left.cache_namespace)._application_cache_namespace()
+        != _ns_agent(right.cache_namespace)._application_cache_namespace()
+    )
+
+
+def test_runtimes_have_separate_breakers():
+    reset_all_breakers()
+    session = _session()
+    left = AgentRuntime(_role("architect"), session=session)
+    right = AgentRuntime(_role("coder"), session=session)
+    assert left.breaker is not right.breaker
+
+
+def test_private_memory_scope_does_not_leak():
+    session = _session()
+    left = AgentRuntime(_role("architect", memory_scope="private"), session=session)
+    right = AgentRuntime(_role("coder", memory_scope="private"), session=session)
+    left.memory_set("note", "from-architect")
+    right.memory_set("note", "from-coder")
+    assert left.memory_get("note") == "from-architect"
+    assert right.memory_get("note") == "from-coder"
+
+
+def test_shared_memory_scope_does_leak_intentionally():
+    session = _session()
+    left = AgentRuntime(_role("architect", memory_scope="shared"), session=session)
+    right = AgentRuntime(_role("coder", memory_scope="shared"), session=session)
+    left.memory_set("board", "visible")
+    assert right.memory_get("board") == "visible"
+
+
+def test_unknown_tool_name_in_spec_raises():
+    session = _session()
+    with pytest.raises(AgentSpecError, match="unknown tool"):
+        AgentRuntime(_role("coder", tools=["definitely_not_a_real_tool"]), session=session)
+
+
+def test_empty_tool_list_yields_empty_registry():
+    session = _session()
+    runtime = AgentRuntime(_role("thinker", tools=[]), session=session)
+    assert runtime.registry.get_names() == []
+
+
+def test_mechanical_role_has_no_llm():
+    session = _session()
+    runtime = AgentRuntime(_role("verifier", tools=[], mechanical=True), session=session)
+    assert runtime.llm is None
+    assert runtime.spec.mechanical is True
+
+
+def test_single_agent_path_is_byte_identical():
+    session = _session()
+    default = AgentRuntime(_role("default"), session=session)
+    AgentRuntime(_role("coder"), session=session)
+    assert default.cache_namespace is None
+    assert _ns_agent(None)._application_cache_namespace() == _expected_base()
+    unset = object.__new__(AgentV2)
+    unset.model_config = {
+        "base_url": "https://api.example.com/",
+        "model_name": "deepseek-v4-flash",
+        "api_key": "sk-test-123",
+    }
+    assert unset._application_cache_namespace() == _expected_base()
+    assert precise_cache is default_precise_cache
+    assert session.agent_runtimes["default"] is default
+    assert "coder" in session.agent_runtimes
