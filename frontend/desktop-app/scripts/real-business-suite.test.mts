@@ -989,6 +989,7 @@ test('web play probe prefers explicit start buttons over the first button on the
   assert.match(suite, /#stat-score/)
   assert.match(suite, /startVisible/)
   assert.match(suite, /pageExceptions/)
+  assert.match(suite, /admin\\\\.html/)
   assert.match(suite, /scenario\.timeoutMs/)
   assert.match(suite, /error === null && status !== 'succeeded'/)
   assert.match(suite, /desktopSuiteEnv|mysqlTestEnv/)

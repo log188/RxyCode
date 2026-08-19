@@ -837,9 +837,47 @@ const companyPagePlayExpression = `(() => {
       /分析|数据看板|统计|dashboard|analytics/i
     ].filter((pattern) => pattern.test(hay)).length;
   };
+  const tryAdminFormLogin = async () => {
+    const user = document.querySelector('#aUser, #login-username, #loginUsername, input[name="username"], input[type="text"]');
+    const pass = document.querySelector('#aPass, #login-password, #loginPassword, input[name="password"], input[type="password"]');
+    const form = document.querySelector('#authForm, #login-form, #loginForm, form');
+    if (!(user instanceof HTMLInputElement) || !(pass instanceof HTMLInputElement)) return;
+    user.value = user.defaultValue || 'admin';
+    pass.value = pass.defaultValue || pass.getAttribute('value') || '123456';
+    user.dispatchEvent(new Event('input', { bubbles: true }));
+    pass.dispatchEvent(new Event('input', { bubbles: true }));
+    if (form instanceof HTMLFormElement) {
+      const submitBtn = form.querySelector('[type="submit"]');
+      if (submitBtn instanceof HTMLElement) submitBtn.click();
+      else form.requestSubmit();
+    } else {
+      const submitBtn = document.querySelector('[type="submit"], #btn-login, button.login');
+      if (submitBtn instanceof HTMLElement) submitBtn.click();
+    }
+    await sleep(800);
+  };
   return (async () => {
     const text = ((document.body && document.body.innerText) || '').trim();
     if (text.length < 40) return { ok: false, reason: 'page has no usable content', textLength: text.length, demoClicked: false, adminModules: 0 };
+    if (/admin\\.html/i.test(String(location.href || ''))) {
+      let adminText = text;
+      let adminModules = countModules(adminText);
+      if (adminModules < 4) {
+        await tryAdminFormLogin();
+        adminText = ((document.body && document.body.innerText) || '').trim();
+        adminModules = countModules(adminText);
+      }
+      return {
+        ok: adminModules >= 4,
+        reason: adminModules >= 4 ? undefined : 'demo login did not open an admin console',
+        title: document.title,
+        textLength: adminText.length,
+        adminText: adminText.slice(0, 2000),
+        demoClicked: true,
+        navigated: true,
+        adminModules
+      };
+    }
     const adminModulesNow = countModules(text);
     if (adminModulesNow >= 4) {
       return { ok: true, reason: undefined, title: document.title, textLength: text.length, adminText: text.slice(0, 2000), demoClicked: true, navigated: true, adminModules: adminModulesNow };
