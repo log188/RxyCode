@@ -5,6 +5,7 @@ from RxyCode.RxyCode1_1_0.core.agents.budget import BudgetExceeded, BudgetGuard
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import Coordinator
 from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
 from RxyCode.RxyCode1_1_0.core.agents.router import ExecutionMode, ModeRouter, get_default_router
+from RxyCode.RxyCode1_1_0.core.agents.bridge import BridgeLeader, BridgeWorker, live_bridge_processes
 from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
 from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
@@ -33,4 +34,7 @@ __all__ = [
     "ExecutionMode",
     "get_default_router",
     "load_builtin_team",
+    "BridgeLeader",
+    "BridgeWorker",
+    "live_bridge_processes",
 ]

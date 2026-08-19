@@ -241,6 +241,95 @@ class RoutingDecision(BaseModel):
     task: str = ""
 
 
+class BridgeBudget(BaseModel):
+    """F16 task_delegate.budget — inherits F9 fuses."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tokens: int = 80_000
+    timeout_s: float = 900.0
+
+
+class TaskDelegate(BaseModel):
+    """Leader → Worker (F16). Lineage-only: refs, never conversation history."""
+
+    model_config = ConfigDict(frozen=True)
+
+    method: Literal["task_delegate"] = "task_delegate"
+    task_id: str
+    parent_id: str | None = None
+    goal: str
+    context_refs: list[str] = Field(default_factory=list)
+    acceptance: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    budget: BridgeBudget = Field(default_factory=BridgeBudget)
+
+
+class BridgeProgress(BaseModel):
+    """Worker → Leader streaming status. notes truncated to ~2k tokens."""
+
+    model_config = ConfigDict(frozen=True)
+
+    method: Literal["progress"] = "progress"
+    task_id: str
+    status: Literal["running", "blocked", "done", "failed"]
+    stage: str = ""
+    percent: int = 0
+    eta_s: float | None = None
+    notes: str = ""
+
+
+class BridgeToolCall(BaseModel):
+    """Worker → Leader. Large results go to result_ref, never inline."""
+
+    model_config = ConfigDict(frozen=True)
+
+    method: Literal["tool_call"] = "tool_call"
+    task_id: str
+    tool: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["running", "done", "failed"] = "running"
+    result_ref: str = ""
+
+
+class BridgePlan(BaseModel):
+    """Worker → Leader execution plan before work starts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    method: Literal["plan"] = "plan"
+    task_id: str
+    steps: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    est_tokens: int = 0
+    ack: bool = False
+
+
+class BridgeResult(BaseModel):
+    """Worker → Leader. summary is 1–2k tokens; artifacts are paths."""
+
+    model_config = ConfigDict(frozen=True)
+
+    method: Literal["result"] = "result"
+    task_id: str
+    ok: bool
+    summary: str = ""
+    artifact_paths: list[str] = Field(default_factory=list)
+    tokens_used: int = 0
+    duration_s: float = 0.0
+
+
+class BridgeAbort(BaseModel):
+    """Leader → Worker. Sent before a hard kill."""
+
+    model_config = ConfigDict(frozen=True)
+
+    method: Literal["abort"] = "abort"
+    task_id: str
+    reason: Literal["budget", "timeout", "user"]
+    partial: bool = False
+
+
 AGENT_PROTOCOL_MODELS: tuple[type[BaseModel], ...] = (
     AgentSpec,
     SopStage,
@@ -251,4 +340,11 @@ AGENT_PROTOCOL_MODELS: tuple[type[BaseModel], ...] = (
     VerdictRecord,
     TeamEvent,
     RoutingDecision,
+    BridgeBudget,
+    TaskDelegate,
+    BridgeProgress,
+    BridgeToolCall,
+    BridgePlan,
+    BridgeResult,
+    BridgeAbort,
 )

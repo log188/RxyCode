@@ -2853,6 +2853,313 @@
       "title": "RoutingDecision",
       "type": "object"
     },
+    "BridgeBudget": {
+      "description": "F16 task_delegate.budget — inherits F9 fuses.",
+      "properties": {
+        "tokens": {
+          "default": 80000,
+          "title": "Tokens",
+          "type": "integer"
+        },
+        "timeout_s": {
+          "default": 900.0,
+          "title": "Timeout S",
+          "type": "number"
+        }
+      },
+      "title": "BridgeBudget",
+      "type": "object"
+    },
+    "TaskDelegate": {
+      "description": "Leader → Worker (F16). Lineage-only: refs, never conversation history.",
+      "properties": {
+        "method": {
+          "const": "task_delegate",
+          "default": "task_delegate",
+          "title": "Method",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Id"
+        },
+        "goal": {
+          "title": "Goal",
+          "type": "string"
+        },
+        "context_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Refs",
+          "type": "array"
+        },
+        "acceptance": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Acceptance",
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "budget": {
+          "$ref": "#/$defs/BridgeBudget"
+        }
+      },
+      "required": [
+        "task_id",
+        "goal"
+      ],
+      "title": "TaskDelegate",
+      "type": "object"
+    },
+    "BridgeProgress": {
+      "description": "Worker → Leader streaming status. notes truncated to ~2k tokens.",
+      "properties": {
+        "method": {
+          "const": "progress",
+          "default": "progress",
+          "title": "Method",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "blocked",
+            "done",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "stage": {
+          "default": "",
+          "title": "Stage",
+          "type": "string"
+        },
+        "percent": {
+          "default": 0,
+          "title": "Percent",
+          "type": "integer"
+        },
+        "eta_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Eta S"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "status"
+      ],
+      "title": "BridgeProgress",
+      "type": "object"
+    },
+    "BridgeToolCall": {
+      "description": "Worker → Leader. Large results go to result_ref, never inline.",
+      "properties": {
+        "method": {
+          "const": "tool_call",
+          "default": "tool_call",
+          "title": "Method",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "args": {
+          "additionalProperties": true,
+          "title": "Args",
+          "type": "object"
+        },
+        "status": {
+          "default": "running",
+          "enum": [
+            "running",
+            "done",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "result_ref": {
+          "default": "",
+          "title": "Result Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "tool"
+      ],
+      "title": "BridgeToolCall",
+      "type": "object"
+    },
+    "BridgePlan": {
+      "description": "Worker → Leader execution plan before work starts.",
+      "properties": {
+        "method": {
+          "const": "plan",
+          "default": "plan",
+          "title": "Method",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "est_tokens": {
+          "default": 0,
+          "title": "Est Tokens",
+          "type": "integer"
+        },
+        "ack": {
+          "default": false,
+          "title": "Ack",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "title": "BridgePlan",
+      "type": "object"
+    },
+    "BridgeResult": {
+      "description": "Worker → Leader. summary is 1–2k tokens; artifacts are paths.",
+      "properties": {
+        "method": {
+          "const": "result",
+          "default": "result",
+          "title": "Method",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "artifact_paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifact Paths",
+          "type": "array"
+        },
+        "tokens_used": {
+          "default": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "duration_s": {
+          "default": 0.0,
+          "title": "Duration S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "task_id",
+        "ok"
+      ],
+      "title": "BridgeResult",
+      "type": "object"
+    },
+    "BridgeAbort": {
+      "description": "Leader → Worker. Sent before a hard kill.",
+      "properties": {
+        "method": {
+          "const": "abort",
+          "default": "abort",
+          "title": "Method",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "budget",
+            "timeout",
+            "user"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "partial": {
+          "default": false,
+          "title": "Partial",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "task_id",
+        "reason"
+      ],
+      "title": "BridgeAbort",
+      "type": "object"
+    },
     "ClientRequest": {
       "oneOf": [
         {
@@ -3066,6 +3373,27 @@
         },
         {
           "$ref": "#/$defs/RoutingDecision"
+        },
+        {
+          "$ref": "#/$defs/BridgeBudget"
+        },
+        {
+          "$ref": "#/$defs/TaskDelegate"
+        },
+        {
+          "$ref": "#/$defs/BridgeProgress"
+        },
+        {
+          "$ref": "#/$defs/BridgeToolCall"
+        },
+        {
+          "$ref": "#/$defs/BridgePlan"
+        },
+        {
+          "$ref": "#/$defs/BridgeResult"
+        },
+        {
+          "$ref": "#/$defs/BridgeAbort"
         }
       ]
     }

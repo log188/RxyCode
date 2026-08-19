@@ -359,7 +359,14 @@ export type AgentProtocol =
   | ConsultRequest
   | VerdictRecord
   | TeamEvent
-  | RoutingDecision;
+  | RoutingDecision
+  | BridgeBudget
+  | TaskDelegate
+  | BridgeProgress
+  | BridgeToolCall
+  | BridgePlan
+  | BridgeResult
+  | BridgeAbort;
 export type Role = string;
 export type DisplayName = string;
 export type Goal = string;
@@ -442,6 +449,44 @@ export type Reason1 = string;
 export type TokensUsed2 = number;
 export type ExperimentTag1 = "E0" | "E1" | "E2";
 export type Task1 = string;
+export type Tokens = number;
+export type TimeoutS1 = number;
+export type Method58 = "task_delegate";
+export type TaskId2 = string;
+export type ParentId = string | null;
+export type Goal1 = string;
+export type ContextRefs = string[];
+export type Acceptance = string[];
+export type Tools1 = string[];
+export type Method59 = "progress";
+export type TaskId3 = string;
+export type Status3 = "running" | "blocked" | "done" | "failed";
+export type Stage3 = string;
+export type Percent = number;
+export type EtaS = number | null;
+export type Notes = string;
+export type Method60 = "tool_call";
+export type TaskId4 = string;
+export type Tool = string;
+export type Status4 = "running" | "done" | "failed";
+export type ResultRef = string;
+export type Method61 = "plan";
+export type TaskId5 = string;
+export type Steps1 = string[];
+export type Files = string[];
+export type EstTokens = number;
+export type Ack = boolean;
+export type Method62 = "result";
+export type TaskId6 = string;
+export type Ok3 = boolean;
+export type Summary1 = string;
+export type ArtifactPaths = string[];
+export type TokensUsed3 = number;
+export type DurationS1 = number;
+export type Method63 = "abort";
+export type TaskId7 = string;
+export type Reason2 = "budget" | "timeout" | "user";
+export type Partial = boolean;
 
 /**
  * JSON-RPC handshake on connect (future ``python -m appserver``).
@@ -1287,5 +1332,90 @@ export interface RoutingDecision {
   tokens_used?: TokensUsed2;
   experiment_tag?: ExperimentTag1;
   task?: Task1;
+  [k: string]: unknown;
+}
+/**
+ * F16 task_delegate.budget — inherits F9 fuses.
+ */
+export interface BridgeBudget {
+  tokens?: Tokens;
+  timeout_s?: TimeoutS1;
+  [k: string]: unknown;
+}
+/**
+ * Leader → Worker (F16). Lineage-only: refs, never conversation history.
+ */
+export interface TaskDelegate {
+  method?: Method58;
+  task_id: TaskId2;
+  parent_id?: ParentId;
+  goal: Goal1;
+  context_refs?: ContextRefs;
+  acceptance?: Acceptance;
+  tools?: Tools1;
+  budget?: BridgeBudget;
+  [k: string]: unknown;
+}
+/**
+ * Worker → Leader streaming status. notes truncated to ~2k tokens.
+ */
+export interface BridgeProgress {
+  method?: Method59;
+  task_id: TaskId3;
+  status: Status3;
+  stage?: Stage3;
+  percent?: Percent;
+  eta_s?: EtaS;
+  notes?: Notes;
+  [k: string]: unknown;
+}
+/**
+ * Worker → Leader. Large results go to result_ref, never inline.
+ */
+export interface BridgeToolCall {
+  method?: Method60;
+  task_id: TaskId4;
+  tool: Tool;
+  args?: Args;
+  status?: Status4;
+  result_ref?: ResultRef;
+  [k: string]: unknown;
+}
+export interface Args {
+  [k: string]: unknown;
+}
+/**
+ * Worker → Leader execution plan before work starts.
+ */
+export interface BridgePlan {
+  method?: Method61;
+  task_id: TaskId5;
+  steps?: Steps1;
+  files?: Files;
+  est_tokens?: EstTokens;
+  ack?: Ack;
+  [k: string]: unknown;
+}
+/**
+ * Worker → Leader. summary is 1–2k tokens; artifacts are paths.
+ */
+export interface BridgeResult {
+  method?: Method62;
+  task_id: TaskId6;
+  ok: Ok3;
+  summary?: Summary1;
+  artifact_paths?: ArtifactPaths;
+  tokens_used?: TokensUsed3;
+  duration_s?: DurationS1;
+  [k: string]: unknown;
+}
+/**
+ * Leader → Worker. Sent before a hard kill.
+ */
+export interface BridgeAbort {
+  method?: Method63;
+  task_id: TaskId7;
+  reason: Reason2;
+  partial?: Partial;
   [k: string]: unknown;
 }
