@@ -30,11 +30,7 @@ def bootstrap_agent(
     if workspace_root is not None:
         root = Path(workspace_root).resolve()
         root.mkdir(parents=True, exist_ok=True)
-        os.chdir(root)
         log.info("bootstrap_agent: workspace_root=%s", root)
-    else:
-        project_root = Path(__file__).resolve().parents[1]
-        os.chdir(project_root)
 
     try:
         from ..config.settings import load_config

@@ -453,6 +453,16 @@ class AgentWorker:
         )
         set_approval_broker(self._approval)
         set_question_broker(self._question)
+        # RLI-1: this per-session worker subprocess owns the process, so
+        # changing cwd here is allowed.  bootstrap_agent is a library
+        # factory and must not call os.chdir — any in-process caller would
+        # otherwise permanently relocate the interpreter.  mkdir+chdir
+        # happen before to_thread so load_config still runs under the
+        # workspace cwd, matching the previous bootstrap_agent order.
+        if self._workspace_root is None:
+            self._workspace_root = Path(__file__).resolve().parents[1]
+        self._workspace_root.mkdir(parents=True, exist_ok=True)
+        os.chdir(self._workspace_root)
         heartbeat_task = asyncio.create_task(self._prompt_heartbeat(self._session_id))
         try:
             self._agent = await asyncio.to_thread(

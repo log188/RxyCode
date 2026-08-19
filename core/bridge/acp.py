@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from typing import AsyncIterator
+
+_logger = logging.getLogger(__name__)
 
 from .base import AgentBridge, BridgeConfig
 
@@ -17,35 +20,81 @@ STDIN = asyncio.subprocess.PIPE
 STDOUT = asyncio.subprocess.PIPE
 
 
-def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-    """luna R1-3: 杀死整个进程树（官方 CLI 会派生子孙进程）。
+def _process_wrapper_alive(proc: object) -> bool:
+    """True if this Process object still thinks the child is running."""
+    if getattr(proc, "returncode", None) is not None:
+        return False
+    poll = getattr(proc, "poll", None)
+    if callable(poll):
+        return poll() is None
+    return True
 
-    Windows: taskkill /T /F（按 PID 递归）；POSIX: 进程组 killpg。
+
+def _os_pid_alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        handle = ctypes.windll.kernel32.OpenProcess(
+            process_query_limited_information, False, int(pid)
+        )
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) == 0:
+                return False
+            return int(exit_code.value) == still_active
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(int(pid), 0)
+    except (ProcessLookupError, OSError):
+        return False
+    return True
+
+
+def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill the official-CLI process tree; never treat a platform call as success.
+
+    Windows: taskkill /T /F, then verify.  POSIX: killpg, then verify.
+    Either path falls back to ``proc.kill()``.  If the child is still alive
+    after the fallback, log at error and raise (RLI-4).
     """
+    pid = getattr(proc, "pid", None)
     if os.name == "nt":
         try:
             import subprocess
 
             subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
                 capture_output=True,
                 timeout=10,
             )
-            return
         except Exception:
-            pass
-    # POSIX：进程组 kill（os.killpg 仅在非 Windows 存在）
-    killpg = getattr(os, "killpg", None)
-    if killpg is not None:
-        try:
-            killpg(os.getpgid(proc.pid), 9)  # pragma: no cover - POSIX only
-            return
-        except (ProcessLookupError, OSError):
-            pass
+            _logger.error("taskkill failed for pid=%s", pid, exc_info=True)
+    else:
+        killpg = getattr(os, "killpg", None)
+        if killpg is not None:
+            try:
+                killpg(os.getpgid(proc.pid), 9)
+            except (ProcessLookupError, OSError):
+                _logger.error("killpg failed for pid=%s", pid, exc_info=True)
+
+    if not _process_wrapper_alive(proc):
+        return
+
     try:
         proc.kill()
     except ProcessLookupError:
-        pass
+        return
+
+    if _os_pid_alive(pid):
+        _logger.error("process tree still alive after kill fallback pid=%s", pid)
+        raise RuntimeError(f"failed to kill process tree pid={pid}")
 
 
 class ACPBridge(AgentBridge):

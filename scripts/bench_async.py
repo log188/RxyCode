@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import socket
 import subprocess
 import sys
 import time
@@ -117,6 +118,17 @@ def _marker_pids(marker: str) -> set[int]:
     return {int(line) for line in out.split() if line.strip().isdigit()}
 
 
+def _allocate_free_port() -> int:
+    """Bind 127.0.0.1:0, close, and return the ephemeral port number.
+
+    There is a theoretical race between this return and the workload bind;
+    callers must fail loudly if the listener never appears (no retry).
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def _win_port_listener(port: int) -> set[int]:
     """PIDs listening on *port* (base64-encoded so no self-match)."""
     import base64
@@ -171,23 +183,23 @@ def _all_pgids() -> set[int]:
 async def bench_tool_timeout_kill_rate(rounds: int) -> float:
     """Run the process-class tool with a 3s deadline; return the kill rate.
 
-    Fixed commands per the card: ``python -m http.server 8765`` on win32
-    and ``sleep 600`` on POSIX.  The residual check is bound to the TARGET
-    process group/process recorded at spawn time:
+    Fixed commands per the card: ``python -m http.server <ephemeral>`` on
+    win32 and ``sleep 600`` on POSIX.  The residual check is bound to the
+    TARGET process group/process recorded at spawn time:
     - POSIX: after the workload spawns (in its own process group via
       start_new_session), the PGIDs of its members are recorded
       (``ps -eo pgid=,args=`` matching the fixed command); the end state is
       verified against THOSE PGIDs (no member of the recorded group is
       alive - the group is empty, i.e. the group was killed).
-    - win32 (no PGID): the serving process's PIDs (port-8765 listeners) are
-      recorded at spawn; the end state is verified against THOSE PIDs
+    - win32 (no PGID): the serving process's PIDs (ephemeral-port listeners)
+      are recorded at spawn; the end state is verified against THOSE PIDs
       (psutil.pid_exists is False for every recorded pid).
     """
     import psutil
 
     from RxyCode.RxyCode1_1_0.utils.shell import shell_executor
 
-    port = 8765
+    port = _allocate_free_port()
     killed = 0
     for _ in range(rounds):
         if sys.platform == "win32":
@@ -212,8 +224,18 @@ async def bench_tool_timeout_kill_rate(rounds: int) -> float:
                 # process in the process table carrying one of the recorded
                 # PGIDs means the group is not empty.
                 return bool(_all_pgids() & _target)
-        if not (target_pids if sys.platform == "win32" else target_pgids):
-            continue   # the workload never spawned; this round is failed
+        spawned = target_pids if sys.platform == "win32" else target_pgids
+        if not spawned:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise RuntimeError(
+                f"bench workload failed to start on port {port} "
+                f"(port may have been stolen between allocate and bind); "
+                f"refusing to report a kill-rate number"
+            )
         # The card's fixed workload: wait_for(3s) around the shell call; the
         # timeout cancels it and the shell's cancellation path kills the
         # process group / tree (C7-locked).

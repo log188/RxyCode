@@ -22,6 +22,7 @@ from config.model_capabilities import (
 
 from RxyCode.RxyCode1_1_0.core.stuck_detector import StuckDetector
 from RxyCode.RxyCode1_1_0.core.snapshot import GitSnapshot
+from tests.conftest import REPO_ROOT
 
 
 # ============================================================================
@@ -232,7 +233,7 @@ def test_llm_exception_answer_not_cached():
 
 def test_git_snapshot_captures_status():
     """GitSnapshot 捕获 git status（工作区状态）。"""
-    snap = GitSnapshot(repo_path=".")
+    snap = GitSnapshot(repo_path=str(REPO_ROOT))
     snap.capture()
     assert snap.captured is True
     assert snap.status_text is not None

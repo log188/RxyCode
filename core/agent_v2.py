@@ -6479,7 +6479,9 @@ class AgentV2:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                _logger.warning("no-tool fast path failed: %s", exc)
+                if os.environ.get("RXYCODE_STRICT_ERRORS") == "1":
+                    raise
+                _logger.error("no-tool fast path failed: %s", exc, exc_info=True)
                 return (
                     "刚才没能完整回复你，我在这儿听着呢。"
                     "你可以再说一次，或者换个说法。"

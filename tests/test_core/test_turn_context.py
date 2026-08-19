@@ -26,6 +26,7 @@ def _ctx_agent() -> AgentV2:
         save_session=MagicMock(),
     )
     agent._llm = None
+    agent.model_config = {}
     agent._tool_orchestrator = None
     agent._tool_tracer = None
     agent._thinking_history = []

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from pathlib import Path
 from types import SimpleNamespace
 
 from RxyCode.RxyCode1_1_0.core.prompts.registry import (
@@ -12,6 +11,7 @@ from RxyCode.RxyCode1_1_0.core.prompts.registry import (
     get_system_s1,
     get_system_s2,
 )
+from tests.conftest import REPO_ROOT
 
 
 def test_s1_stable_across_clock(monkeypatch):
@@ -35,7 +35,7 @@ def test_s1_same_variant_byte_identical():
 
 
 def test_research_not_second_system():
-    src = Path("core/agent_v2.py").read_text(encoding="utf-8")
+    src = (REPO_ROOT / "core" / "agent_v2.py").read_text(encoding="utf-8")
     assert "SystemMessage(content=research_contract)" not in src
 
 

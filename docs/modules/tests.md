@@ -23,7 +23,18 @@ tests/stress_test/test_phase4_harness.py`，跳过项为需要 `RXYCODE_APPSERVE
 
 `tests/conftest.py` 根据 `tests/<layer>/` 目录自动增加同名 marker，并把 system 层标为 `serial`。仍位于 `tests/test_*.py`、`tests/test_core/` 等旧目录的测试属于 legacy regression 集；Linux CI 用排除所有分层 marker 的表达式补跑，避免迁移期间漏测或重复执行。并行 lane 使用两个 xdist worker 和 `loadscope` 分发；串行 lane 从整个测试树选择 `serial`，因此不限于当前的 system 层。
 
-短名 `core` / `protocol` / `utils` 与 `RxyCode.RxyCode1_1_0.*` 必须是同一模块对象。包 `__init__.py` 在版本包导入后 `unify_bare_package_aliases()`，并在 `core` 已经是版本包时把 `core.foo` 指到同一对象；每个测试还会 reset `utils.tui` 单例并恢复 cwd。不要用“比 class 名字符串”掩盖双重 import。
+## 进程全局状态门（RL5 / RL11）
+
+短名 `core` / `protocol` / `utils` 与 `RxyCode.RxyCode1_1_0.*` 必须是同一模块对象。包 `__init__.py` 在版本包导入后调用 `unify_bare_package_aliases()`，并在 `core` 已经是版本包时把 `core.foo` 指到同一对象。不要用「比 class 名字符串」掩盖双重 import。
+
+每个测试结束后，`tests/conftest.py` 的 autouse fixture 再检查两件事：
+
+1. 进程 CWD 与测试开始时一致；
+2. 新增的裸顶层包键（清单与 `RxyCode.RxyCode1_1_0._BARE_PACKAGES` 同源，import 不重抄；`appserver` 除外，因为它在 `python -m appserver` 下故意可以是另一份对象）是否与 `RxyCode.RxyCode1_1_0.<同名>` **不是同一个模块对象**（或规范键根本不存在）。键存在本身无害：`unify` / finder 会让两种拼写指向同一对象。有害的是两个键指向两个对象。
+
+失败信息带测试 nodeid 以及旧值/新值（或分裂的模块名）。不要写 `Path("config/...")` 这类依赖 CWD 的相对路径（RLI-3）；资源路径用 `REPO_ROOT`。
+
+需要在测试体内改 CWD、且自己负责还原的，可以标 `@pytest.mark.allows_cwd_change`。只豁免 CWD 检查，不豁免身份分裂。这个 marker 只用于进程入口或明确要验证 chdir 的用例，不能用来掩盖库函数里的 `os.chdir`。每个测试还会 reset `utils.tui` 单例并恢复 cwd。
 
 ## Scripted LLM
 

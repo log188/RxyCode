@@ -71,6 +71,9 @@ if not getattr(sys, "_rxycode_test_checkout_ready", False):
         importlib.import_module("RxyCode.RxyCode1_1_0.core")
         importlib.import_module("RxyCode.RxyCode1_1_0.core.providers")
         importlib.import_module("RxyCode.RxyCode1_1_0.protocol")
+        # Install the redirect finder before test modules are collected so
+        # ``from core.session`` / ``from protocol.notifications`` are one object.
+        importlib.import_module("appserver")
     except ImportError:
         pass
     if callable(_unify):
@@ -79,6 +82,75 @@ if not getattr(sys, "_rxycode_test_checkout_ready", False):
 
 import pytest
 from langchain_core.messages import AIMessage
+
+# RLI-3: resource paths must be anchored here, never to the process CWD.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# RL9: tests re-raise the chat-path fallback. Production leaves this unset.
+os.environ["RXYCODE_STRICT_ERRORS"] = "1"
+
+
+_CANONICAL_MODULE_PREFIX = "RxyCode.RxyCode1_1_0."
+
+
+def _unified_top_level_packages() -> frozenset[str]:
+    """Production list from the checkout root package — not copied.
+
+    ``appserver`` is excluded: ``python -m appserver`` and the canonical
+    package are intentionally allowed to be distinct objects.
+    """
+    pkg = sys.modules.get("RxyCode.RxyCode1_1_0")
+    packages = getattr(pkg, "_BARE_PACKAGES", None)
+    if packages is None:
+        from appserver import _UNIFIED_TOP_LEVEL_PACKAGES
+
+        return _UNIFIED_TOP_LEVEL_PACKAGES
+    return frozenset(name for name in packages if name != "appserver")
+
+
+def _bare_core_module_keys() -> frozenset[str]:
+    packages = _unified_top_level_packages()
+    return frozenset(
+        name for name in sys.modules if name.partition(".")[0] in packages
+    )
+
+
+def _split_identity_keys(names: frozenset[str]) -> list[str]:
+    split: list[str] = []
+    for name in sorted(names):
+        canonical = _CANONICAL_MODULE_PREFIX + name
+        bare_mod = sys.modules.get(name)
+        can_mod = sys.modules.get(canonical)
+        if can_mod is None or bare_mod is not can_mod:
+            split.append(name)
+    return split
+
+
+@pytest.fixture(autouse=True)
+def _fail_leaked_process_globals(request: pytest.FixtureRequest):
+    """Fail the test that leaked CWD or a split-identity sys.modules alias.
+
+    A leaked chdir / split ``sys.modules`` entry shows up as a failure in
+    some later unrelated test.  Name the culprit at the moment it leaks.
+    Opt out of the CWD check with ``@pytest.mark.allows_cwd_change``.
+    Bare keys that resolve to the same object as the canonical spelling
+    are not a leak (RL4/RL10); only a real identity split fails.
+    """
+    before_cwd = os.getcwd()
+    before_keys = _bare_core_module_keys()
+    yield
+    after_cwd = os.getcwd()
+    after_keys = _bare_core_module_keys()
+    nodeid = request.node.nodeid
+    if after_cwd != before_cwd and request.node.get_closest_marker("allows_cwd_change") is None:
+        pytest.fail(
+            f"{nodeid} leaked process CWD: {before_cwd!r} -> {after_cwd!r}"
+        )
+    added = after_keys - before_keys
+    split = _split_identity_keys(added)
+    if split:
+        pytest.fail(
+            f"{nodeid} added split-identity sys.modules keys: {split}"
+        )
 
 
 #: On CI set to "1". Missing required external tools fail instead of skip,
