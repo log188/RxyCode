@@ -218,6 +218,9 @@ export function selectMissingFileRepair(scenarioId: string, error: string, files
   if (scenarioId === 'T03') {
     // A missing-file stub that rewrites index.html is how T03-3 went false-green.
     // Docs and a missing admin.html on an already-written site should still use write-now repair.
+    // Demo-login failures live in index.html; missing-file repair says
+    // "Do not rewrite index.html" and would never add #btn-demo-login.
+    if (/demo login|#btn-demo-login/i.test(error)) return []
     if (!hasIndex) return []
     const docs = parsed.filter((name) => /\.md$/i.test(name))
     const other = parsed.filter((name) => !/\.md$/i.test(name))

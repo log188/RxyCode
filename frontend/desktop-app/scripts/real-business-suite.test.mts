@@ -178,6 +178,10 @@ test('missing-file repair prompt writes documents instead of re-reading source',
     selectMissingFileRepair('T03', 'web artifact is incomplete; missing README.md, TEST-REPORT.md', ['index.html', 'admin.html', 'PLAN.md']),
     ['README.md', 'TEST-REPORT.md']
   )
+  assert.deepEqual(
+    selectMissingFileRepair('T03', 'company website has no demo login control (#btn-demo-login)', ['index.html', 'admin.html', 'PLAN.md']),
+    []
+  )
   const adminRepair = buildMissingFileRepairPrompt('T03-company', ['README.md', 'TEST-REPORT.md', 'admin.html'])
   assert.match(adminRepair, /T03-company\/admin\.html/)
   assert.match(adminRepair, /用户管理/)
