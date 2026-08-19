@@ -1,6 +1,6 @@
 /* Auto-generated. Edit protocol/schema.json then run: bun run generate */
 
-export type RxyCodeProtocol = ClientRequest | ProtocolNotification | ServerRequestMessage;
+export type RxyCodeProtocol = ClientRequest | ProtocolNotification | ServerRequestMessage | AgentProtocol;
 export type ClientRequest =
   | InitializeRequest
   | NewSessionRequest
@@ -347,6 +347,87 @@ export type Answer = string | null;
 export type Cancelled = boolean;
 export type TimedOut = boolean;
 export type Unavailable = boolean;
+/**
+ * Phase F expert-team types (F3). Not a session envelope; discriminated wire messages still use method on ClientRequest / ProtocolNotification / ServerRequestMessage.
+ */
+export type AgentProtocol =
+  AgentSpec | SopStage | TeamSpec | DelegateRequest | DelegateResult | ConsultRequest | VerdictRecord | TeamEvent;
+export type Role = string;
+export type DisplayName = string;
+export type Goal = string;
+export type Backstory = string;
+export type Constraints = string[];
+export type Model1 = string | null;
+export type Tools = string[] | null;
+export type PromptStage = string;
+export type Mechanical = boolean;
+export type MemoryScope = "private" | "shared";
+export type TimeoutS = number;
+export type TokenBudget = number | null;
+export type MayConsult = string[];
+export type Name = string;
+export type Role1 = string;
+export type ExpectedOutput = string;
+export type ContextKeys = string[];
+export type OutputKey = string;
+export type VerifyBeforeNext = string[];
+export type AuditAfterVerify = boolean;
+export type NextOnSuccess = string | null;
+export type NextOnFailure = string | null;
+export type MaxRetries = number;
+export type Name1 = string;
+export type DisplayName1 = string;
+export type Description = string;
+export type Members = AgentSpec[];
+export type Stages = SopStage[];
+export type EntryStage = string;
+export type TotalTokenBudget = number;
+export type TotalTimeoutS = number;
+export type MaxDelegations = number;
+export type Method55 = "agents/delegate";
+export type SessionId34 = string;
+export type RequestId5 = string;
+export type ToRole = string;
+export type Stage = string;
+export type Task = string;
+export type ExpectedOutput1 = string;
+export type ContextKeys1 = string[];
+export type Depth = number;
+export type RequestId6 = string;
+export type Role2 = string;
+export type Ok2 = boolean;
+export type Answer1 = string;
+export type Error = string;
+export type ToolsUsed = string[];
+export type TokensUsed1 = number;
+export type DurationS = number;
+export type Method56 = "agents/consult";
+export type SessionId35 = string;
+export type RequestId7 = string;
+export type FromRole = string;
+export type ToRole1 = string;
+export type Question1 = string;
+export type Stage1 = string;
+export type SubjectHash = string;
+export type AuditorRole = string;
+export type Passed = boolean;
+export type Findings = string[];
+export type CreatedAt = number;
+export type Method57 = "event/team";
+export type SessionId36 = string;
+export type Role3 = string;
+export type Stage2 = string;
+export type Phase =
+  | "stage_started"
+  | "delegated"
+  | "consulted"
+  | "verified"
+  | "audited"
+  | "stage_completed"
+  | "failed"
+  | "budget_exceeded"
+  | "team_completed";
+export type Detail = string;
 
 /**
  * JSON-RPC handshake on connect (future ``python -m appserver``).
@@ -1035,5 +1116,150 @@ export interface QuestionResponse {
   cancelled?: Cancelled;
   timed_out?: TimedOut;
   unavailable?: Unavailable;
+  [k: string]: unknown;
+}
+/**
+ * 一个角色的静态定义。Spec 不可变；运行时实例是 AgentRuntime。
+ */
+export interface AgentSpec {
+  role: Role;
+  display_name: DisplayName;
+  goal: Goal;
+  backstory?: Backstory;
+  constraints?: Constraints;
+  model?: Model1;
+  tools?: Tools;
+  prompt_stage: PromptStage;
+  mechanical?: Mechanical;
+  memory_scope?: MemoryScope;
+  timeout_s?: TimeoutS;
+  token_budget?: TokenBudget;
+  may_consult?: MayConsult;
+  extra?: Extra;
+  [k: string]: unknown;
+}
+export interface Extra {
+  [k: string]: unknown;
+}
+/**
+ * SOP 的一个阶段。
+ *
+ * 确定性状态机的一个节点（决策 DC4）。阶段转移由 next_on_success /
+ * next_on_failure 静态决定，不由 LLM 现场发挥。
+ */
+export interface SopStage {
+  name: Name;
+  role: Role1;
+  expected_output: ExpectedOutput;
+  context_keys?: ContextKeys;
+  output_key: OutputKey;
+  verify_before_next?: VerifyBeforeNext;
+  audit_after_verify?: AuditAfterVerify;
+  next_on_success?: NextOnSuccess;
+  next_on_failure?: NextOnFailure;
+  max_retries?: MaxRetries;
+  [k: string]: unknown;
+}
+/**
+ * 一支专家团 = 成员 + SOP。
+ *
+ * 团长不在 members 里：它是运行时构造的 Coordinator（DC2；不干活、
+ * 工具集为空）。WorkBuddy 详情页把主理人放在成员首位——那是产品展示，
+ * 不是本协议的成员表。F18 用 extra['ecosystem.is_leader'] 标记展示用主理人。
+ */
+export interface TeamSpec {
+  name: Name1;
+  display_name: DisplayName1;
+  description?: Description;
+  members: Members;
+  stages: Stages;
+  entry_stage: EntryStage;
+  total_token_budget?: TotalTokenBudget;
+  total_timeout_s?: TotalTimeoutS;
+  max_delegations?: MaxDelegations;
+  extra?: Extra1;
+  [k: string]: unknown;
+}
+export interface Extra1 {
+  [k: string]: unknown;
+}
+/**
+ * 团长 → 成员：下发一个自包含任务。
+ *
+ * "自包含"是 Anthropic 的建议：目标、输出格式、工具清单、完成边界都要
+ * 写清楚，否则成员会重复劳动或者不知道什么时候算完。
+ */
+export interface DelegateRequest {
+  method?: Method55;
+  session_id: SessionId34;
+  request_id: RequestId5;
+  to_role: ToRole;
+  stage: Stage;
+  task: Task;
+  expected_output: ExpectedOutput1;
+  context_keys?: ContextKeys1;
+  depth?: Depth;
+  [k: string]: unknown;
+}
+/**
+ * 成员 → 团长：一次委派的产出。
+ */
+export interface DelegateResult {
+  request_id: RequestId6;
+  role: Role2;
+  ok: Ok2;
+  answer?: Answer1;
+  error?: Error;
+  tools_used?: ToolsUsed;
+  tokens_used?: TokensUsed1;
+  duration_s?: DurationS;
+  [k: string]: unknown;
+}
+/**
+ * 成员 → 团长 → 另一个成员：咨询。
+ *
+ * 这是"coder 发现问题去找 architect 沟通"。它**不是**成员直连——
+ * 团长会校验 may_consult、记录、计入预算，再转发（决策 DC2）。
+ */
+export interface ConsultRequest {
+  method?: Method56;
+  session_id: SessionId35;
+  request_id: RequestId7;
+  from_role: FromRole;
+  to_role: ToRole1;
+  question: Question1;
+  stage: Stage1;
+  [k: string]: unknown;
+}
+/**
+ * 审计结论，绑定被审对象的哈希。
+ *
+ * 抄 karajan-code：审计通过的是"这一份具体的产出"。产出变了，旧结论
+ * 自动失效，防止"审计通过 → 又偷偷改了 → 直接提交"。
+ */
+export interface VerdictRecord {
+  subject_hash: SubjectHash;
+  auditor_role: AuditorRole;
+  passed: Passed;
+  findings?: Findings;
+  created_at: CreatedAt;
+  [k: string]: unknown;
+}
+/**
+ * 推给客户端的编排层生命周期通知（F 层类型）。
+ *
+ * 与 PHASE-E E4 的 AgentEvent 分工：
+ * - AgentEvent（E4）：运行时 event/agent_*
+ * - TeamEvent（本类型）：编排层 event/team（及 event/team_*）
+ * 建团信号走 event/agent_team_created，不在本类型重复。
+ * F 层不得再定义名为 AgentEvent 的类型。
+ */
+export interface TeamEvent {
+  method?: Method57;
+  session_id: SessionId36;
+  role: Role3;
+  stage?: Stage2;
+  phase: Phase;
+  detail?: Detail;
   [k: string]: unknown;
 }

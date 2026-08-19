@@ -19,6 +19,7 @@ and `api_server.py` can share one schema instead of ad-hoc SSE field names.
 | `types.py` | Shared literals (`RiskLevelName`, `RunStatus`, ...) |
 | `schema.py` | `export_schema()` + `python -m protocol.schema` CLI |
 | `schema.json` | Frozen export checked by `tests/test_protocol_schema.py` |
+| `agents.py` | Phase F expert-team types (`AGENT_PROTOCOL_MODELS`): AgentSpec / SopStage / TeamSpec / Delegate* / ConsultRequest / VerdictRecord / TeamEvent. Exported into `schema.json` `$defs` and the codegen-only `AgentProtocol` union (fourth root `oneOf`; not a session envelope). `extra` keys use `pair.*` / `vision.*` / `persona.*` / `ecosystem.*` namespaces (J2 / F18). F-layer has `TeamEvent`, not `AgentEvent`. |
 | `subagents.py` | `SUBAGENT_PROTOCOL_VERSION=1`: AgentDefinition, TaskRequest, TaskResult, TriggerKind, ChildStatus, WorkspaceMode, BudgetSpec, PermissionSpec, ContextEnvelope |
 | `subagents_schema.json` | Machine-validatable subagent protocol schema |
 

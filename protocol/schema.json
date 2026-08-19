@@ -2305,6 +2305,499 @@
       "title": "QuestionResponse",
       "type": "object"
     },
+    "AgentSpec": {
+      "description": "一个角色的静态定义。Spec 不可变；运行时实例是 AgentRuntime。",
+      "properties": {
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "goal": {
+          "title": "Goal",
+          "type": "string"
+        },
+        "backstory": {
+          "default": "",
+          "title": "Backstory",
+          "type": "string"
+        },
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "tools": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tools"
+        },
+        "prompt_stage": {
+          "title": "Prompt Stage",
+          "type": "string"
+        },
+        "mechanical": {
+          "default": false,
+          "title": "Mechanical",
+          "type": "boolean"
+        },
+        "memory_scope": {
+          "default": "private",
+          "enum": [
+            "private",
+            "shared"
+          ],
+          "title": "Memory Scope",
+          "type": "string"
+        },
+        "timeout_s": {
+          "default": 300.0,
+          "title": "Timeout S",
+          "type": "number"
+        },
+        "token_budget": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Budget"
+        },
+        "may_consult": {
+          "items": {
+            "type": "string"
+          },
+          "title": "May Consult",
+          "type": "array"
+        },
+        "extra": {
+          "additionalProperties": true,
+          "title": "Extra",
+          "type": "object"
+        }
+      },
+      "required": [
+        "role",
+        "display_name",
+        "goal",
+        "prompt_stage"
+      ],
+      "title": "AgentSpec",
+      "type": "object"
+    },
+    "SopStage": {
+      "description": "SOP 的一个阶段。\n\n确定性状态机的一个节点（决策 DC4）。阶段转移由 next_on_success /\nnext_on_failure 静态决定，不由 LLM 现场发挥。",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "expected_output": {
+          "title": "Expected Output",
+          "type": "string"
+        },
+        "context_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Keys",
+          "type": "array"
+        },
+        "output_key": {
+          "title": "Output Key",
+          "type": "string"
+        },
+        "verify_before_next": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Verify Before Next",
+          "type": "array"
+        },
+        "audit_after_verify": {
+          "default": false,
+          "title": "Audit After Verify",
+          "type": "boolean"
+        },
+        "next_on_success": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next On Success"
+        },
+        "next_on_failure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next On Failure"
+        },
+        "max_retries": {
+          "default": 2,
+          "title": "Max Retries",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "role",
+        "expected_output",
+        "output_key"
+      ],
+      "title": "SopStage",
+      "type": "object"
+    },
+    "TeamSpec": {
+      "description": "一支专家团 = 成员 + SOP。\n\n团长不在 members 里：它是运行时构造的 Coordinator（DC2；不干活、\n工具集为空）。WorkBuddy 详情页把主理人放在成员首位——那是产品展示，\n不是本协议的成员表。F18 用 extra['ecosystem.is_leader'] 标记展示用主理人。",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "members": {
+          "items": {
+            "$ref": "#/$defs/AgentSpec"
+          },
+          "title": "Members",
+          "type": "array"
+        },
+        "stages": {
+          "items": {
+            "$ref": "#/$defs/SopStage"
+          },
+          "title": "Stages",
+          "type": "array"
+        },
+        "entry_stage": {
+          "title": "Entry Stage",
+          "type": "string"
+        },
+        "total_token_budget": {
+          "default": 500000,
+          "title": "Total Token Budget",
+          "type": "integer"
+        },
+        "total_timeout_s": {
+          "default": 1800.0,
+          "title": "Total Timeout S",
+          "type": "number"
+        },
+        "max_delegations": {
+          "default": 20,
+          "title": "Max Delegations",
+          "type": "integer"
+        },
+        "extra": {
+          "additionalProperties": true,
+          "title": "Extra",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "display_name",
+        "members",
+        "stages",
+        "entry_stage"
+      ],
+      "title": "TeamSpec",
+      "type": "object"
+    },
+    "DelegateRequest": {
+      "description": "团长 → 成员：下发一个自包含任务。\n\n\"自包含\"是 Anthropic 的建议：目标、输出格式、工具清单、完成边界都要\n写清楚，否则成员会重复劳动或者不知道什么时候算完。",
+      "properties": {
+        "method": {
+          "const": "agents/delegate",
+          "default": "agents/delegate",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "to_role": {
+          "title": "To Role",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "task": {
+          "title": "Task",
+          "type": "string"
+        },
+        "expected_output": {
+          "title": "Expected Output",
+          "type": "string"
+        },
+        "context_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Keys",
+          "type": "array"
+        },
+        "depth": {
+          "default": 0,
+          "title": "Depth",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id",
+        "to_role",
+        "stage",
+        "task",
+        "expected_output"
+      ],
+      "title": "DelegateRequest",
+      "type": "object"
+    },
+    "DelegateResult": {
+      "description": "成员 → 团长：一次委派的产出。",
+      "properties": {
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "answer": {
+          "default": "",
+          "title": "Answer",
+          "type": "string"
+        },
+        "error": {
+          "default": "",
+          "title": "Error",
+          "type": "string"
+        },
+        "tools_used": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools Used",
+          "type": "array"
+        },
+        "tokens_used": {
+          "default": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "duration_s": {
+          "default": 0.0,
+          "title": "Duration S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "request_id",
+        "role",
+        "ok"
+      ],
+      "title": "DelegateResult",
+      "type": "object"
+    },
+    "ConsultRequest": {
+      "description": "成员 → 团长 → 另一个成员：咨询。\n\n这是\"coder 发现问题去找 architect 沟通\"。它**不是**成员直连——\n团长会校验 may_consult、记录、计入预算，再转发（决策 DC2）。",
+      "properties": {
+        "method": {
+          "const": "agents/consult",
+          "default": "agents/consult",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "from_role": {
+          "title": "From Role",
+          "type": "string"
+        },
+        "to_role": {
+          "title": "To Role",
+          "type": "string"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id",
+        "from_role",
+        "to_role",
+        "question",
+        "stage"
+      ],
+      "title": "ConsultRequest",
+      "type": "object"
+    },
+    "VerdictRecord": {
+      "description": "审计结论，绑定被审对象的哈希。\n\n抄 karajan-code：审计通过的是\"这一份具体的产出\"。产出变了，旧结论\n自动失效，防止\"审计通过 → 又偷偷改了 → 直接提交\"。",
+      "properties": {
+        "subject_hash": {
+          "title": "Subject Hash",
+          "type": "string"
+        },
+        "auditor_role": {
+          "title": "Auditor Role",
+          "type": "string"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "findings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "number"
+        }
+      },
+      "required": [
+        "subject_hash",
+        "auditor_role",
+        "passed",
+        "created_at"
+      ],
+      "title": "VerdictRecord",
+      "type": "object"
+    },
+    "TeamEvent": {
+      "description": "推给客户端的编排层生命周期通知（F 层类型）。\n\n与 PHASE-E E4 的 AgentEvent 分工：\n- AgentEvent（E4）：运行时 event/agent_*\n- TeamEvent（本类型）：编排层 event/team（及 event/team_*）\n建团信号走 event/agent_team_created，不在本类型重复。\nF 层不得再定义名为 AgentEvent 的类型。",
+      "properties": {
+        "method": {
+          "const": "event/team",
+          "default": "event/team",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "stage": {
+          "default": "",
+          "title": "Stage",
+          "type": "string"
+        },
+        "phase": {
+          "enum": [
+            "stage_started",
+            "delegated",
+            "consulted",
+            "verified",
+            "audited",
+            "stage_completed",
+            "failed",
+            "budget_exceeded",
+            "team_completed"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "role",
+        "phase"
+      ],
+      "title": "TeamEvent",
+      "type": "object"
+    },
     "ClientRequest": {
       "oneOf": [
         {
@@ -2487,6 +2980,36 @@
           "$ref": "#/$defs/QuestionResponse"
         }
       ]
+    },
+    "AgentProtocol": {
+      "title": "AgentProtocol",
+      "description": "Phase F expert-team types (F3). Not a session envelope; discriminated wire messages still use method on ClientRequest / ProtocolNotification / ServerRequestMessage.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/AgentSpec"
+        },
+        {
+          "$ref": "#/$defs/SopStage"
+        },
+        {
+          "$ref": "#/$defs/TeamSpec"
+        },
+        {
+          "$ref": "#/$defs/DelegateRequest"
+        },
+        {
+          "$ref": "#/$defs/DelegateResult"
+        },
+        {
+          "$ref": "#/$defs/ConsultRequest"
+        },
+        {
+          "$ref": "#/$defs/VerdictRecord"
+        },
+        {
+          "$ref": "#/$defs/TeamEvent"
+        }
+      ]
     }
   },
   "oneOf": [
@@ -2498,6 +3021,9 @@
     },
     {
       "$ref": "#/$defs/ServerRequestMessage"
+    },
+    {
+      "$ref": "#/$defs/AgentProtocol"
     }
   ]
 }

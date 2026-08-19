@@ -6,6 +6,7 @@ import json
 import sys
 from typing import Any
 
+from .agents import AGENT_PROTOCOL_MODELS
 from .notifications import NOTIFICATION_MODELS
 from .requests import CLIENT_REQUEST_MODELS
 from .server_requests import SERVER_REQUEST_MODELS
@@ -19,6 +20,7 @@ def export_schema() -> dict[str, Any]:
         *CLIENT_REQUEST_MODELS,
         *NOTIFICATION_MODELS,
         *SERVER_REQUEST_MODELS,
+        *AGENT_PROTOCOL_MODELS,
     )
     defs: dict[str, Any] = {}
     for model in models:
@@ -38,6 +40,18 @@ def export_schema() -> dict[str, Any]:
     defs["ClientRequest"] = {"oneOf": client_refs}
     defs["ProtocolNotification"] = {"oneOf": notification_refs}
     defs["ServerRequestMessage"] = {"oneOf": server_refs}
+    # Codegen / freeze union only. Not a session envelope: wire RPC stays the
+    # three unions above. json2ts skips unreachable $defs on a root oneOf, so
+    # this fourth member is how F3 types reach frontend/protocol-client.
+    defs["AgentProtocol"] = {
+        "title": "AgentProtocol",
+        "description": (
+            "Phase F expert-team types (F3). Not a session envelope; "
+            "discriminated wire messages still use method on "
+            "ClientRequest / ProtocolNotification / ServerRequestMessage."
+        ),
+        "oneOf": [{"$ref": f"#/$defs/{model.__name__}"} for model in AGENT_PROTOCOL_MODELS],
+    }
 
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -49,6 +63,7 @@ def export_schema() -> dict[str, Any]:
             {"$ref": "#/$defs/ClientRequest"},
             {"$ref": "#/$defs/ProtocolNotification"},
             {"$ref": "#/$defs/ServerRequestMessage"},
+            {"$ref": "#/$defs/AgentProtocol"},
         ],
     }
 

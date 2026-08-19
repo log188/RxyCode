@@ -30,6 +30,7 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | prewarm.py | Isomorphic prewarm archives (chat + agent slots) and keep-alive that rides the frozen AgentPrefix |
 | turn_context.py | Public `append_turn_context` seam (LinkAgent/EKO suffix) — never spliced into S1 |
 | handoff.py | `HandoffEnvelope` reserved type — rejects messages/history/thinking keys (NoHistoryCopy) |
+| agents/spec.py | Phase F static validation for TeamSpec (`validate_team`). `MAX_DELEGATE_DEPTH=3` is the Coordinator hop cap (DC6); it is not Phase D `subagent_depth` (0/1/2 on ChildSession). |
 
 ### Session Runtime Persistence
 
