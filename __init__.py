@@ -118,12 +118,15 @@ def _remap_descendant_aliases(key: str, short: str, module: _types.ModuleType) -
     PathFinder can exec ``core.providers.anthropic`` before the versioned
     package is imported.  After ``core.providers`` is unified, that stale
     child key would still supply a second ``AnthropicProvider`` class.
+
+    Walk ``__dict__`` only: ``getattr`` on ``execution`` would lazy-import
+    ``Executor`` and pull the Graph stack into Desktop's fast path.
     """
     if not hasattr(module, "__path__"):
         return
     short_prefix = f"{short}."
     key_prefix = f"{key}."
-    for name in list(_sys.modules):
+    for name, child in list(_sys.modules.items()):
         if name.startswith(short_prefix):
             rest = name[len(short_prefix) :]
         elif name.startswith(key_prefix):
@@ -134,14 +137,15 @@ def _remap_descendant_aliases(key: str, short: str, module: _types.ModuleType) -
             continue
         winner = module
         for part in rest.split("."):
-            nxt = getattr(winner, part, None)
+            nxt = winner.__dict__.get(part)
             if not isinstance(nxt, _types.ModuleType):
-                winner = None
+                winner = _sys.modules.get(f"{key}.{rest}") or _sys.modules.get(
+                    f"{short}.{rest}"
+                )
                 break
             winner = nxt
         if winner is None:
             continue
-        child = _sys.modules.get(name)
         if child is not None and child is not winner and not _same_source(child, winner):
             continue
         _sys.modules[f"{short}.{rest}"] = winner

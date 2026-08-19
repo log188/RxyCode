@@ -94,6 +94,32 @@ def test_bare_protocol_alias_registered_without_repo_root_on_path() -> None:
     )
 
 
+_WORKER_BIND = r"""
+import os
+import runpy
+import sys
+from pathlib import Path
+
+repo = os.environ["RXYCODE_REPO_ROOT"]
+os.environ["_RXYCODE_TEST_CHECKOUT"] = repo
+for key in (
+    "RXYCODE_TEST_ROOT",
+    "RXYCODE_TEST_RUN_ID",
+    "PYTEST_XDIST_WORKER",
+    "PYTEST_CURRENT_TEST",
+):
+    os.environ.pop(key, None)
+sys.path.insert(0, repo)
+runpy.run_path(str(Path(repo) / "tests" / "conftest.py"), run_name="rxycode_conftest_bind")
+from core import providers
+from core.providers.anthropic import AnthropicProvider
+
+ok = isinstance(providers.resolve({"model_name": "claude-opus-5"}), AnthropicProvider)
+print("RESULT:OK" if ok else "RESULT:FAIL")
+raise SystemExit(0 if ok else 1)
+"""
+
+
 def test_inherited_checkout_env_still_binds_provider_identity() -> None:
     """xdist workers inherit ``_RXYCODE_TEST_CHECKOUT`` from the parent.
 
@@ -101,25 +127,17 @@ def test_inherited_checkout_env_still_binds_provider_identity() -> None:
     ``from core.providers.anthropic import AnthropicProvider`` were two classes.
     """
     env = dict(os.environ)
+    env["RXYCODE_REPO_ROOT"] = str(REPO_ROOT)
     env["_RXYCODE_TEST_CHECKOUT"] = str(REPO_ROOT)
     proc = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "tests/test_providers/test_anthropic_provider.py::test_unknown_model_does_not_match_anthropic",
-            "-q",
-            "--timeout=60",
-            "-p",
-            "no:xdist",
-        ],
+        [sys.executable, "-c", _WORKER_BIND],
         capture_output=True,
         text=True,
         env=env,
-        cwd=str(REPO_ROOT),
+        cwd=str(Path.home()),
         timeout=120,
     )
-    assert proc.returncode == 0, (
+    assert "RESULT:OK" in proc.stdout, (
         "worker-style checkout env split provider identity\n"
         f"stdout={proc.stdout}\nstderr={proc.stderr}"
     )

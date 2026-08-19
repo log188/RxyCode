@@ -75,9 +75,6 @@ if not getattr(sys, "_rxycode_test_checkout_ready", False):
         pass
     if callable(_unify):
         _unify()
-    _hook = getattr(_canonical, "install_test_import_unify_hook", None)
-    if callable(_hook):
-        _hook()
     sys._rxycode_test_checkout_ready = True  # type: ignore[attr-defined]
 
 import pytest
