@@ -192,7 +192,7 @@ def test_disabled_agent_does_not_expose_code_search_tool() -> None:
 
     agent._register_tools()
 
-    assert "code_search" not in agent._tool_orchestrator._registry
+    assert "code_search" not in agent._tool_orchestrator._bound_tools
     assert all(tool.name != "code_search" for tool in agent._get_core_tools())
 
 

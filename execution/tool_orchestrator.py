@@ -138,8 +138,19 @@ class ToolOrchestrator:
         "browser": "open_file",
     }
 
-    def __init__(self, *, max_workers: int | None = None):
-        self._registry: dict[str, Any] = {}
+    def __init__(
+        self,
+        *,
+        max_workers: int | None = None,
+        tool_registry: Any | None = None,
+    ):
+        if tool_registry is None:
+            from RxyCode.RxyCode1_1_0.tools.registry import default_registry
+
+            tool_registry = default_registry
+        self._registry = tool_registry
+        # Execution-time name -> tool table (not the ToolRegistry catalog).
+        self._bound_tools: dict[str, Any] = {}
         self._risk_overrides: dict[str, Any] = {}
         self._audit_logger: Any | None = None
         # C2: bounded executor for sync tools so a burst of sync invocations
@@ -409,7 +420,7 @@ class ToolOrchestrator:
     def register(self, name: str, tool: Any, *, risk: Any | None = None) -> None:
         """Register a tool and an optional Agent-local minimum risk."""
         canonical = self._canonical_name(name)
-        self._registry[canonical] = tool
+        self._bound_tools[canonical] = tool
         if risk is None:
             self._risk_overrides.pop(canonical, None)
             return
@@ -431,15 +442,15 @@ class ToolOrchestrator:
         """Remove a tool by canonical name, returning whether it existed."""
         canonical = self._canonical_name(name)
         self._risk_overrides.pop(canonical, None)
-        return self._registry.pop(canonical, None) is not None
+        return self._bound_tools.pop(canonical, None) is not None
 
     def get(self, name: str) -> Any | None:
         """Get a tool by canonical name or supported alias."""
-        return self._registry.get(self._canonical_name(name))
+        return self._bound_tools.get(self._canonical_name(name))
 
     def get_all(self) -> dict[str, Any]:
         """Return all registered tools."""
-        return dict(self._registry)
+        return dict(self._bound_tools)
 
     def select_tools(self, hints: list[str]) -> list[Any]:
         """Select tools matching the given hints.
@@ -453,12 +464,12 @@ class ToolOrchestrator:
         Matching is case-insensitive substring match on name or description.
         """
         if not hints:
-            return list(self._registry.values())
+            return list(self._bound_tools.values())
 
         selected = []
         for hint in hints:
             hint_lower = self._canonical_name(hint)
-            for name, tool in self._registry.items():
+            for name, tool in self._bound_tools.items():
                 if hint_lower in name.lower():
                     selected.append(tool)
                     continue
@@ -480,7 +491,7 @@ class ToolOrchestrator:
     def get_readonly_tools(self) -> list[Any]:
         """Return the registered read-only core tools (whitelist subset)."""
         return [
-            tool for name, tool in self._registry.items()
+            tool for name, tool in self._bound_tools.items()
             if name.lower() in self.READONLY_TOOL_NAMES
         ]
 
@@ -522,7 +533,7 @@ class ToolOrchestrator:
 
     def list_names(self) -> list[str]:
         """Return all registered tool names."""
-        return list(self._registry.keys())
+        return list(self._bound_tools.keys())
 
     # ------------------------------------------------------------------
     # Safety gate (阶段二)

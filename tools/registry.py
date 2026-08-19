@@ -88,4 +88,14 @@ class ToolRegistry:
         return False
 
 
-registry = ToolRegistry()
+#: 进程级默认注册表。
+#:
+#: 历史上这是唯一的注册表，所有工具都注册到这里，因此无法给不同 Agent 配
+#: 不同工具集。Phase F 引入 per-agent 注册表；本实例保留为默认值，供单
+#: Agent 路径和未显式传注册表的调用方使用。
+#:
+#: 新代码请通过依赖注入接收 ToolRegistry，不要直接 import 这个全局。
+default_registry = ToolRegistry()
+
+#: 向后兼容别名。新代码不要用。
+registry = default_registry
