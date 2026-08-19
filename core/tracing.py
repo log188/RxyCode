@@ -88,6 +88,7 @@ class NodeSpan:
     mode: str = ""
     decided_by: str = ""
     budget: dict = field(default_factory=dict)
+    cache_hit_rate: float | None = None
 
     @property
     def duration_s(self) -> float:
@@ -119,6 +120,7 @@ class NodeSpan:
             "mode": self.mode,
             "decided_by": self.decided_by,
             "budget": dict(self.budget),
+            "cache_hit_rate": self.cache_hit_rate,
         }
 
     @classmethod
@@ -146,6 +148,7 @@ class NodeSpan:
             mode=d.get("mode", ""),
             decided_by=d.get("decided_by", ""),
             budget=dict(d.get("budget") or {}),
+            cache_hit_rate=d.get("cache_hit_rate"),
         )
 
 

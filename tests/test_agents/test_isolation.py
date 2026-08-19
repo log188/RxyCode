@@ -174,8 +174,8 @@ def test_runtimes_have_separate_cache_namespaces():
     session = _session()
     left = AgentRuntime(_role("architect"), session=session)
     right = AgentRuntime(_role("coder"), session=session)
-    assert left.cache_namespace == "architect"
-    assert right.cache_namespace == "coder"
+    assert left.cache_namespace == "agent:architect"
+    assert right.cache_namespace == "agent:coder"
     assert (
         _ns_agent(left.cache_namespace)._application_cache_namespace()
         != _ns_agent(right.cache_namespace)._application_cache_namespace()

@@ -369,6 +369,23 @@ Task: {user_input}
 </OUTPUT_FORMAT>"""
 
 
+DELEGATE_REQUEST_TEMPLATE = """<GOAL>
+{goal}
+</GOAL>
+<OUTPUT>
+{expected_output}
+</OUTPUT>
+<TOOLS_AND_SOURCES>
+allowed_tools: {tools}
+context_refs: {context_refs}
+Do not copy leader history. Read only the listed refs.
+</TOOLS_AND_SOURCES>
+<BOUNDARY>
+You own only this stage. Do not create a sub-team.
+Workload guide: simple fact = 1 agent and 3-10 tool calls; comparison = 2-4 agents; complex research = 10+ agents. Do not over-invest.
+</BOUNDARY>"""
+
+
 # Registry of all stage templates
 STAGE_TEMPLATES: dict[str, str] = {
     "goal_planner": GOAL_PLANNER_TEMPLATE,
@@ -384,4 +401,5 @@ STAGE_TEMPLATES: dict[str, str] = {
     "agent_architect": AGENT_ARCHITECT_TEMPLATE,
     "agent_coder": AGENT_CODER_TEMPLATE,
     "agent_auditor": AGENT_AUDITOR_TEMPLATE,
+    "delegate_request": DELEGATE_REQUEST_TEMPLATE,
 }

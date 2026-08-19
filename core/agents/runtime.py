@@ -72,7 +72,8 @@ class AgentRuntime:
         self._registry = self._build_scoped_registry(spec.tools)
         self._breaker = get_breaker(f"team:{session.session_id}:{spec.role}")
         # role="default" keeps the F2 single-agent cache key (namespace None).
-        self._agent_namespace = None if spec.role == "default" else spec.role
+        self._agent_namespace: str | None = None
+        self.resolved_model = spec.model
         self._llm: Any | None = None
         if spec.memory_scope == "shared":
             self._memory_store = session._shared_agent_memory
@@ -98,7 +99,34 @@ class AgentRuntime:
         if spec.mechanical:
             self._child.set_agent_factory(_no_llm)
 
+        self.spawn()
         session.agent_runtimes[spec.role] = self
+
+    def spawn(self) -> "AgentRuntime":
+        """Assign the team cache namespace. Solo role=default stays None (DC8)."""
+        if self._spec.role == "default":
+            self._agent_namespace = None
+        else:
+            self._agent_namespace = f"agent:{self._spec.role}"
+        previous = self._child._agent_factory
+
+        def factory(model: str | None) -> Any:
+            if previous is not None:
+                agent = previous(model)
+            else:
+                from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+                agent = AgentV2(model_name=model)
+            if self._agent_namespace is not None:
+                try:
+                    agent._agent_namespace = self._agent_namespace
+                except Exception:
+                    pass
+            return agent
+
+        self._child.set_agent_factory(factory)
+        self.resolved_model = self._spec.model
+        return self
 
     @property
     def spec(self) -> AgentSpec:

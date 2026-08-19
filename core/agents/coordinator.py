@@ -24,6 +24,9 @@ from RxyCode.RxyCode1_1_0.core.agents.blackboard import Blackboard
 from RxyCode.RxyCode1_1_0.core.agents.budget import BudgetExceeded, BudgetGuard
 from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
 from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
+from RxyCode.RxyCode1_1_0.core.agents.team_prompt import compact_summary
+from RxyCode.RxyCode1_1_0.core.prompts.templates import DELEGATE_REQUEST_TEMPLATE
+from RxyCode.RxyCode1_1_0.protocol.subagents import ContextEnvelope
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
 from RxyCode.RxyCode1_1_0.core.agents.spec import validate_team
 from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier, subject_hash
@@ -298,6 +301,24 @@ class Coordinator:
         if budget:
             root.budget = dict(budget)
             root.tokens = int(budget.get("tokens_used") or 0)
+        rate = self._cache_hit_rate()
+        root.cache_hit_rate = rate
+        if rate is not None and rate < 0.85:
+            import logging
+
+            logging.getLogger(__name__).warning("team cache_hit_rate %s < 0.85", rate)
+            self._seq += 1
+            self._emit(
+                AgentEvent(
+                    method="event/agent_done",
+                    session_id=self._session.session_id,
+                    agent_id="coordinator",
+                    seq=self._seq,
+                    tokens_used=int(root.tokens or 0),
+                    budget_used=0,
+                    cache_miss_warning=True,
+                )
+            )
         self._tracer.end_span(
             root,
             token_usage={
@@ -306,6 +327,15 @@ class Coordinator:
                 "total_tokens": int(root.tokens or 0),
             },
         )
+
+    @staticmethod
+    def _cache_hit_rate() -> float:
+        try:
+            from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+            return float(getattr(token_stats, "cache_hit_rate", 0.0) or 0.0)
+        except Exception:
+            return 0.0
 
     def _partial_result(self, sop: SopMachine, team: TeamSpec, exc: BudgetExceeded) -> str:
         done = len(sop.history())
@@ -357,9 +387,22 @@ class Coordinator:
     def _packet(self, stage: SopStage, team: TeamSpec, user_input: str) -> DispatchPacket:
         member = next(m for m in team.members if m.role == stage.role)
         context = self.blackboard.view(list(stage.context_keys))
+        refs = [f"blackboard://{key}" for key in stage.context_keys]
+        tools = "all" if member.tools is None else ",".join(member.tools)
+        goal = DELEGATE_REQUEST_TEMPLATE.format(
+            goal=f"{user_input}\nstage={stage.name}\nrole_goal={member.goal}",
+            expected_output=stage.expected_output,
+            tools=tools,
+            context_refs=",".join(refs) or "(none)",
+        )
+        ContextEnvelope(
+            parent_session_id=self._session.session_id,
+            task=stage.expected_output,
+            attachments=tuple(refs),
+        )
         return DispatchPacket(
             to_role=stage.role,
-            goal=f"{user_input}\nstage={stage.name}\nrole_goal={member.goal}",
+            goal=goal,
             expected_output=stage.expected_output,
             tools=None if member.tools is None else list(member.tools),
             done_when=stage.expected_output,
@@ -375,7 +418,11 @@ class Coordinator:
         )
         runtime = self._runtimes.get(stage.role)
         if runtime is None:
-            return StageOutcome(ok=True, answer=f"[{stage.role}] {stage.expected_output}", packet=packet)
+            return StageOutcome(
+                ok=True,
+                answer=compact_summary(f"[{stage.role}] {stage.expected_output}"),
+                packet=packet,
+            )
         from protocol.subagents import TaskRequest
 
         child = await runtime.run(
@@ -387,7 +434,11 @@ class Coordinator:
         )
         ok = getattr(child, "status", None)
         summary = getattr(child, "summary", "") or getattr(child, "answer", "")
-        return StageOutcome(ok=ok is None or str(ok).endswith("completed") or ok is True, answer=str(summary), packet=packet)
+        return StageOutcome(
+            ok=ok is None or str(ok).endswith("completed") or ok is True,
+            answer=compact_summary(str(summary)),
+            packet=packet,
+        )
 
     def consult(
         self,

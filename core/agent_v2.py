@@ -360,7 +360,7 @@ from RxyCode.RxyCode1_1_0.core.request_routing import (
 )
 from RxyCode.RxyCode1_1_0.core.turn_router import route
 from RxyCode.RxyCode1_1_0.core.turn_context import TurnContextBlock
-_AGENT_NAMESPACE_RE = _re.compile(r"[a-z0-9_.-]{1,64}")
+_AGENT_NAMESPACE_RE = _re.compile(r"[a-z0-9_.:-]{1,64}")
 
 
 CODE_MUTATING_TOOL_NAMES = frozenset({
