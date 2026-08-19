@@ -40,8 +40,22 @@ def _bind_top_level_checkout_to_canonical_package() -> None:
     parent.RxyCode1_1_0 = package
 
 
-class _BareCoreAliasLoader:
-    """Load ``core.X`` by returning the already-executed canonical module."""
+# Frozen list, not a directory scan (that would swallow tests/scripts/docs).
+# Measured 2026-08-19 on fix2@fb92730 by the PHASE-FIX2 §1.6 script:
+#   import appserver + core.session/agent_v2, tools.registry,
+#   memory.manager, execution.executor, then collect top-level names
+#   present under both spellings as distinct objects.
+# Result: config, execution, memory, protocol, tools.
+# `core` is included because RL4 already unified it; omitting it would
+# re-split it.
+_UNIFIED_TOP_LEVEL_PACKAGES = frozenset(
+    {"config", "core", "execution", "memory", "protocol", "tools"}
+)
+_CANONICAL_PREFIX = "RxyCode.RxyCode1_1_0."
+
+
+class _BarePackageAliasLoader:
+    """Load a bare name by returning the already-executed canonical module."""
 
     def __init__(self, canonical_name: str) -> None:
         self.canonical_name = canonical_name
@@ -53,19 +67,20 @@ class _BareCoreAliasLoader:
         return None
 
 
-class _BareCoreRedirectFinder:
-    """sys.meta_path hook: ``core`` / ``core.X`` are ``RxyCode.RxyCode1_1_0.core.X``.
+class _BarePackageRedirectFinder:
+    """sys.meta_path hook: bare ``pkg.X`` is ``RxyCode.RxyCode1_1_0.pkg.X``.
 
-    Aliasing only the package object is not enough.  The first bare
-    ``import core.X`` would still create a second module and rebind the
+    Aliasing only a package object is not enough.  The first bare
+    ``import pkg.X`` would still create a second module and rebind the
     attribute on the shared parent, splitting singletons and isinstance.
     Redirecting the spec makes the import system keep one module object.
     """
 
     def find_spec(self, fullname, path, target=None):  # noqa: ANN001, ARG002
-        if fullname != "core" and not fullname.startswith("core."):
+        root = fullname.partition(".")[0]
+        if root not in _UNIFIED_TOP_LEVEL_PACKAGES:
             return None
-        canonical = "RxyCode.RxyCode1_1_0." + fullname
+        canonical = _CANONICAL_PREFIX + fullname
         existing = sys.modules.get(canonical)
         if existing is not None:
             is_package = hasattr(existing, "__path__")
@@ -81,36 +96,51 @@ class _BareCoreRedirectFinder:
             origin = can_spec.origin
         return importlib.util.spec_from_loader(
             fullname,
-            _BareCoreAliasLoader(canonical),
+            _BarePackageAliasLoader(canonical),
             origin=origin,
             is_package=is_package,
         )
 
 
-def _register_bare_core_alias() -> None:
-    """Make ``import core`` resolve to this checkout's canonical core package.
+def _register_bare_package_aliases() -> None:
+    """Make bare ``import pkg`` resolve to this checkout's canonical package.
 
     A few modules (``appserver/*``, ``tools/*``) use the bare ``from core...``
-    form.  Under a source checkout that works because the repo root is on
-    ``sys.path``; under an installed/editable package the canonical name is
-    ``RxyCode.RxyCode1_1_0.core`` and the bare name would load a second copy
-    of the same files (splitting module singletons such as the approval
-    broker).  The package alias plus a meta_path finder keep both spellings
-    — including every submodule — the same object.
+    (and the same form for protocol / config / …) spelling.  Under a source
+    checkout that works because the repo root is on ``sys.path``; under an
+    installed/editable package the canonical name is
+    ``RxyCode.RxyCode1_1_0.pkg`` and the bare name would load a second copy
+    of the same files (splitting module singletons and ``isinstance``).
+    The package alias plus a meta_path finder keep both spellings — including
+    every submodule — the same object, for every package in
+    ``_UNIFIED_TOP_LEVEL_PACKAGES``.
     """
-    if not any(type(finder) is _BareCoreRedirectFinder for finder in sys.meta_path):
-        sys.meta_path.insert(0, _BareCoreRedirectFinder())
+    if not any(type(finder) is _BarePackageRedirectFinder for finder in sys.meta_path):
+        sys.meta_path.insert(0, _BarePackageRedirectFinder())
+    # The checkout root ``__init__.py`` pre-creates a distinct ``protocol``
+    # module (and may have loaded ``protocol.version``) before this finder
+    # is installed.  That file is outside this card's whitelist; rebind any
+    # already-imported listed names so the package objects themselves are
+    # not left split.
+    for name in list(sys.modules):
+        root = name.partition(".")[0]
+        if root not in _UNIFIED_TOP_LEVEL_PACKAGES:
+            continue
+        try:
+            canonical = importlib.import_module(_CANONICAL_PREFIX + name)
+        except ImportError:
+            continue
+        sys.modules[name] = canonical
     if "core" in sys.modules:
         return
     try:
-        import RxyCode.RxyCode1_1_0.core as _core_pkg
+        sys.modules["core"] = importlib.import_module(_CANONICAL_PREFIX + "core")
     except ImportError:
         return
-    sys.modules["core"] = _core_pkg
 
 
 _bind_top_level_checkout_to_canonical_package()
-_register_bare_core_alias()
+_register_bare_package_aliases()
 
 from .server import AppServer
 
