@@ -27,6 +27,7 @@ RxyCode is a local plan-and-execute coding agent. Type `rxycode` in a terminal t
 
 ### Fixed
 
+- Expert-team `delegate_request` prompt includes a `<ROLE>` section; architect / coder / auditor / delegate stages have few-shot examples.
 - Large streamed writes no longer die at a 15s idle cutoff (idle 30s, cap 90s; tool-arg wait 60s).
 - appserver JSON-RPC stdio limit raised to 8MiB (was 64KiB), so a long Final Answer does not kill the worker.
 - Windows tool output decodes with `errors=replace` instead of crashing on mixed UTF-8 / GBK.

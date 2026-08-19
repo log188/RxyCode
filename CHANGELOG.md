@@ -33,6 +33,8 @@ reliable. GitHub Release **v1.2.11** publishes **one** asset:
 
 ### Fixed
 
+- Expert-team `delegate_request` prompt now has a `<ROLE>` section; architect /
+  coder / auditor / delegate stages have few-shot examples.
 - Stream idle timeout 30s (cap 90s) and tool-arg wait 60s so large writes
   are not cut mid-file.
 - appserver JSON-RPC stdio limit raised to 8MiB (was 64KiB).

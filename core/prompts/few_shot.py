@@ -137,6 +137,40 @@ FEW_SHOT_EXAMPLES: dict[str, list[dict[str, str]]] = {
             ),
         },
     ],
+    "agent_architect": [
+        {
+            "input": "Task: add POST /login with hashed passwords",
+            "output": (
+                "1. auth/passwords.py — hash/verify helpers\n"
+                "2. auth/routes.py — POST /login\n"
+                "3. tests/test_login.py — success and 401 cases"
+            ),
+        },
+    ],
+    "agent_coder": [
+        {
+            "input": "Task: implement POST /login from the architect plan",
+            "output": (
+                "Wrote auth/passwords.py and auth/routes.py. "
+                "Login hashes the password and returns 401 on mismatch."
+            ),
+        },
+    ],
+    "agent_auditor": [
+        {
+            "input": "Task: audit POST /login after mechanical checks passed",
+            "output": (
+                "不通过\n"
+                "auth/routes.py:12 implementation: password compared in plain text; use the hash helper."
+            ),
+        },
+    ],
+    "delegate_request": [
+        {
+            "input": "goal: write tests/test_login.py | tools: write | refs: auth/routes.py",
+            "output": "Created tests/test_login.py covering 200 and 401. Did not edit auth/routes.py.",
+        },
+    ],
 }
 
 
