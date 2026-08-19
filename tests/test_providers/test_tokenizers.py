@@ -86,7 +86,7 @@ def test_tiktoken_import_failure_degrades_gracefully(monkeypatch):
         if mod is None:
             continue
         seen = True
-        getter = getattr(mod, "_get_tiktoken_encoding")
+        getter = mod._get_tiktoken_encoding
         getter.cache_clear()
         assert mod.count_tokens(text, "tiktoken:cl100k_base") == expected
         getter.cache_clear()
