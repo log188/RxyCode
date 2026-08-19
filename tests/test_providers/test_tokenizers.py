@@ -62,20 +62,37 @@ def test_non_string_inputs_are_coerced_without_raising():
 
 
 def test_tiktoken_import_failure_degrades_gracefully(monkeypatch):
+    import sys
+
     real_import = builtins.__import__
 
     def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "tiktoken":
+        if isinstance(name, str) and (name == "tiktoken" or name.startswith("tiktoken.")):
             raise ImportError("tiktoken unavailable")
         return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    tokenizers._get_tiktoken_encoding.cache_clear()
+    monkeypatch.delitem(sys.modules, "tiktoken", raising=False)
 
     text = "hello"
     expected = int(len(text) / 4.0) + 1
+    modules = [
+        tokenizers,
+        sys.modules.get("core.providers.tokenizers"),
+        sys.modules.get("RxyCode.RxyCode1_1_0.core.providers.tokenizers"),
+    ]
+    seen = False
+    for mod in modules:
+        if mod is None:
+            continue
+        seen = True
+        getter = getattr(mod, "_get_tiktoken_encoding")
+        getter.cache_clear()
+        assert mod.count_tokens(text, "tiktoken:cl100k_base") == expected
+        getter.cache_clear()
+    assert seen
+    tokenizers._get_tiktoken_encoding.cache_clear()
     assert count_tokens(text, "tiktoken:cl100k_base") == expected
-
     tokenizers._get_tiktoken_encoding.cache_clear()
 
 
