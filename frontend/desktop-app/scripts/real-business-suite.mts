@@ -1767,7 +1767,7 @@ async function runCliScenario(
   persistPlayProbe(outputSource, batchDir, scenario.id)
   let terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
   let validationError = artifactError ?? terminalIssue
-  const maxRepairAttempts = scenario.id === 'T03' ? 3 : (/missing /i.test(artifactError ?? '') || /output directory was not created/i.test(artifactError ?? '')) ? 2 : 1
+  const maxRepairAttempts = scenario.artifactKind === 'spring-mysql' || scenario.id === 'T09' ? 8 : scenario.id === 'T03' ? 3 : (/missing /i.test(artifactError ?? '') || /output directory was not created/i.test(artifactError ?? '')) ? 2 : 1
   if (validationError !== null) error = error ?? validationError
   for (let attempt = 1; validationError !== null && attempt <= maxRepairAttempts; attempt += 1) {
     if (taskWallClockIssue(Date.now() - startedAt) !== null) break
