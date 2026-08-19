@@ -19,10 +19,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
+from RxyCode.RxyCode1_1_0.core.agents.blackboard import Blackboard
+from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
 from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
 from RxyCode.RxyCode1_1_0.core.agents.spec import validate_team
-from RxyCode.RxyCode1_1_0.protocol.agents import AgentSpec, SopStage, TeamEvent, TeamSpec
+from RxyCode.RxyCode1_1_0.protocol.agents import (
+    AgentSpec,
+    ConsultRequest,
+    SopStage,
+    TeamEvent,
+    TeamSpec,
+)
 from RxyCode.RxyCode1_1_0.protocol.notifications import AgentEvent
 
 _WRITE_TOOLS = frozenset({"write", "edit", "patch"})
@@ -39,6 +47,14 @@ class PrecheckError(CoordinatorError):
 
 class MemberForbiddenError(CoordinatorError):
     """Members must not create sub-teams (DC6)."""
+
+
+class ConsultDenied(CoordinatorError):
+    """may_consult does not allow this target."""
+
+
+class ConsultBudgetExceeded(CoordinatorError):
+    """Consult count or token budget exhausted."""
 
 
 @dataclass
@@ -128,11 +144,16 @@ class Coordinator:
         self._emit_fn = emit if emit is not None else getattr(session, "emit", None)
         self._seq = 0
         self.events: list[Any] = []
-        self._blackboard: dict[str, list[tuple[str, str]]] = {}
+        self.mailbox = Mailbox()
+        self.blackboard = Blackboard()
         self._coordinator_history: list[str] = []
         self.task_ledger = TaskLedger()
         self.progress_ledger = ProgressLedger()
         self.last_replan: str | None = None
+        self._consults = 0
+        self._consult_tokens = 0
+        self.max_consults = 8
+        self.max_consult_tokens = 20_000
 
     def form_team(self, team: TeamSpec) -> TeamSpec:
         """只有团长能建团。"""
@@ -161,9 +182,7 @@ class Coordinator:
                 if not verdict.passed:
                     result.ok = False
                     result.error = "; ".join(verdict.findings)
-            self._blackboard.setdefault(stage.output_key, []).append(
-                (stage.role, result.answer)
-            )
+            self.blackboard.put(stage.output_key, result.answer, stage.role)
             self.record_progress(made_progress=result.ok, looping=not result.ok)
             nxt = sop.advance(ok=result.ok)
             if nxt is None:
@@ -189,11 +208,7 @@ class Coordinator:
 
     def _packet(self, stage: SopStage, team: TeamSpec, user_input: str) -> DispatchPacket:
         member = next(m for m in team.members if m.role == stage.role)
-        context = {
-            key: self._blackboard[key][-1][1]
-            for key in stage.context_keys
-            if key in self._blackboard and self._blackboard[key]
-        }
+        context = self.blackboard.view(list(stage.context_keys))
         return DispatchPacket(
             to_role=stage.role,
             goal=f"{user_input}\nstage={stage.name}\nrole_goal={member.goal}",
@@ -225,6 +240,49 @@ class Coordinator:
         ok = getattr(child, "status", None)
         summary = getattr(child, "summary", "") or getattr(child, "answer", "")
         return StageOutcome(ok=ok is None or str(ok).endswith("completed") or ok is True, answer=str(summary), packet=packet)
+
+    def consult(
+        self,
+        team: TeamSpec,
+        request: ConsultRequest,
+        *,
+        answer: str | None = None,
+    ) -> str:
+        """Member → coordinator → member. Never a direct hop."""
+        source = next((m for m in team.members if m.role == request.from_role), None)
+        if source is None or request.to_role not in source.may_consult:
+            raise ConsultDenied(
+                f"{request.from_role!r} may not consult {request.to_role!r}"
+            )
+        if request.to_role not in {m.role for m in team.members}:
+            raise ConsultDenied(f"unknown consult target {request.to_role!r}")
+        cost = max(1, len(request.question))
+        if self._consults >= self.max_consults or (
+            self._consult_tokens + cost > self.max_consult_tokens
+        ):
+            raise ConsultBudgetExceeded("consult budget exceeded")
+        consume = getattr(self._budget, "consume_consult", None)
+        if callable(consume):
+            consume()
+        self._consults += 1
+        self._consult_tokens += cost
+        self.mailbox.relay(
+            from_role=request.from_role,
+            to_role=request.to_role,
+            body=request.question,
+            relayed_by="coordinator",
+            kind="consult_q",
+        )
+        reply = answer if answer is not None else f"ack:{request.question}"
+        self.mailbox.relay(
+            from_role=request.to_role,
+            to_role=request.from_role,
+            body=reply,
+            relayed_by="coordinator",
+            kind="consult_a",
+        )
+        self.blackboard.put(f"consult:{request.request_id}", reply, request.to_role)
+        return reply
 
     def choose_failure_target(self, candidates: list[str]) -> str:
         """唯一 LLM 决策点：失败后多个候选。其余转移走 SopMachine。"""

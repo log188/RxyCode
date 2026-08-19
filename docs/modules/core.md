@@ -34,6 +34,8 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | agents/runtime.py | Phase F `AgentRuntime` role adapter over Phase D `ChildRuntime`. Does not copy D5 lifecycle. Session may hold many runtimes; single-agent path still uses AgentV2 (`role="default"` keeps cache namespace `None`). |
 | agents/sop.py | Phase F `SopMachine`: deterministic SOP transitions from TeamSpec. No LLM, Session, or IO. |
 | agents/coordinator.py | Phase F Coordinator: empty toolset, form_team only, precheck, one LLM route event, dual ledgers + stall replan. |
+| agents/mailbox.py | Phase F append-only mailbox; every message records `relayed_by`. |
+| agents/blackboard.py | Phase F append-only blackboard with authorized `context_keys` and a 1 MB cap. |
 
 ### Session Runtime Persistence
 

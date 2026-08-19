@@ -1,6 +1,8 @@
 """Phase F expert-team orchestration (Coordinator / specs / SOP)."""
 
+from RxyCode.RxyCode1_1_0.core.agents.blackboard import Blackboard
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import Coordinator
+from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
 from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
 from RxyCode.RxyCode1_1_0.core.agents.spec import (
@@ -17,4 +19,6 @@ __all__ = [
     "SopMachine",
     "StageRecord",
     "Coordinator",
+    "Mailbox",
+    "Blackboard",
 ]
