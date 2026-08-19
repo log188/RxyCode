@@ -23,34 +23,62 @@ from types import SimpleNamespace
 # checkout under test (worktree/branch).  Bind the canonical package to THIS
 # checkout's root instead and drop the editable meta-path finder so every
 # nested import resolves here too.
+#
+# Do not gate this on ``_RXYCODE_TEST_CHECKOUT``: pytest-xdist workers inherit
+# that env from the parent and would skip binding, then PathFinder-load ``core``
+# while ``resolve()`` still returns versioned provider instances.
 # ---------------------------------------------------------------------------
-if "_RXYCODE_TEST_CHECKOUT" not in os.environ:
+if not getattr(sys, "_rxycode_test_checkout_ready", False):
+    import importlib
     import types as _types
 
     _checkout_root = Path(__file__).resolve().parent.parent
     os.environ["RXYCODE_CHECKOUT_ROOT"] = str(_checkout_root)
+    os.environ["_RXYCODE_TEST_CHECKOUT"] = str(_checkout_root)
     _editable_finder_types = ("_EditableFinder",)
     sys.meta_path = [
         finder
         for finder in sys.meta_path
         if type(finder).__name__ not in _editable_finder_types
     ]
-    if "RxyCode" not in sys.modules:
-        _parent_mod = _types.ModuleType("RxyCode")
-        sys.modules["RxyCode"] = _parent_mod
+    _canonical_init = _checkout_root / "__init__.py"
     _canonical = sys.modules.get("RxyCode.RxyCode1_1_0")
-    if _canonical is None:
+    _canonical_file = getattr(_canonical, "__file__", None) if _canonical is not None else None
+    _bound_here = False
+    if _canonical is not None and _canonical_file:
+        try:
+            _bound_here = Path(_canonical_file).resolve().parent == _checkout_root
+        except OSError:
+            _bound_here = False
+    if not _bound_here:
+        if "RxyCode" not in sys.modules:
+            _parent_mod = _types.ModuleType("RxyCode")
+            sys.modules["RxyCode"] = _parent_mod
         _canonical = _types.ModuleType("RxyCode.RxyCode1_1_0")
         sys.modules["RxyCode.RxyCode1_1_0"] = _canonical
+        sys.modules["RxyCode"].RxyCode1_1_0 = _canonical  # noqa: B010 - dynamic module namespace
+        _canonical.__file__ = str(_canonical_init)
+        _canonical.__path__ = [str(_checkout_root)]
+        _canonical.__package__ = "RxyCode.RxyCode1_1_0"
+        if _canonical_init.exists():
+            _canonical_source = _canonical_init.read_text(encoding="utf-8-sig")
+            exec(compile(_canonical_source, str(_canonical_init), "exec"), _canonical.__dict__)  # noqa: S102
     sys.modules["RxyCode"].RxyCode1_1_0 = _canonical  # noqa: B010 - dynamic module namespace
-    _canonical.__file__ = str(_checkout_root / "__init__.py")
-    _canonical.__path__ = [str(_checkout_root)]
-    _canonical.__package__ = "RxyCode.RxyCode1_1_0"
-    _canonical_init = _checkout_root / "__init__.py"
-    if _canonical_init.exists():
-        _canonical_source = _canonical_init.read_text(encoding="utf-8-sig")
-        exec(compile(_canonical_source, str(_canonical_init), "exec"), _canonical.__dict__)  # noqa: S102
-    os.environ["_RXYCODE_TEST_CHECKOUT"] = str(_checkout_root)
+    _unify = getattr(_canonical, "unify_bare_package_aliases", None)
+    if callable(_unify):
+        _unify()
+    try:
+        importlib.import_module("RxyCode.RxyCode1_1_0.core")
+        importlib.import_module("RxyCode.RxyCode1_1_0.core.providers")
+        importlib.import_module("RxyCode.RxyCode1_1_0.protocol")
+        # Install the redirect finder before test modules are collected so
+        # ``from core.session`` / ``from protocol.notifications`` are one object.
+        importlib.import_module("appserver")
+    except ImportError:
+        pass
+    if callable(_unify):
+        _unify()
+    sys._rxycode_test_checkout_ready = True  # type: ignore[attr-defined]
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -65,10 +93,18 @@ _CANONICAL_MODULE_PREFIX = "RxyCode.RxyCode1_1_0."
 
 
 def _unified_top_level_packages() -> frozenset[str]:
-    """RL10's measured package list — imported, not copied."""
-    from appserver import _UNIFIED_TOP_LEVEL_PACKAGES
+    """Production list from the checkout root package — not copied.
 
-    return _UNIFIED_TOP_LEVEL_PACKAGES
+    ``appserver`` is excluded: ``python -m appserver`` and the canonical
+    package are intentionally allowed to be distinct objects.
+    """
+    pkg = sys.modules.get("RxyCode.RxyCode1_1_0")
+    packages = getattr(pkg, "_BARE_PACKAGES", None)
+    if packages is None:
+        from appserver import _UNIFIED_TOP_LEVEL_PACKAGES
+
+        return _UNIFIED_TOP_LEVEL_PACKAGES
+    return frozenset(name for name in packages if name != "appserver")
 
 
 def _bare_core_module_keys() -> frozenset[str]:
@@ -244,6 +280,9 @@ def pytest_collection_modifyitems(items):
             item.add_marker(getattr(pytest.mark, layer))
         if layer == "system":
             item.add_marker(pytest.mark.serial)
+    unify = getattr(sys.modules.get("RxyCode.RxyCode1_1_0"), "unify_bare_package_aliases", None)
+    if callable(unify):
+        unify()
 
 
 # ─── sys.stdout protection ──────────────────────────────────────
@@ -273,13 +312,19 @@ def _isolate_process_singletons():
     from RxyCode.RxyCode1_1_0.core.safety import approval, audit
     from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
     from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as _circuit_breaker
+    from RxyCode.RxyCode1_1_0.utils import tui as tui_mod
     from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+    unify = getattr(sys.modules.get("RxyCode.RxyCode1_1_0"), "unify_bare_package_aliases", None)
+    if callable(unify):
+        unify()
 
     previous_broker = approval.get_approval_broker()
     previous_question_broker = question.get_question_broker()
     previous_tracer = tracing._tracer
     previous_audit_logger = audit._default_logger
     previous_breaker = _circuit_breaker._default_breaker
+    previous_tui = tui_mod._tui_instance
+    previous_cwd = Path.cwd()
     api_locks = []
     seen_modules: set[int] = set()
     for module_name in ("RxyCode.RxyCode1_1_0.api_server", "api_server"):
@@ -344,9 +389,15 @@ def _isolate_process_singletons():
     run_monitor.reset()
     test_id = _safe_path_segment(os.environ.get("PYTEST_CURRENT_TEST"), "test")
     tracing.reset_tracer(test_id[:120])
+    tui_mod.set_tui(None)
     try:
         yield
     finally:
+        tui_mod.set_tui(previous_tui)
+        try:
+            os.chdir(previous_cwd)
+        except OSError:
+            pass
         approval.set_approval_broker(previous_broker)
         question.set_question_broker(previous_question_broker)
         session_runtime.clear_session_runtime(runtime_session_id)

@@ -11,11 +11,19 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 try:
-    from ..core.question import QuestionRequest, QuestionResponse, SseQuestionBroker
+    from RxyCode.RxyCode1_1_0.core.question import (
+        QuestionRequest,
+        QuestionResponse,
+        SseQuestionBroker,
+    )
     from .runtime import get_bound_session_id
 except ImportError:
-    from core.question import QuestionRequest, QuestionResponse, SseQuestionBroker
-    from appserver.runtime import get_bound_session_id
+    try:
+        from ..core.question import QuestionRequest, QuestionResponse, SseQuestionBroker
+        from .runtime import get_bound_session_id
+    except ImportError:
+        from core.question import QuestionRequest, QuestionResponse, SseQuestionBroker
+        from appserver.runtime import get_bound_session_id
 
 
 SendServerRequest = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
