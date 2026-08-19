@@ -119,8 +119,12 @@ FIRST_TOKEN_TIMEOUT_CAP_SECONDS = 30.0
 # a separate idle deadline, a provider can send a partial assistant message
 # and then leave ``__anext__`` pending forever; the appserver watchdog only
 # sees a live job and cannot tell this from useful work.
-STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS = 15.0
-STREAM_IDLE_TIMEOUT_CAP_SECONDS = 30.0
+# Large write/tool-call argument streams routinely pause 15-20s between
+# chunks on OpenCode Go. 15s default aborted T01 mid-game.js; keep a
+# longer default and a higher cap so a slow but live stream can finish.
+STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS = 30.0
+STREAM_IDLE_TIMEOUT_CAP_SECONDS = 90.0
+TOOL_ARGUMENT_STREAM_IDLE_SECONDS = 60.0
 
 # Fast local builds are still real tool-driven work, but they should not spend
 # model rounds re-probing the host or serializing avoidable documentation and
@@ -3271,6 +3275,15 @@ class AgentV2:
             self.model_config.get("timeout", 90.0),
             self.model_config.get("stream_idle_timeout"),
         )
+        tool_arg_idle = max(
+            stream_idle_timeout,
+            min(
+                TOOL_ARGUMENT_STREAM_IDLE_SECONDS,
+                STREAM_IDLE_TIMEOUT_CAP_SECONDS,
+            ),
+        )
+        pending_idle = stream_idle_timeout
+        stream_obj = None
         tui = get_tui()
         if tui and hasattr(tui, "write_progress"):
             tui.write_progress("正在连接模型…")
@@ -3307,6 +3320,7 @@ class AgentV2:
                 agen = await asyncio.wait_for(
                     _open_provider_stream(), timeout=first_chunk_timeout
                 )
+            stream_obj = agen
             ait = agen.__aiter__()
             useful_deadline = time.monotonic() + first_chunk_timeout
             got_useful = False
@@ -3317,9 +3331,11 @@ class AgentV2:
                         # response and then stop yielding without closing the
                         # SSE stream. Bound every subsequent gap as well; the
                         # first-chunk timeout alone cannot protect the user
-                        # from this half-open response.
+                        # from this half-open response. Tool-argument
+                        # streaming (large write payloads) is allowed a
+                        # longer gap than ordinary tokens.
                         chunk = await asyncio.wait_for(
-                            ait.__anext__(), timeout=stream_idle_timeout
+                            ait.__anext__(), timeout=pending_idle
                         )
                     else:
                         remaining = useful_deadline - time.monotonic()
@@ -3355,12 +3371,17 @@ class AgentV2:
                     _stream_content_chars += len(content)
                     reasoning_text = self._provider_reasoning(delta) or ""
                     _stream_reasoning_chars += len(reasoning_text)
+                    before_args = _stream_tool_argument_chars
                     for tc_delta in getattr(delta, "tool_calls", None) or []:
                         fn = getattr(tc_delta, "function", None)
                         if fn is not None:
                             _stream_tool_argument_chars += len(
                                 str(getattr(fn, "arguments", "") or "")
                             )
+                    if _stream_tool_argument_chars > before_args:
+                        pending_idle = tool_arg_idle
+                    elif self._stream_chunk_is_useful(chunk):
+                        pending_idle = stream_idle_timeout
                 if _ttft_start is not None and not _first_stream_event_logged:
                     _logger.info(
                         "llm_first_stream_event seq=%d elapsed_ms=%.0f has_choices=%s",
@@ -3409,6 +3430,12 @@ class AgentV2:
             )
             raise
         finally:
+            closer = getattr(stream_obj, "aclose", None)
+            if callable(closer):
+                try:
+                    await closer()
+                except Exception:
+                    _logger.debug("provider stream aclose failed", exc_info=True)
             _logger.info(
                 "llm_stream_end seq=%d completed=%s elapsed_ms=%.0f chunks=%d "
                 "content_chars=%d reasoning_chars=%d tool_argument_chars=%d "

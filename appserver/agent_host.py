@@ -603,6 +603,7 @@ class AgentHost:
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
