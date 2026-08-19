@@ -1139,6 +1139,8 @@ export default function App() {
   const stickyEnabled = shouldAutoStick(sticky);
   void formatHeaderLine(mode, model, thinkingLive);
 
+  const teamRole = progress.match(/^\[([^\]]+)\]/)?.[1] ?? "";
+  const teamBudget = progress.match(/(\d+(?:\.\d+)?k?\/\d+(?:\.\d+)?k?)\s*$/)?.[1] ?? "";
   const statusSegments = buildStatusSegments({
     connected: status !== null,
     contextUsedK: status?.context_used_k ?? 0,
@@ -1149,6 +1151,8 @@ export default function App() {
     thinkingExpanded,
     width: cols,
     modeColor,
+    teamRole: teamRole || undefined,
+    teamBudget: teamBudget || undefined,
   });
   void formatStatusBarText;
 

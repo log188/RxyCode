@@ -165,6 +165,30 @@ class ModeRouter:
                 session_id,
             )
 
+        route_mode = str(_settings_agents().get("route_mode") or "auto").lower()
+        if route_mode == "solo":
+            return self._commit(
+                RoutingDecision(
+                    mode=ExecutionMode.SOLO,
+                    decided_by="user",
+                    reason="settings.route_mode=solo",
+                    experiment_tag=tag,
+                    task=rest or text,
+                ),
+                session_id,
+            )
+        if route_mode == "team":
+            return self._commit(
+                RoutingDecision(
+                    mode=ExecutionMode.TEAM,
+                    decided_by="user",
+                    reason="settings.route_mode=team",
+                    experiment_tag=tag,
+                    task=rest or text,
+                ),
+                session_id,
+            )
+
         heuristic = self._heuristic(rest or text, leaf_nodes=leaf_nodes, readonly=readonly)
         heuristic.experiment_tag = tag
         if not self._router_model():

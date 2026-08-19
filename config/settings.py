@@ -244,6 +244,8 @@ def _default_config() -> dict:
         },
         "agents": {
             "enabled": False,
+            "team": "software_dev",
+            "route_mode": "auto",
             "router_model": None,
             "experiment_tag": "E0",
             "total_token_budget": 500_000,

@@ -99,4 +99,14 @@ describe("applyStreamEvent thinking timing", () => {
     expect(tool?.content).toBe("确认问题: 哪个环节慢？");
     expect(tool?.content).not.toContain("questions");
   });
+
+  test("stage separator progress becomes a system line", () => {
+    const next = applyStreamEvent(
+      base(),
+      { type: "progress", text: "──────── plan · architect ────────" },
+      nid,
+    );
+    const sep = next.messages.find((m) => m.role === "system");
+    expect(sep?.content).toContain("plan · architect");
+  });
 });

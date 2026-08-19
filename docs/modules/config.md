@@ -6,7 +6,7 @@ Manages all RxyCode configuration: model settings, API keys, active model select
 ## Key Files
 | File | Purpose |
 |------|---------|
-| settings.py | Core config functions: load_config(), save_config(), get_data_dir(), get_output_dir(). `agents.enabled` defaults false (DC7). `distillation.collect` defaults false (J3). |
+| settings.py | Core config functions: load_config(), save_config(), get_data_dir(), get_output_dir(). `agents.enabled` defaults false (DC7). Nested expert-team fields (`team`, `route_mode`, `router_model`, budgets) stay hidden in /settings until enabled. `distillation.collect` defaults false (J3). |
 | credential_store.py | Atomic owner-only credential storage; DPAPI protection on Windows |
 | model_manager.py | Model CRUD plus persisted and unsaved connection probes |
 | model_catalog.py + model_catalog.json | Static model catalog (nickname/provider/model mapping) with `catalog_max_age_days` staleness handling |

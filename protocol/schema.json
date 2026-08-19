@@ -2798,6 +2798,61 @@
       "title": "TeamEvent",
       "type": "object"
     },
+    "RoutingDecision": {
+      "description": "ModeRouter 的一次路由结论（F10/F13）。进 schema 供 CLI/Desktop 展示。",
+      "properties": {
+        "mode": {
+          "enum": [
+            "solo",
+            "team",
+            "team_multi"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "decided_by": {
+          "enum": [
+            "user",
+            "heuristic",
+            "llm",
+            "default"
+          ],
+          "title": "Decided By",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "tokens_used": {
+          "default": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "experiment_tag": {
+          "default": "E0",
+          "enum": [
+            "E0",
+            "E1",
+            "E2"
+          ],
+          "title": "Experiment Tag",
+          "type": "string"
+        },
+        "task": {
+          "default": "",
+          "title": "Task",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "decided_by",
+        "reason"
+      ],
+      "title": "RoutingDecision",
+      "type": "object"
+    },
     "ClientRequest": {
       "oneOf": [
         {
@@ -3008,6 +3063,9 @@
         },
         {
           "$ref": "#/$defs/TeamEvent"
+        },
+        {
+          "$ref": "#/$defs/RoutingDecision"
         }
       ]
     }

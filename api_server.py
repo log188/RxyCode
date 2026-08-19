@@ -1223,16 +1223,28 @@ async def _execute_command(req: CommandRequest):
         }
 
     if c == "/settings":
+        from .config.settings import load_config
+        from RxyCode.RxyCode1_1_0.core.agents.client_settings import settings_items
+
+        cfg = load_config()
+        items = settings_items(cfg)
         return {
             "action": "settings",
-            "message": "打开设置：权限设置可用 /permission 或 Ctrl+P → 设置",
-            "items": [
-                {
-                    "id": "permission",
-                    "label": "权限设置",
-                    "desc": "三档安全审批：全确认 / 写代码免批 / 全自动",
-                }
-            ],
+            "message": "打开设置：权限 / 语言 / 专家团（默认关闭，打开后才显示子项）",
+            "items": items,
+        }
+
+    if c == "/agents":
+        from .config.settings import load_config, save_config
+        from RxyCode.RxyCode1_1_0.core.agents.client_settings import apply_agents_args
+
+        cfg = load_config()
+        agents, message = apply_agents_args(cfg, args)
+        save_config(cfg)
+        return {
+            "action": "agents",
+            "agents": dict(agents),
+            "message": message,
         }
 
     if c in {"/solo", "/team", "/team-multi", "/why-mode"}:
@@ -1249,6 +1261,7 @@ async def _execute_command(req: CommandRequest):
             "/team <任务> - 强制专家团\n"
             "/team-multi <任务> - 强制专家团+多模型\n"
             "/why-mode - 上次路由依据\n"
+            "/agents on|off - 启用/关闭专家团（关闭时设置页不显示子项）\n"
             "/clear - 清除上下文\n"
             "/models - 列出模型\n"
             "/model <name> - 切换模型\n"
@@ -1267,6 +1280,7 @@ async def _execute_command(req: CommandRequest):
             "/language zh|en - 切换界面语言\n"
             "/permission [confirm_all|auto_edit|full_auto] - 权限模式\n"
             "/settings - 设置\n"
+            "/agents on|off - 启用/关闭专家团（关闭时设置页不显示子项）\n"
             "/thinking - 展开/折叠思考过程\n"
             "/cache - 缓存统计\n"
             "/find-skill <name> - \u641c\u7d22\u5e76\u4e0b\u8f7d skill\n"
@@ -1338,6 +1352,7 @@ async def _execute_command(req: CommandRequest):
             "/team <任务> - 强制专家团\n"
             "/team-multi <任务> - 强制专家团+多模型\n"
             "/why-mode - 上次路由依据\n"
+            "/agents on|off - 启用/关闭专家团（关闭时设置页不显示子项）\n"
             "/clear - 清除上下文\n"
             "/models - 列出模型\n"
             "/model <name> - 切换模型\n"
@@ -1815,7 +1830,7 @@ async def _execute_command(req: CommandRequest):
     # 模糊匹配命令
     known_commands = [
         "/help", "/clear", "/models", "/model", "/addmodel",
-        "/solo", "/team", "/team-multi", "/why-mode",
+        "/solo", "/team", "/team-multi", "/why-mode", "/agents",
         "/plan", "/build", "/compose", "/language", "/memory",
         "/list-chats", "/save-chat", "/load-chat", "/queue",
         "/schedule", "/cache", "/thinking", "/mode", "/exit",

@@ -44,6 +44,11 @@ from RxyCode.RxyCode1_1_0.protocol.notifications import AgentEvent, ProgressUpda
 
 _WRITE_TOOLS = frozenset({"write", "edit", "patch"})
 _WRITE_HINTS = ("write", "edit", "file", "patch", "写文件", "修改文件")
+_STAGE_LABELS = {
+    "plan": "正在制定方案",
+    "implement": "正在实现",
+    "audit": "正在审计",
+}
 
 
 class CoordinatorError(RuntimeError):
@@ -479,9 +484,23 @@ class Coordinator:
         return span
 
     def _emit_role_progress(self, role: str, stage: str) -> None:
-        label = f"[{role}] {stage}".strip()
+        label = _STAGE_LABELS.get(stage, stage)
+        snap = getattr(self._budget, "snapshot", None)
+        budget = snap() if callable(snap) else {}
+        used = int(budget.get("tokens_used") or 0)
+        cap = int(budget.get("token_budget") or 0)
+        budget_txt = f"{used}/{cap}" if cap else ""
+        text = f"[{role}] {label}..."
+        if budget_txt:
+            text = f"{text} {budget_txt}"
         self.current_role_display = f"{role} @ {stage}".strip(" @")
-        self._emit(ProgressUpdate(session_id=self._session.session_id, text=label))
+        self._emit(
+            ProgressUpdate(
+                session_id=self._session.session_id,
+                text=f"──────── {stage} · {role} ────────",
+            )
+        )
+        self._emit(ProgressUpdate(session_id=self._session.session_id, text=text))
 
     def choose_failure_target(self, candidates: list[str]) -> str:
         """唯一 LLM 决策点：失败后多个候选。其余转移走 SopMachine。"""

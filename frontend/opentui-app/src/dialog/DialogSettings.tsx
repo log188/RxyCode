@@ -85,33 +85,95 @@ export function DialogSettings({
   onOpenPermission: () => void;
   onOpenLanguage: () => void;
 }) {
-  const options: DialogSelectOption<string>[] = [
-    {
-      id: "permission",
-      title: "权限设置",
-      description: "三档安全审批",
-      category: "设置",
-      value: "permission",
-    },
-    {
-      id: "language",
-      title: "界面语言",
-      description: "中文 / English",
-      category: "设置",
-      value: "language",
-    },
-  ];
+  const [options, setOptions] = useState<DialogSelectOption<string>[]>([]);
+  const [screen, setScreen] = useState<"root" | "router-model">("root");
+  const [modelOptions, setModelOptions] = useState<DialogSelectOption<string>[]>([]);
+
+  useEffect(() => {
+    void (async () => {
+      const result = await sendCommand("/settings");
+      const items = Array.isArray(result?.items) ? result.items : [];
+      setOptions(
+        items.map((raw) => {
+          const item = raw as {
+            id?: string;
+            label?: string;
+            desc?: string;
+            disabled?: boolean;
+          };
+          return {
+            id: String(item.id || ""),
+            title: String(item.label || item.id || ""),
+            description: item.disabled ? `${item.desc || ""}（不可用）` : String(item.desc || ""),
+            category: String(item.id || "").startsWith("agents_") ? "专家团" : "设置",
+            value: String(item.id || ""),
+          };
+        }),
+      );
+    })();
+  }, []);
+
+  if (screen === "router-model") {
+    return (
+      <DialogSelect
+        title="难度判断模型"
+        options={modelOptions}
+        categoryOrder={["模型"]}
+        showSearch={false}
+        onClose={onClose}
+        onSelect={(opt) => {
+          void (async () => {
+            await sendCommand(`/agents router-model ${opt.value}`);
+            onClose();
+          })();
+        }}
+      />
+    );
+  }
+
   return (
     <DialogSelect
       title="设置"
       options={options}
-      categoryOrder={["设置"]}
+      categoryOrder={["设置", "专家团"]}
       showSearch={false}
       onClose={onClose}
       onSelect={(opt) => {
         if (opt.value === "permission") onOpenPermission();
         else if (opt.value === "language") onOpenLanguage();
-        else onClose();
+        else if (opt.value === "agents_enabled") {
+          void (async () => {
+            const result = await sendCommand("/settings");
+            const items = Array.isArray(result?.items) ? result.items : [];
+            const current = items.find((it) => (it as { id?: string }).id === "agents_enabled") as
+              | { value?: boolean }
+              | undefined;
+            await sendCommand(current?.value ? "/agents off" : "/agents on");
+            onClose();
+          })();
+        } else if (opt.value === "agents_router_model") {
+          void (async () => {
+            const result = await sendCommand("/models");
+            const names = Array.isArray(result?.models)
+              ? result.models.map((m: unknown) =>
+                  typeof m === "string" ? m : String((m as { name?: string }).name || ""),
+                )
+              : [];
+            setModelOptions([
+              { id: "none", title: "不使用", description: "只用启发式，不调用判难度模型", category: "模型", value: "none" },
+              ...names.filter(Boolean).map((name: string) => ({
+                id: name,
+                title: name,
+                description: "用于第 3 级难度判断",
+                category: "模型",
+                value: name,
+              })),
+            ]);
+            setScreen("router-model");
+          })();
+        } else if (opt.value === "agents_multi_model") {
+          onClose();
+        } else onClose();
       }}
     />
   );

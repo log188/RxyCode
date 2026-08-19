@@ -351,7 +351,15 @@ export type Unavailable = boolean;
  * Phase F expert-team types (F3). Not a session envelope; discriminated wire messages still use method on ClientRequest / ProtocolNotification / ServerRequestMessage.
  */
 export type AgentProtocol =
-  AgentSpec | SopStage | TeamSpec | DelegateRequest | DelegateResult | ConsultRequest | VerdictRecord | TeamEvent;
+  | AgentSpec
+  | SopStage
+  | TeamSpec
+  | DelegateRequest
+  | DelegateResult
+  | ConsultRequest
+  | VerdictRecord
+  | TeamEvent
+  | RoutingDecision;
 export type Role = string;
 export type DisplayName = string;
 export type Goal = string;
@@ -428,6 +436,12 @@ export type Phase =
   | "budget_exceeded"
   | "team_completed";
 export type Detail = string;
+export type Mode1 = "solo" | "team" | "team_multi";
+export type DecidedBy = "user" | "heuristic" | "llm" | "default";
+export type Reason1 = string;
+export type TokensUsed2 = number;
+export type ExperimentTag1 = "E0" | "E1" | "E2";
+export type Task1 = string;
 
 /**
  * JSON-RPC handshake on connect (future ``python -m appserver``).
@@ -1261,5 +1275,17 @@ export interface TeamEvent {
   stage?: Stage2;
   phase: Phase;
   detail?: Detail;
+  [k: string]: unknown;
+}
+/**
+ * ModeRouter 的一次路由结论（F10/F13）。进 schema 供 CLI/Desktop 展示。
+ */
+export interface RoutingDecision {
+  mode: Mode1;
+  decided_by: DecidedBy;
+  reason: Reason1;
+  tokens_used?: TokensUsed2;
+  experiment_tag?: ExperimentTag1;
+  task?: Task1;
   [k: string]: unknown;
 }

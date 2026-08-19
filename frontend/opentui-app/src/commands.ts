@@ -30,6 +30,7 @@ export const AVAILABLE_COMMANDS: Command[] = [
   { name: "/team", description: "强制专家团", args: "<任务>", category: "Agent", keywords: "mode team 专家团" },
   { name: "/team-multi", description: "强制专家团+多模型", args: "<任务>", category: "Agent", keywords: "mode team-multi" },
   { name: "/why-mode", description: "打印上次路由决策依据", category: "Agent", keywords: "route why" },
+  { name: "/agents", description: "专家团开关与预算（默认关闭）", args: "[on|off|team|route|router-model|budget|timeout]", category: "Agent", keywords: "agents 专家团 设置" },
   { name: "/thinking", description: "展开/折叠思考过程", category: "Agent", keywords: "think reason" },
   { name: "/effort", description: "选择思考强度（档位随当前模型）", args: "[档位]", category: "Agent", keywords: "effort 思考强度 推理 档位" },
   { name: "/memory add", description: "添加记忆", args: "<text>", category: "记忆" },

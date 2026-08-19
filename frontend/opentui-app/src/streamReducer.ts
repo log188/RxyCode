@@ -274,6 +274,23 @@ export function applyStreamEvent(
         ),
       };
     }
+    case "progress": {
+      const text = event.message || event.text || "";
+      if (!text.includes("──")) return next;
+      return {
+        ...next,
+        messages: [
+          ...next.messages,
+          {
+            id: newId("stage"),
+            role: "system",
+            content: text,
+            timestamp: Date.now(),
+            done: true,
+          },
+        ],
+      };
+    }
     default:
       return next;
   }

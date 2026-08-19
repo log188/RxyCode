@@ -37,4 +37,22 @@ describe("status bar formatting", () => {
     expect(text).toContain("思考:开");
     expect(text).toContain("Plan");
   });
+
+  test("shows current team role and budget on the right", () => {
+    const text = formatStatusBarText({
+      connected: true,
+      contextUsedK: 1,
+      contextMaxK: 256,
+      cacheSize: "0B",
+      cacheRate: "0.0%",
+      mode: "build",
+      thinkingExpanded: false,
+      width: 160,
+      modeColor: "#FF69B4",
+      teamRole: "architect",
+      teamBudget: "187k/500k",
+    });
+    expect(text).toContain("[architect]");
+    expect(text).toContain("187k/500k");
+  });
 });

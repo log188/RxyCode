@@ -228,6 +228,19 @@ class TeamEvent(BaseModel):
     detail: str = ""
 
 
+class RoutingDecision(BaseModel):
+    """ModeRouter 的一次路由结论（F10/F13）。进 schema 供 CLI/Desktop 展示。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    mode: Literal["solo", "team", "team_multi"]
+    decided_by: Literal["user", "heuristic", "llm", "default"]
+    reason: str
+    tokens_used: int = 0
+    experiment_tag: Literal["E0", "E1", "E2"] = "E0"
+    task: str = ""
+
+
 AGENT_PROTOCOL_MODELS: tuple[type[BaseModel], ...] = (
     AgentSpec,
     SopStage,
@@ -237,4 +250,5 @@ AGENT_PROTOCOL_MODELS: tuple[type[BaseModel], ...] = (
     ConsultRequest,
     VerdictRecord,
     TeamEvent,
+    RoutingDecision,
 )

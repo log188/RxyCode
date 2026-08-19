@@ -12,6 +12,8 @@ export interface StatusBarInput {
   thinkingExpanded: boolean;
   width: number;
   modeColor: string;
+  teamRole?: string;
+  teamBudget?: string;
 }
 
 export type StatusSegment = { key: string; text: string; fg: string; bold?: boolean };
@@ -41,10 +43,22 @@ export function buildStatusSegments(input: StatusBarInput): StatusSegment[] {
     { key: "cancel", text: "Esc:终止", fg: C.overlay2 },
     { key: "shortcuts", text: "Tab:切换 /:命令 Ctrl+T:思考 Ctrl+P:设置", fg: C.overlay2 },
   ];
+  if (input.teamRole) {
+    all.splice(4, 0, { key: "teamRole", text: `[${input.teamRole}]`, fg: C.yellow, bold: true });
+  }
+  if (input.teamBudget) {
+    all.splice(input.teamRole ? 5 : 4, 0, {
+      key: "teamBudget",
+      text: input.teamBudget,
+      fg: C.teal,
+    });
+  }
 
   const order = all.map((s) => s.key);
   const optional = ["context", "cache", "cancel", "shortcuts"];
   const visible = new Set(["connection", "mode", "thinking"]);
+  if (input.teamRole) visible.add("teamRole");
+  if (input.teamBudget) visible.add("teamBudget");
   const contentWidth = Math.max(1, input.width - 2);
 
   for (const key of optional) {
