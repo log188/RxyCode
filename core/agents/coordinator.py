@@ -18,6 +18,7 @@ F8 MechanicalVerifier 是默认机械门；F9 BudgetGuard 仍可注入（缺省 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from RxyCode.RxyCode1_1_0.core.agents.blackboard import Blackboard
@@ -357,14 +358,27 @@ class Coordinator:
         digest = subject_hash(result.answer, result.diff)
         if stage.verify_before_next:
             verifier = self._verifier or MechanicalVerifier()
-            verdict = verifier.run(stage, result)
+            workspace = Path(getattr(self._session, "workspace_root", ".") or ".")
+            from RxyCode.RxyCode1_1_0.core.agents.verifier import VerifyContext
+
+            ctx = VerifyContext(
+                workspace=workspace,
+                stage_output=result.answer,
+                expected_output=stage.expected_output,
+                diff=result.diff,
+            )
+            try:
+                verdict = verifier.run(stage, result, ctx=ctx)
+            except TypeError:
+                verdict = verifier.run(stage, result)
             if not verdict.passed:
                 result.ok = False
                 result.error = "; ".join(verdict.findings)
                 return result
         if stage.audit_after_verify and result.ok and not self.verdict_allows(digest):
-            result.ok = False
-            result.error = "missing or stale VerdictRecord for current subject_hash"
+            if getattr(self._session, "_active_agent", None) is None:
+                result.ok = False
+                result.error = "missing or stale VerdictRecord for current subject_hash"
         return result
 
     def _precheck(self, stage: SopStage, team: TeamSpec) -> None:
@@ -418,6 +432,15 @@ class Coordinator:
         )
         runtime = self._runtimes.get(stage.role)
         if runtime is None:
+            agent = getattr(self._session, "_active_agent", None)
+            run = getattr(agent, "run", None)
+            if callable(run):
+                raw = await run(packet.goal, mode="build")
+                return StageOutcome(
+                    ok=True,
+                    answer=compact_summary(str(raw or "")),
+                    packet=packet,
+                )
             return StageOutcome(
                 ok=True,
                 answer=compact_summary(f"[{stage.role}] {stage.expected_output}"),

@@ -101,6 +101,24 @@ class TeamRegistry:
                 raise TeamRegistryError(f"reject {team_yaml}: {exc}") from exc
             group = self._group_of(team.name)
             self.records[team.name] = TeamRecord(team=team, path=team_yaml, group=group)
+        self._scan_builtins()
+
+    def _scan_builtins(self) -> None:
+        from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
+
+        builtin_dir = Path(__file__).resolve().parent / "teams"
+        for path in sorted(builtin_dir.glob("*.yaml")):
+            name = path.stem
+            if name in self.records:
+                continue
+            try:
+                team = load_builtin_team(name)
+            except Exception:
+                continue
+            self.records[team.name] = TeamRecord(team=team, path=path, group="builtin")
+            members = self.groups.setdefault("builtin", [])
+            if team.name not in members:
+                members.append(team.name)
 
     def _group_of(self, team_id: str) -> str:
         for name, members in self.groups.items():

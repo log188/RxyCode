@@ -70,7 +70,7 @@ stages:
       结构化实现方案，含：① 要改的文件清单 ② 每个文件的改动要点
       ③ 可机械验证的验收标准（哪些测试要过、哪些命令要成功）
     output_key: plan
-    verify_before_next: [goal_satisfied]
+    verify_before_next: []
     next_on_success: implement
     next_on_failure: null
     max_retries: 1

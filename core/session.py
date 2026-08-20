@@ -8,8 +8,11 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
-from ..protocol.notifications import ErrorNotification, FinalAnswer, TokenUsage
+from ..protocol.notifications import ErrorNotification, FinalAnswer, ProgressUpdate, TokenUsage
 
+from RxyCode.RxyCode1_1_0.core.agents.coordinator import BudgetExceeded, Coordinator
+from RxyCode.RxyCode1_1_0.core.agents.router import ExecutionMode, get_default_router
+from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
 from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 
@@ -150,12 +153,14 @@ class Session:
             set_working_directory(workspace)
             try:
                 if permission_mode is None:
-                    answer = await agent.run(text, mode=mode)
+                    answer = await self._dispatch_user_turn(agent, text, mode)
                 else:
                     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import permission_mode_override
 
                     with permission_mode_override(permission_mode):
-                        answer = await agent.run(text, mode=mode)
+                        answer = await self._dispatch_user_turn(agent, text, mode)
+            except BudgetExceeded as exc:
+                answer = str(exc) or "team budget exceeded"
             except Exception as exc:
                 detail = str(exc)
                 if tui is not None and hasattr(tui, "exhaust_active_recovery"):
@@ -231,6 +236,74 @@ class Session:
             )
         finally:
             reset_session_binding(session_token)
+
+    async def _dispatch_user_turn(self, agent: Any, text: str, mode: str) -> str:
+        """Route slash commands and expert-team vs solo before AgentV2."""
+        router = get_default_router()
+        previous_emit = router._emit
+        router._emit = self.emit
+        try:
+            stripped = (text or "").strip()
+            cmd = ""
+            rest = ""
+            if stripped.startswith("/"):
+                head, _, tail = stripped.partition(" ")
+                cmd = head.lower()
+                rest = tail.strip()
+
+            if cmd == "/why-mode":
+                return router.handle_slash(stripped)
+            if cmd == "/agents":
+                from RxyCode.RxyCode1_1_0.config.settings import load_config, save_config
+                from RxyCode.RxyCode1_1_0.core.agents.client_settings import apply_agents_args
+
+                cfg = load_config()
+                _agents, message = apply_agents_args(cfg, rest)
+                save_config(cfg)
+                return message
+            if cmd == "/solo" and not rest:
+                return router.handle_slash(stripped)
+
+            decision = router.route(stripped)
+            if cmd in {"/solo", "/team", "/team-multi"}:
+                task = rest
+            else:
+                task = (decision.task or stripped).strip()
+
+            if decision.mode in (ExecutionMode.TEAM, ExecutionMode.TEAM_MULTI_MODEL):
+                if not task:
+                    return router.handle_slash(stripped)
+                if decision.mode is ExecutionMode.TEAM_MULTI_MODEL:
+                    self.emit(
+                        ProgressUpdate(
+                            session_id=self.session_id,
+                            text="多模型协作尚未启用（Phase H），按同模型专家团运行",
+                        )
+                    )
+                team_name = "software_dev"
+                try:
+                    from RxyCode.RxyCode1_1_0.config.settings import load_config
+
+                    team_name = str(
+                        (load_config().get("agents") or {}).get("team") or "software_dev"
+                    )
+                except Exception:
+                    team_name = "software_dev"
+                try:
+                    team = load_builtin_team(team_name)
+                except Exception:
+                    team = load_builtin_team("software_dev")
+                self._active_agent = agent
+                try:
+                    coord = Coordinator(self, emit=self.emit)
+                    return await coord.run_team(team, task)
+                finally:
+                    self._active_agent = None
+
+            run_text = rest if cmd == "/solo" and rest else stripped
+            return await agent.run(run_text, mode=mode)
+        finally:
+            router._emit = previous_emit
 
     def interrupt(self, agent: Any) -> bool:
         """Request cancellation on the underlying agent, if supported."""

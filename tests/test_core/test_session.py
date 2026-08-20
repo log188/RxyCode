@@ -46,6 +46,83 @@ class _UsageAgent(_FakeAgent):
 
 
 @pytest.mark.asyncio
+async def test_session_prompt_why_mode_does_not_call_agent(session_workspace):
+    emitted: list[BaseModel] = []
+    session = Session(
+        session_id="s-why",
+        workspace_root=session_workspace,
+        emit=emitted.append,
+    )
+    agent = _FakeAgent("should-not-run")
+    result = await session.prompt(agent, "/why-mode", mode="build", run_id="run-why")
+    assert result.status == "succeeded"
+    assert "routing" in result.answer or "mode=" in result.answer or "no routing" in result.answer
+    assert agent._answer == "should-not-run"
+
+
+@pytest.mark.asyncio
+async def test_session_prompt_team_slash_runs_coordinator_not_agent(session_workspace, monkeypatch):
+    emitted: list[BaseModel] = []
+    session = Session(
+        session_id="s-team",
+        workspace_root=session_workspace,
+        emit=emitted.append,
+    )
+    called: list[str] = []
+
+    class _Coord:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def run_team(self, team, user_input, **_k):
+            called.append(f"{team.name}:{user_input}")
+            return "team-ok"
+
+    monkeypatch.setattr("core.session.Coordinator", _Coord)
+    agent = _FakeAgent("solo-should-not-run")
+    result = await session.prompt(
+        agent,
+        "/team add a health endpoint in app.py",
+        mode="build",
+        run_id="run-team",
+    )
+    assert result.status == "succeeded"
+    assert result.answer == "team-ok"
+    assert called == ["software_dev:add a health endpoint in app.py"]
+
+
+@pytest.mark.asyncio
+async def test_session_prompt_disabled_keeps_split_prompt_on_solo_agent(
+    session_workspace, monkeypatch
+):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(session_workspace / "data-off"))
+    from RxyCode.RxyCode1_1_0.config.settings import save_config
+
+    (session_workspace / "data-off").mkdir()
+    save_config({"agents": {"enabled": False, "team": "software_dev", "route_mode": "auto"}})
+    ran: list[str] = []
+
+    class _Tracking(_FakeAgent):
+        async def run(self, text: str, mode: str = "build") -> str:
+            ran.append(text)
+            return "solo"
+
+    session = Session(
+        session_id="s-off",
+        workspace_root=session_workspace,
+        emit=lambda _n: None,
+    )
+    result = await session.prompt(
+        _Tracking(),
+        "把前后端拆成两个独立改造再多人审计",
+        mode="build",
+        run_id="run-off",
+    )
+    assert result.answer == "solo"
+    assert ran == ["把前后端拆成两个独立改造再多人审计"]
+
+
+@pytest.mark.asyncio
 async def test_session_prompt_emits_final_answer(session_workspace):
     emitted: list[BaseModel] = []
     session = Session(
