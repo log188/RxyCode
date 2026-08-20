@@ -994,16 +994,23 @@ def test_appserver_interrupt_cancels_hung_prompt(switch: str):
                     saw_running = True
                     break
         assert saw_running, "prompt never reached the running state"
-        time.sleep(0.8)  # let the worker set _run_task and enter the hang
-        interrupt = client.request(
-            "session/interrupt",
-            {"session_id": session["session_id"]},
-            timeout=10.0,
-        )
-        assert interrupt.get("cancelled") is True
+        # Cold Windows workers finish bootstrap after job_status=running.
+        # Poll interrupt until the worker has a prompt task (or agent).
+        interrupt = {"cancelled": False}
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            interrupt = client.request(
+                "session/interrupt",
+                {"session_id": session["session_id"]},
+                timeout=10.0,
+            )
+            if interrupt.get("cancelled") is True:
+                break
+            time.sleep(0.2)
+        assert interrupt.get("cancelled") is True, interrupt
 
         try:
-            message = response.get(timeout=10.0)
+            message = response.get(timeout=15.0)
         finally:
             with client._pending_lock:
                 client._pending.pop(prompt_id, None)

@@ -239,10 +239,23 @@ class Session:
 
     @staticmethod
     def _agents_enabled() -> bool:
-        try:
-            from RxyCode.RxyCode1_1_0.config.settings import load_config
+        """Cheap read of agents.enabled. Missing config means the default (off).
 
-            return bool((load_config().get("agents") or {}).get("enabled", False))
+        Avoid ``load_config()`` here: it creates a file on first use and would
+        delay stub hangs / ``session/interrupt`` on a cold worker.
+        """
+        try:
+            from RxyCode.RxyCode1_1_0.config.settings import get_config_path
+
+            path = get_config_path()
+            if not path.exists():
+                return False
+            import yaml
+
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            if not isinstance(raw, dict):
+                return False
+            return bool((raw.get("agents") or {}).get("enabled", False))
         except Exception:
             return False
 
