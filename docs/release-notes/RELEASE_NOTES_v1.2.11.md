@@ -27,7 +27,7 @@ RxyCode is a local plan-and-execute coding agent. Type `rxycode` in a terminal t
 
 ### Fixed
 
-- Stdio OpenTUI and Desktop now route `/team`, `/team-multi`, `/solo`, `/why-mode`, and `/agents` through `Session.prompt`, so expert teams actually start. Builtin `software_dev` is listed by `team/list`. Coordinator dispatches roles through the live AgentV2 instead of a stub.
+- Stdio OpenTUI and Desktop now route `/team`, `/team-multi`, `/solo`, `/why-mode`, and `/agents` through `Session.prompt`, so expert teams actually start. Builtin `software_dev` is listed by `team/list`. Coordinator dispatches roles through the live AgentV2 instead of a stub. When `agents.enabled=false` (the default), ordinary prompts skip ModeRouter so concurrent sessions and `session/interrupt` keep AgentV2 latency.
 - `software_dev` plan stage no longer requires a verbatim `expected_output` match (`goal_satisfied`) before implement.
 - Expert-team `delegate_request` prompt includes a `<ROLE>` section; architect / coder / auditor / delegate stages have few-shot examples.
 - Large streamed writes no longer die at a 15s idle cutoff (idle 30s, cap 90s; tool-arg wait 60s).

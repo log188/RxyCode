@@ -237,20 +237,36 @@ class Session:
         finally:
             reset_session_binding(session_token)
 
+    @staticmethod
+    def _agents_enabled() -> bool:
+        try:
+            from RxyCode.RxyCode1_1_0.config.settings import load_config
+
+            return bool((load_config().get("agents") or {}).get("enabled", False))
+        except Exception:
+            return False
+
     async def _dispatch_user_turn(self, agent: Any, text: str, mode: str) -> str:
         """Route slash commands and expert-team vs solo before AgentV2."""
+        stripped = (text or "").strip()
+        cmd = ""
+        rest = ""
+        if stripped.startswith("/"):
+            head, _, tail = stripped.partition(" ")
+            cmd = head.lower()
+            rest = tail.strip()
+
+        # Default product: agents.enabled=false. Stay on AgentV2 without
+        # ModeRouter events or Coordinator setup so stub hangs / concurrent
+        # session/prompt overlap keep the previous latency.
+        if cmd not in {"/solo", "/team", "/team-multi", "/why-mode", "/agents"}:
+            if not self._agents_enabled():
+                return await agent.run(stripped, mode=mode)
+
         router = get_default_router()
         previous_emit = router._emit
         router._emit = self.emit
         try:
-            stripped = (text or "").strip()
-            cmd = ""
-            rest = ""
-            if stripped.startswith("/"):
-                head, _, tail = stripped.partition(" ")
-                cmd = head.lower()
-                rest = tail.strip()
-
             if cmd == "/why-mode":
                 return router.handle_slash(stripped)
             if cmd == "/agents":

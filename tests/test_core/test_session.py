@@ -123,6 +123,44 @@ async def test_session_prompt_disabled_keeps_split_prompt_on_solo_agent(
 
 
 @pytest.mark.asyncio
+async def test_session_prompt_disabled_skips_router_and_coordinator(
+    session_workspace, monkeypatch
+):
+    """CI stub prompts (hang:/slow:) must not pay ModeRouter/Coordinator cost."""
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(session_workspace / "data-skip"))
+    from RxyCode.RxyCode1_1_0.config.settings import save_config
+
+    (session_workspace / "data-skip").mkdir()
+    save_config({"agents": {"enabled": False}})
+
+    def _boom(*_a, **_k):
+        raise AssertionError("ModeRouter must not run when agents.enabled=false")
+
+    monkeypatch.setattr("core.session.get_default_router", _boom)
+    monkeypatch.setattr("core.session.Coordinator", _boom)
+    ran: list[str] = []
+
+    class _Tracking(_FakeAgent):
+        async def run(self, text: str, mode: str = "build") -> str:
+            ran.append(text)
+            return "hung-ok"
+
+    session = Session(
+        session_id="s-skip",
+        workspace_root=session_workspace,
+        emit=lambda _n: None,
+    )
+    result = await session.prompt(
+        _Tracking(),
+        "hang:forever",
+        mode="build",
+        run_id="run-skip",
+    )
+    assert result.answer == "hung-ok"
+    assert ran == ["hang:forever"]
+
+
+@pytest.mark.asyncio
 async def test_session_prompt_emits_final_answer(session_workspace):
     emitted: list[BaseModel] = []
     session = Session(

@@ -221,7 +221,7 @@ const selected = scenariosFrom(
   fromId
 )
 const prompts = buildBatchPrompts()
-const REAL_BUSINESS_MODEL_ID = 'opencode-go/deepseek-v4-flash'
+const REAL_BUSINESS_MODEL_ID = 'opencode-go/mimo-v2.5'
 const REAL_BUSINESS_PROVIDER = 'opencode-go'
 const REAL_BUSINESS_GATEWAY = 'https://opencode.ai/zen/go/v1'
 
@@ -403,7 +403,7 @@ async function selectOpenCodeGoModelInSettings(harness: DesktopCdpHarness): Prom
   await waitFor(
     async () => await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="model-row"][data-model-id=${JSON.stringify(modelId)}]'))`) ? true : null,
     60_000,
-    'OpenCode Go deepseek-v4-flash in GUI model center'
+    'OpenCode Go mimo-v2.5 in GUI model center'
   )
   const alreadyActive = await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="model-row"][data-model-id=${JSON.stringify(modelId)}].active'))`)
   if (!alreadyActive) {
@@ -415,7 +415,7 @@ async function selectOpenCodeGoModelInSettings(harness: DesktopCdpHarness): Prom
         return dialog === null || row?.classList.contains('active')
       })()`) ? true : null,
       45_000,
-      'activate OpenCode Go deepseek-v4-flash in GUI'
+      'activate OpenCode Go mimo-v2.5 in GUI'
     )
   }
   // Selecting the global default closes the settings page when there is no
@@ -459,8 +459,8 @@ async function createSession(harness: DesktopCdpHarness): Promise<string> {
 async function assertOpenCodeGoModel(harness: DesktopCdpHarness): Promise<{ model: string; gateway: string }> {
   const modelId = REAL_BUSINESS_MODEL_ID
   await harness.waitForSelector('[data-testid="composer-model"]', 60_000)
-  await waitFor(async () => await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="composer-model"] option[value=${JSON.stringify(modelId)}]'))`) ? true : null, 60_000, 'OpenCode Go deepseek-v4-flash option')
-  await waitFor(async () => await harness.evaluate<boolean>(`document.querySelector('[data-testid="composer-model"]')?.value === ${JSON.stringify(modelId)}`) ? true : null, 45_000, 'apply OpenCode Go deepseek-v4-flash in GUI')
+  await waitFor(async () => await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="composer-model"] option[value=${JSON.stringify(modelId)}]'))`) ? true : null, 60_000, 'OpenCode Go mimo-v2.5 option')
+  await waitFor(async () => await harness.evaluate<boolean>(`document.querySelector('[data-testid="composer-model"]')?.value === ${JSON.stringify(modelId)}`) ? true : null, 45_000, 'apply OpenCode Go mimo-v2.5 in GUI')
   const lines = parseProtocol(await harness.evaluate<string[]>('window.__rxyRealProtocol ?? []'))
   const entry = getSuiteModelEntry(lines)
   const gateway = getGateway(lines)
