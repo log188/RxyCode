@@ -5,10 +5,14 @@ from __future__ import annotations
 import asyncio
 import time
 
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
+
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import Coordinator, PrecheckError
 from RxyCode.RxyCode1_1_0.core.agents.spec import validate_team
 from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
 from RxyCode.RxyCode1_1_0.core.agents.verifier import SOFTWARE_DEV_STAGE_CHECKS, subject_hash
+from RxyCode.RxyCode1_1_0.tools.registry import default_registry
 from RxyCode.RxyCode1_1_0.core.prompts import list_stages
 from RxyCode.RxyCode1_1_0.core.session import Session
 from RxyCode.RxyCode1_1_0.protocol.agents import (
@@ -112,6 +116,88 @@ def test_auditor_cannot_edit_files() -> None:
         raise AssertionError("auditor write stage must fail precheck")
     except PrecheckError:
         pass
+
+
+class _StubArgs(BaseModel):
+    value: str = Field(default="x")
+
+
+def _ensure_named_tool(name: str, *, risk: str) -> None:
+    if default_registry.get(name) is not None:
+        return
+
+    def _run(value: str = "x") -> str:
+        return value
+
+    default_registry.register(
+        StructuredTool.from_function(
+            func=_run,
+            name=name,
+            description=name,
+            args_schema=_StubArgs,
+        ),
+        risk=risk,
+    )
+
+
+def test_architect_dispatch_cannot_write() -> None:
+    """Live form_team must scope architect tools so write never executes."""
+    for name in ("read", "grep", "ls"):
+        _ensure_named_tool(name, risk="read")
+    for name in ("write", "edit", "patch"):
+        _ensure_named_tool(name, risk="write")
+    writes: list[str] = []
+
+    class _Spy:
+        async def run(self, text: str, mode: str = "build") -> str:
+            result = await self._execute_tool(
+                "write", {"path": "hack.py", "content": "nope"}
+            )
+            writes.append(str(result))
+            return f"plan:{result}"
+
+        async def _execute_tool(self, name: str, args: dict, **kwargs: object) -> str:
+            writes.append(name)
+            return f"executed:{name}"
+
+    session = Session(session_id="ses-scope", workspace_root=".", emit=lambda _n: None)
+    spy = _Spy()
+    session._active_agent = spy
+    coord = Coordinator(session, emit=lambda _n: None)
+    team = load_builtin_team()
+    coord.form_team(team)
+    architect = coord._runtimes["architect"]
+    names = set(architect.registry.get_names())
+    assert "write" not in names
+    assert "edit" not in names
+    assert "patch" not in names
+    assert "read" in names
+    coder = coord._runtimes["coder"]
+    assert coder.spec.tools is None
+    assert "verifier" not in coord._runtimes
+    plan = next(stage for stage in team.stages if stage.name == "plan")
+    result = asyncio.run(coord._dispatch(plan, team, "add auth/*.py"))
+    assert "write" not in writes
+    assert any("blocked" in item for item in writes)
+    assert "write" not in (result.packet.tools or [])
+    assert result.ok is True
+
+
+def test_completed_enum_status_advances_past_plan() -> None:
+    """str(ChildStatus.COMPLETED) is 'ChildStatus.COMPLETED' on 3.11+; must still count as ok."""
+
+    class _Done:
+        async def run(self, text: str, mode: str = "build") -> str:
+            return "structured plan with files and checks"
+
+    coord = _coord()
+    coord._session._active_agent = _Done()
+    text = asyncio.run(coord.run_team(load_builtin_team(), "add a health endpoint"))
+    stages = [part.strip() for part in text.replace("->", " ").split() if part.strip()]
+    assert "plan" in stages
+    assert "implement" in stages
+    assert "audit" in stages
+    assert coord.progress_ledger.stall_count == 0
 
 
 def test_happy_path_plan_implement_audit() -> None:

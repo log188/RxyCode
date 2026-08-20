@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from protocol.subagents import (
     AgentDefinition,
     AgentMode,
+    ChildStatus,
     EffectiveTaskPolicy,
     TaskRequest,
     TaskResult,
@@ -201,3 +202,55 @@ class AgentRuntime:
                 raise AgentSpecError(f"unknown tool {name!r} in AgentSpec.tools")
             scoped.register(tool, risk=default_registry.get_risk(name))
         return scoped
+
+
+class LiveRoleRuntime:
+    """Reuse the live Primary AgentV2 under ``AgentSpec.tools``.
+
+    ``Coordinator.form_team`` binds one of these per non-mechanical role.
+    A fresh AgentV2 per role would drop the session provider credentials;
+    the Primary stays, and tools / ``_execute_tool`` are scoped for ``run()``.
+    """
+
+    def __init__(self, spec: AgentSpec, *, session: Session, primary: Any) -> None:
+        self._spec = spec
+        self._session = session
+        self._primary = primary
+        self._registry = AgentRuntime._build_scoped_registry(spec.tools)
+        session.agent_runtimes[spec.role] = self
+
+    @property
+    def spec(self) -> AgentSpec:
+        return self._spec
+
+    @property
+    def registry(self) -> ToolRegistry:
+        return self._registry
+
+    async def run(self, task: TaskRequest) -> TaskResult:
+        prompt = str(getattr(task, "prompt", None) or task)
+        allowed = None if self._spec.tools is None else frozenset(self._spec.tools)
+        agent = self._primary
+        previous = getattr(agent, "_role_tool_allowlist", None)
+        original_execute = getattr(agent, "_execute_tool", None)
+        agent._role_tool_allowlist = allowed
+        if callable(original_execute) and allowed is not None:
+
+            async def _guarded(name: str, args: dict, **kwargs: Any) -> str:
+                if name not in allowed:
+                    return f"[blocked: role {self._spec.role} may not use {name}]"
+                return await original_execute(name, args, **kwargs)
+
+            agent._execute_tool = _guarded
+        try:
+            raw = await agent.run(prompt, mode="build")
+        finally:
+            agent._role_tool_allowlist = previous
+            if callable(original_execute):
+                agent._execute_tool = original_execute
+        return TaskResult(
+            request_id=str(getattr(task, "request_id", "") or ""),
+            child_session_id=f"{self._session.session_id}:{self._spec.role}",
+            status=ChildStatus.COMPLETED,
+            summary=str(raw or ""),
+        )

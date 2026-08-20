@@ -5053,6 +5053,13 @@ class AgentV2:
         if orchestrator is None:
             return []
         tools = list(orchestrator.get_all().values())
+        role_allow = getattr(self, "_role_tool_allowlist", None)
+        if role_allow is not None:
+            tools = [
+                tool
+                for tool in tools
+                if getattr(tool, "name", "") in role_allow
+            ]
         if getattr(self._memory, "_rag_enabled", False):
             tools = list(tools)
         else:
@@ -5177,6 +5184,9 @@ class AgentV2:
                 f"[blocked: plan mode is read-only; "
                 f"{name} was not executed]"
             )
+        role_allow = getattr(self, "_role_tool_allowlist", None)
+        if role_allow is not None and name not in role_allow:
+            return f"[blocked: role tool {name} is not allowed]"
         orchestrator = getattr(self, "_tool_orchestrator", None)
         if orchestrator is None or not callable(
             getattr(orchestrator, "execute_tool", None)

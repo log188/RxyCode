@@ -39,6 +39,9 @@ reliable. GitHub Release **v1.2.11** publishes **one** asset:
   Coordinator dispatches roles through the live AgentV2 instead of a stub.
   When `agents.enabled=false` (the default), ordinary prompts skip ModeRouter
   so concurrent sessions and `session/interrupt` keep AgentV2 latency.
+- Expert-team `form_team` binds a per-role `LiveRoleRuntime` so architect
+  cannot `write`/`edit`/`patch`. `ChildStatus.COMPLETED` now advances SOP
+  (Python 3.11+ `str(enum)` is not `completed`).
 - `software_dev` plan stage no longer requires a verbatim `expected_output`
   match (`goal_satisfied`) before implement.
 - Expert-team `delegate_request` prompt now has a `<ROLE>` section; architect /

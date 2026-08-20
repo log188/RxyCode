@@ -24,7 +24,7 @@ from typing import Any, Callable, Protocol
 from RxyCode.RxyCode1_1_0.core.agents.blackboard import Blackboard
 from RxyCode.RxyCode1_1_0.core.agents.budget import BudgetExceeded, BudgetGuard
 from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
-from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
+from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime, LiveRoleRuntime
 from RxyCode.RxyCode1_1_0.core.agents.team_prompt import compact_summary
 from RxyCode.RxyCode1_1_0.core.prompts.templates import DELEGATE_REQUEST_TEMPLATE
 from RxyCode.RxyCode1_1_0.protocol.subagents import ContextEnvelope
@@ -184,10 +184,25 @@ class Coordinator:
         self.decided_by = "heuristic"
 
     def form_team(self, team: TeamSpec) -> TeamSpec:
-        """只有团长能建团。"""
+        """只有团长能建团。 Bind per-role runtimes when a live Primary is present."""
         validate_team(team)
+        if not self._runtimes:
+            self._runtimes = self._live_runtimes(team)
         self._emit_team_created(team)
         return team
+
+    def _live_runtimes(self, team: TeamSpec) -> dict[str, Any]:
+        primary = getattr(self._session, "_active_agent", None)
+        if primary is None:
+            return {}
+        bound: dict[str, Any] = {}
+        for member in team.members:
+            if member.mechanical:
+                continue
+            bound[member.role] = LiveRoleRuntime(
+                member, session=self._session, primary=primary
+            )
+        return bound
 
     def member_form_team(self, _member: AgentSpec, _team: TeamSpec) -> None:
         raise MemberForbiddenError("members may not create teams")
@@ -433,19 +448,18 @@ class Coordinator:
         runtime = self._runtimes.get(stage.role)
         if runtime is None:
             agent = getattr(self._session, "_active_agent", None)
-            run = getattr(agent, "run", None)
-            if callable(run):
-                raw = await run(packet.goal, mode="build")
+            if agent is not None:
+                member = next(m for m in team.members if m.role == stage.role)
+                runtime = LiveRoleRuntime(
+                    member, session=self._session, primary=agent
+                )
+                self._runtimes[stage.role] = runtime
+            else:
                 return StageOutcome(
                     ok=True,
-                    answer=compact_summary(str(raw or "")),
+                    answer=compact_summary(f"[{stage.role}] {stage.expected_output}"),
                     packet=packet,
                 )
-            return StageOutcome(
-                ok=True,
-                answer=compact_summary(f"[{stage.role}] {stage.expected_output}"),
-                packet=packet,
-            )
         from protocol.subagents import TaskRequest
 
         child = await runtime.run(
@@ -455,10 +469,16 @@ class Coordinator:
                 prompt=packet.goal,
             )
         )
-        ok = getattr(child, "status", None)
+        status = getattr(child, "status", None)
+        status_value = str(getattr(status, "value", status) or "").lower()
+        ok = (
+            status is None
+            or status is True
+            or status_value in {"completed", "ok", "succeeded", "success"}
+        )
         summary = getattr(child, "summary", "") or getattr(child, "answer", "")
         return StageOutcome(
-            ok=ok is None or str(ok).endswith("completed") or ok is True,
+            ok=ok,
             answer=compact_summary(str(summary)),
             packet=packet,
         )
