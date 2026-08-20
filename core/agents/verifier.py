@@ -42,7 +42,7 @@ CHECK_LEVELS: dict[str, str] = {
 #: Contract F11 software_dev.yaml must copy into each stage's verify_before_next.
 #: implement mixes low-level gates with the high-level goal check.
 SOFTWARE_DEV_STAGE_CHECKS: dict[str, list[str]] = {
-    "plan": ["goal_satisfied"],
+    "plan": [],
     "implement": [
         "diff_non_empty",
         "files_exist",

@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.2.11] - 2026-08-20
+## [1.2.11] - 2026-08-21
 
 ### Highlights
 
@@ -33,6 +33,12 @@ reliable. GitHub Release **v1.2.11** publishes **one** asset:
 
 ### Fixed
 
+- Stdio OpenTUI and Desktop now route `/team`, `/team-multi`, `/solo`,
+  `/why-mode`, and `/agents` through `Session.prompt`, so expert teams
+  actually start. Builtin `software_dev` is listed by `team/list`.
+  Coordinator dispatches roles through the live AgentV2 instead of a stub.
+- `software_dev` plan stage no longer requires a verbatim `expected_output`
+  match (`goal_satisfied`) before implement.
 - Expert-team `delegate_request` prompt now has a `<ROLE>` section; architect /
   coder / auditor / delegate stages have few-shot examples.
 - Integration main-chain test no longer patches the removed

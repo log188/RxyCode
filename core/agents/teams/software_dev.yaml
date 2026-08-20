@@ -8,6 +8,7 @@
 #   - 只有 auditor 能同时咨询 architect 和 coder
 #
 # 工具名以 2026-08-18 勘误为准：read / ls（不是 read_file / list_dir）。
+# plan 不跑 goal_satisfied（方案不会逐字复述 expected_output）。
 # implement 的 verify_before_next 含 F8 低层 + 高层 goal_satisfied。
 
 name: software_dev
