@@ -242,7 +242,8 @@ class Session:
         """Cheap read of agents.enabled. Missing config means the default (off).
 
         Avoid ``load_config()`` here: it creates a file on first use and would
-        delay stub hangs / ``session/interrupt`` on a cold worker.
+        delay stub hangs / ``session/interrupt`` on a cold worker. Parse the
+        YAML text without importing yaml (lazy-import budget).
         """
         try:
             from RxyCode.RxyCode1_1_0.config.settings import get_config_path
@@ -250,12 +251,20 @@ class Session:
             path = get_config_path()
             if not path.exists():
                 return False
-            import yaml
-
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            if not isinstance(raw, dict):
-                return False
-            return bool((raw.get("agents") or {}).get("enabled", False))
+            in_agents = False
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("agents:"):
+                    in_agents = True
+                    continue
+                if in_agents and line[:1] not in " \t" and line.strip():
+                    in_agents = False
+                if not in_agents:
+                    continue
+                stripped = line.lstrip()
+                if stripped.startswith("enabled:"):
+                    value = stripped.split(":", 1)[1].split("#", 1)[0].strip().lower()
+                    return value in {"true", "yes", "1"}
+            return False
         except Exception:
             return False
 
