@@ -178,7 +178,7 @@ class AgentRuntime:
             ),
             EffectiveTaskPolicy(
                 budget=BudgetSpec(
-                    max_steps=40,
+                    max_steps=80 if _role_can_write(spec) else 40,
                     max_tokens=max(int(spec.token_budget or 0), 120_000),
                     max_wall_time_seconds=max(int(spec.timeout_s or 300), 300),
                 ),

@@ -52,6 +52,8 @@ members:
       - 不得偏离方案；方案有问题就咨询 architect
       - 不得修改测试文件的断言来让测试通过
       - "若方案文件清单没有本端路径，只输出 SKIP: no work for this surface，禁止发明无关 UI"
+      - 只写前端文件（html/css/js 或方案里的 frontend/）。禁止写 backend/、tests/、*.py 服务
+      - 无前端工作时立即 SKIP，不要探索父目录
     prompt_stage: agent_frontend_coder
     tools: null
     may_consult: [architect, pm]
@@ -69,6 +71,9 @@ members:
       - 不得偏离方案；方案有问题就咨询 architect
       - 不得修改测试文件的断言来让测试通过
       - "若方案文件清单没有本端路径，只输出 SKIP: no work for this surface，禁止发明无关服务"
+      - 只用标准库。禁止 Flask/FastAPI/Django，除非题目点名
+      - 禁止写 frontend/ 与 tests/。路径用 pathlib 相对本文件，禁止 cwd 相对的 ../frontend
+      - 无后端工作时立即 SKIP，不要探索父目录
     prompt_stage: agent_backend_coder
     tools: null
     may_consult: [architect, pm]
@@ -85,6 +90,9 @@ members:
     constraints:
       - 只写 tests/ 下的测试，不得为了过门去改产品代码
       - 禁止把断言改成 assert True
+      - 先读已落地的实现再写测试，禁止发明题目没要求的 API（例如 median、count_skipped）
+      - 禁止依赖未安装的第三方库；测试必须能在工作区根目录 pytest 通过
+      - 判断「不得写到 home」时不要用路径 startswith(Path.home())：pytest tmp 在用户 Temp 下会误伤
     prompt_stage: agent_tester
     tools: [read, grep, ls, write, edit, bash]
     may_consult: [architect, frontend_coder, backend_coder]

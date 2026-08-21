@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import subprocess
 import time
 from pathlib import Path
 
@@ -78,6 +79,18 @@ def test_lint_clean_pass_and_fail(tmp_path: Path) -> None:
     (tmp_path / "bad.py").write_text("import os\n", encoding="utf-8")
     assert _run(tmp_path, ["lint_clean"], claimed_files=["ok.py"]).passed
     assert not _run(tmp_path, ["lint_clean"], claimed_files=["bad.py"]).passed
+
+
+def test_lint_clean_timeout_is_not_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "ok.py").write_text("x = 1\n", encoding="utf-8")
+
+    def _hang(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="ruff", timeout=15)
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    assert _run(tmp_path, ["lint_clean"], claimed_files=["ok.py"]).passed
 
 
 def test_tests_pass_pass_and_fail(tmp_path: Path) -> None:

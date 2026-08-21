@@ -255,23 +255,26 @@ class Coordinator:
                     add()
                 for role in self._stage_roles(stage):
                     self._precheck(stage, team, role=role)
-                self._emit(
-                    TeamEvent(
-                        session_id=self._session.session_id,
-                        role=stage.role,
-                        stage=stage.name,
-                        phase="stage_started",
+                delegated = None
+                for role in self._stage_roles(stage):
+                    self._emit(
+                        TeamEvent(
+                            session_id=self._session.session_id,
+                            role=role,
+                            stage=stage.name,
+                            phase="stage_started",
+                        )
                     )
-                )
-                self._emit_role_progress(stage.role, stage.name)
-                delegated = self._record_span(
-                    "delegate",
-                    kind="delegate",
-                    role=stage.role,
-                    stage=stage.name,
-                )
-                self._last_delegate_id = delegated.span_id
-                self._delegate_by_stage[stage.name] = delegated.span_id
+                    self._emit_role_progress(role, stage.name)
+                    delegated = self._record_span(
+                        "delegate",
+                        kind="delegate",
+                        role=role,
+                        stage=stage.name,
+                    )
+                if delegated is not None:
+                    self._last_delegate_id = delegated.span_id
+                    self._delegate_by_stage[stage.name] = delegated.span_id
                 result = await self._dispatch(stage, team, user_input)
                 result = self._apply_verify_gates(stage, result)
                 if stage.verify_before_next:
@@ -280,7 +283,7 @@ class Coordinator:
                         kind="verify",
                         role=stage.role,
                         stage=stage.name,
-                        parent_id=delegated.span_id,
+                        parent_id=delegated.span_id if delegated is not None else "",
                         detail="; ".join(stage.verify_before_next),
                         ok=result.ok,
                     )
@@ -299,7 +302,7 @@ class Coordinator:
                         kind="audit",
                         role="auditor",
                         stage=stage.name,
-                        parent_id=delegated.span_id,
+                        parent_id=delegated.span_id if delegated is not None else "",
                         ok=result.ok,
                     )
                     self._emit(
@@ -316,6 +319,9 @@ class Coordinator:
                 if nxt is None:
                     break
         except BudgetExceeded as exc:
+            self._finish_root(root)
+            return self._partial_result(sop, team, exc)
+        except Exception as exc:
             self._finish_root(root)
             return self._partial_result(sop, team, exc)
         self._finish_root(root)
@@ -363,12 +369,13 @@ class Coordinator:
         except Exception:
             return 0.0
 
-    def _partial_result(self, sop: SopMachine, team: TeamSpec, exc: BudgetExceeded) -> str:
+    def _partial_result(self, sop: SopMachine, team: TeamSpec, exc: BaseException) -> str:
         done = len(sop.history())
         total = max(1, len(team.stages))
         body = self._synthesize(sop.history())
+        reason = "超出预算" if isinstance(exc, BudgetExceeded) else "子角色异常"
         return (
-            f"{body}\n\n因为超出预算而提前停止，已完成 {done}/{total} 个阶段。 "
+            f"{body}\n\n因为{reason}而提前停止，已完成 {done}/{total} 个阶段。 "
             f"({exc})"
         )
 
@@ -411,10 +418,25 @@ class Coordinator:
     def _apply_verify_gates(self, stage: SopStage, result: StageOutcome) -> StageOutcome:
         workspace = Path(getattr(self._session, "workspace_root", ".") or ".")
         on_disk = self._workspace_files()
-        claimed = self._paths_in_text(
-            result.answer,
-            *self.blackboard.view(list(stage.context_keys)).values(),
-        )
+        if stage.name == "implement":
+            # Plan lists tests/; implement must not fail files_exist on them.
+            claimed = [
+                path
+                for path in self._paths_in_text(result.answer)
+                if not Path(path).name.startswith("test_")
+                and not path.replace("\\", "/").startswith("tests/")
+            ] or [
+                path
+                for path in on_disk
+                if not Path(path).name.startswith("test_")
+                and not path.replace("\\", "/").startswith("tests/")
+            ]
+        else:
+            claimed = self._paths_in_text(
+                result.answer,
+                *self.blackboard.view(list(stage.context_keys)).values(),
+            )
+        gate_files = claimed or on_disk
         if not result.diff.strip():
             result.diff = "\n".join(on_disk)
         digest = subject_hash(result.answer, result.diff)
@@ -427,11 +449,11 @@ class Coordinator:
                 stage_output=result.answer,
                 expected_output=stage.expected_output,
                 diff=result.diff,
-                claimed_files=claimed or on_disk,
-                python_files=[name for name in (claimed or on_disk) if name.endswith(".py")],
+                claimed_files=gate_files,
+                python_files=[name for name in gate_files if name.endswith(".py")],
                 pytest_targets=[
                     name
-                    for name in (claimed or on_disk)
+                    for name in gate_files
                     if Path(name).name.startswith("test_")
                 ],
             )
@@ -516,6 +538,13 @@ class Coordinator:
             coordinator_history=None,
         )
 
+    @staticmethod
+    def _outcome_counts_as_ok(item: StageOutcome) -> bool:
+        if item.ok:
+            return True
+        blob = (item.answer or "").upper()
+        return "SKIP:" in blob and "NO WORK" in blob
+
     async def _dispatch(self, stage: SopStage, team: TeamSpec, user_input: str) -> StageOutcome:
         roles = self._stage_roles(stage)
         if len(roles) == 1:
@@ -537,7 +566,7 @@ class Coordinator:
                 )
             else:
                 outcomes.append(item)
-        ok = all(item.ok for item in outcomes)
+        ok = all(self._outcome_counts_as_ok(item) for item in outcomes)
         answer = "\n\n".join(
             f"[{item.packet.to_role if item.packet else '?'}]\n{item.answer}"
             for item in outcomes
@@ -586,13 +615,21 @@ class Coordinator:
                 )
         from protocol.subagents import TaskRequest
 
-        child = await runtime.run(
-            TaskRequest(
-                parent_session_id=self._session.session_id,
-                agent_id=role,
-                prompt=packet.goal,
+        try:
+            child = await runtime.run(
+                TaskRequest(
+                    parent_session_id=self._session.session_id,
+                    agent_id=role,
+                    prompt=packet.goal,
+                )
             )
-        )
+        except Exception as exc:
+            return StageOutcome(
+                ok=False,
+                answer="",
+                error=f"{role}: {exc}",
+                packet=packet,
+            )
         status = getattr(child, "status", None)
         status_value = str(getattr(status, "value", status) or "").lower()
         ok = (

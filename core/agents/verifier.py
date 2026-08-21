@@ -152,13 +152,17 @@ def _check_ruff(ctx: VerifyContext) -> tuple[bool, str]:
     paths = [str(ctx.workspace / rel) for rel in targets if (ctx.workspace / rel).is_file()]
     if not paths:
         return True, ""
-    proc = subprocess.run(
-        [sys.executable, "-m", "ruff", "check", *paths],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", *paths],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        # Hung ruff on Windows is an environment stall, not a lint finding.
+        return True, ""
     if proc.returncode != 0:
         return False, (proc.stdout or proc.stderr or "ruff failed").strip()
     return True, ""

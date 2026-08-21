@@ -8,7 +8,7 @@ import time
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from RxyCode.RxyCode1_1_0.core.agents.coordinator import Coordinator, PrecheckError
+from RxyCode.RxyCode1_1_0.core.agents.coordinator import Coordinator, PrecheckError, StageOutcome
 from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.spec import validate_team
 from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
@@ -20,6 +20,7 @@ from RxyCode.RxyCode1_1_0.protocol.agents import (
     AgentSpec,
     ConsultRequest,
     SopStage,
+    TeamEvent,
     TeamSpec,
     VerdictRecord,
 )
@@ -380,6 +381,17 @@ def test_role_runtime_child_token_budget_is_team_sized() -> None:
     runtime = AgentRuntime(spec, session=session)
     assert runtime.child.budget.budget.max_tokens >= 120_000
     assert runtime.child.budget.budget.max_wall_time_seconds >= 300
+    writer = AgentRuntime(
+        AgentSpec(
+            role="backend_coder",
+            display_name="b",
+            goal="code",
+            prompt_stage="agent_backend_coder",
+            tools=None,
+        ),
+        session=session,
+    )
+    assert writer.child.budget.budget.max_steps >= 80
 
 
 def test_session_prompt_team_binds_agent_runtime() -> None:
@@ -454,3 +466,108 @@ def test_parallel_audit_dispatches_three_roles() -> None:
     assert "security_auditor" in result.answer
     assert "quality_auditor" in result.answer
     assert "maintainability_auditor" in result.answer
+
+
+def test_parallel_implement_emits_stage_started_for_both_coders() -> None:
+    events: list[object] = []
+    gate = _Stamp()
+    coord = Coordinator(
+        Session(session_id="ses-par-impl", workspace_root=".", emit=events.append),
+        verifier=gate,
+        emit=events.append,
+    )
+    gate.coord = coord
+    coord.verdict_allows = lambda _digest: True  # type: ignore[method-assign]
+    asyncio.run(coord.run_team(load_builtin_team(), "health"))
+    started = [
+        (ev.role, ev.stage)
+        for ev in events
+        if isinstance(ev, TeamEvent) and ev.phase == "stage_started"
+    ]
+    assert ("frontend_coder", "implement") in started
+    assert ("backend_coder", "implement") in started
+    assert ("security_auditor", "audit") in started
+    assert ("quality_auditor", "audit") in started
+    assert ("maintainability_auditor", "audit") in started
+
+
+def test_parallel_implement_skip_counts_as_ok() -> None:
+    from protocol.subagents import ChildStatus, TaskResult
+
+    class _Rec:
+        def __init__(self, role: str) -> None:
+            self.role = role
+
+        async def run(self, task: object) -> TaskResult:
+            if self.role == "frontend_coder":
+                return TaskResult(
+                    request_id="1",
+                    child_session_id=self.role,
+                    status=ChildStatus.CANCELLED,
+                    summary="SKIP: no work for this surface",
+                )
+            return TaskResult(
+                request_id="1",
+                child_session_id=self.role,
+                status=ChildStatus.COMPLETED,
+                summary="wrote auth/routes.py",
+            )
+
+    team = load_builtin_team()
+    coord = _coord()
+    coord._runtimes.update(
+        {
+            "frontend_coder": _Rec("frontend_coder"),
+            "backend_coder": _Rec("backend_coder"),
+        }
+    )
+    implement = next(stage for stage in team.stages if stage.name == "implement")
+    result = asyncio.run(coord._dispatch(implement, team, "login"))
+    assert result.ok is True
+    assert "SKIP" in result.answer
+
+
+def test_dispatch_one_swallows_child_runtime_errors() -> None:
+    class _Boom:
+        async def run(self, _task: object) -> None:
+            raise RuntimeError("recovery exhausted")
+
+    team = load_builtin_team()
+    coord = _coord()
+    coord._runtimes["pm"] = _Boom()
+    clarify = next(stage for stage in team.stages if stage.name == "clarify")
+    out = asyncio.run(coord._dispatch_one(clarify, team, "login", "pm"))
+    assert out.ok is False
+    assert "recovery exhausted" in out.error
+
+
+def test_run_team_child_exception_returns_partial() -> None:
+    class _Boom:
+        async def run(self, _task: object) -> None:
+            raise RuntimeError("recovery exhausted")
+
+    coord = _coord()
+    coord._runtimes["pm"] = _Boom()
+    text = asyncio.run(coord.run_team(load_builtin_team(), "login"))
+    assert "clarify" in text
+
+
+def test_implement_files_exist_ignores_tests_listed_in_plan(tmp_path) -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier
+
+    auth = tmp_path / "auth"
+    auth.mkdir()
+    (auth / "routes.py").write_text(
+        "def login():\n    return {'token': 'x'}\n", encoding="utf-8"
+    )
+    coord = Coordinator(
+        Session(session_id="ses-files", workspace_root=str(tmp_path), emit=lambda _n: None),
+        verifier=MechanicalVerifier(),
+    )
+    team = load_builtin_team()
+    implement = next(stage for stage in team.stages if stage.name == "implement")
+    coord.blackboard.put("spec", "auth/routes.py tests/test_login.py", "pm")
+    coord.blackboard.put("plan", "files: auth/routes.py tests/test_login.py", "architect")
+    result = StageOutcome(ok=True, answer="wrote auth/routes.py", diff="auth/routes.py")
+    out = coord._apply_verify_gates(implement, result)
+    assert out.ok is True, out.error
