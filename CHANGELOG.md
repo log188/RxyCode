@@ -37,6 +37,10 @@ reliable. GitHub Release **v1.2.11** publishes **one** asset:
 
 ### Fixed
 
+- Clarify/plan no longer stall-replan when a child hits wall-clock after
+  already producing a non-empty spec or file-level plan. Architect prompt
+  treats an empty workspace as greenfield and must not browse `data/`
+  or parent directories.
 - Stdio OpenTUI and Desktop now route `/team`, `/team-multi`, `/solo`,
   `/why-mode`, and `/agents` through `Session.prompt`, so expert teams
   actually start. Builtin `software_dev` is listed by `team/list`.

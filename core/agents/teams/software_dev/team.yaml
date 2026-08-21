@@ -33,6 +33,7 @@ members:
       - 不要写实现代码，只产出方案
       - 方案必须列出要改哪些文件、每个文件改什么
       - 纯后端任务不得要求无关前端；纯前端任务不得要求无关服务
+      - 工作区空着就是从零实现。不要读工作区外的 data/、checkpoints、父目录；根据规格直接写方案
     prompt_stage: agent_architect
     tools: [read, grep, ls]
     may_consult: [pm]

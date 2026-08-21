@@ -601,10 +601,21 @@ class Coordinator:
             or status_value in {"completed", "ok", "succeeded", "success"}
         )
         summary = getattr(child, "summary", "") or getattr(child, "answer", "")
+        # Clarify/plan are text stages: a non-empty plan is progress even if the
+        # child later hits wall-clock. Write stages keep strict COMPLETED so a
+        # timed-out implement cannot skip file gates.
+        if (
+            not ok
+            and str(summary).strip()
+            and not stage.verify_before_next
+            and not self._stage_needs_write(stage)
+        ):
+            ok = True
         return StageOutcome(
             ok=ok,
             answer=compact_summary(str(summary)),
             packet=packet,
+            error="" if ok else (str(getattr(getattr(child, "error", None), "message", "") or status_value)),
         )
 
     def consult(
