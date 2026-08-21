@@ -39,9 +39,10 @@ CHECK_LEVELS: dict[str, str] = {
     "goal_satisfied": "high",
 }
 
-#: Contract F11 software_dev.yaml must copy into each stage's verify_before_next.
+#: Contract: software_dev/team.yaml must copy into each stage's verify_before_next.
 #: implement mixes low-level gates with the high-level goal check.
 SOFTWARE_DEV_STAGE_CHECKS: dict[str, list[str]] = {
+    "clarify": [],
     "plan": [],
     "implement": [
         "diff_non_empty",
@@ -50,7 +51,15 @@ SOFTWARE_DEV_STAGE_CHECKS: dict[str, list[str]] = {
         "lint_clean",
         "goal_satisfied",
     ],
+    "test": ["files_exist", "python_parses"],
+    "verify": [
+        "files_exist",
+        "python_parses",
+        "lint_clean",
+        "tests_pass",
+    ],
     "audit": ["goal_satisfied"],
+    "document": [],
 }
 
 _FORBIDDEN_DEFAULT = ("credentials.yaml", ".env", "data/")
@@ -204,20 +213,20 @@ def _check_diff_non_empty(ctx: VerifyContext) -> tuple[bool, str]:
 
 
 def _check_goal_satisfied(ctx: VerifyContext) -> tuple[bool, str]:
-    """High-level goal check (MAST FC3): spec/rules present in the artifact."""
+    """High-level goal check (MAST FC3).
+
+    Explicit ``goal_rules`` stay substring checks. Template ``expected_output``
+    is not matched verbatim (that stalled live teams on clarify/plan).
+    """
     rules = [rule.strip() for rule in ctx.goal_rules if rule.strip()]
-    if not rules:
-        rules = [
-            line.strip()
-            for line in ctx.expected_output.splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
-    if not rules:
-        return False, "goal_satisfied needs goal_rules or expected_output"
-    missing = [rule for rule in rules if rule.lower() not in ctx.stage_output.lower()]
-    if missing:
-        return False, f"high-level goal not met: {missing}"
-    return True, ""
+    if rules:
+        missing = [rule for rule in rules if rule.lower() not in ctx.stage_output.lower()]
+        if missing:
+            return False, f"high-level goal not met: {missing}"
+        return True, ""
+    if (ctx.stage_output or "").strip():
+        return True, ""
+    return False, "goal_satisfied: empty stage output"
 
 
 class MechanicalVerifier:

@@ -14,7 +14,7 @@ RxyCode can run a coordinator-led expert team instead of a single AgentV2 loop. 
 - **ModeRouter** — solo vs team. With the flag off, the router always stays solo.
 - **JSON-RPC worker bridge** — optional external workers.
 
-A builtin SOP is `core/agents/teams/software_dev.yaml`.
+A builtin SOP is `core/agents/teams/software_dev/team.yaml`.
 
 ## When not to use it
 

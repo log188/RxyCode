@@ -17,6 +17,8 @@ F8 MechanicalVerifier 是默认机械门；F9 BudgetGuard 仍可注入（缺省 
 
 from __future__ import annotations
 
+import asyncio
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -24,12 +26,12 @@ from typing import Any, Callable, Protocol
 from RxyCode.RxyCode1_1_0.core.agents.blackboard import Blackboard
 from RxyCode.RxyCode1_1_0.core.agents.budget import BudgetExceeded, BudgetGuard
 from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
-from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime, LiveRoleRuntime
+from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.team_prompt import compact_summary
 from RxyCode.RxyCode1_1_0.core.prompts.templates import DELEGATE_REQUEST_TEMPLATE
 from RxyCode.RxyCode1_1_0.protocol.subagents import ContextEnvelope
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
-from RxyCode.RxyCode1_1_0.core.agents.spec import validate_team
+from RxyCode.RxyCode1_1_0.core.agents.spec import AgentSpecError, validate_team
 from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier, subject_hash
 from RxyCode.RxyCode1_1_0.core.tracing import (
     Tracer,
@@ -49,9 +51,13 @@ from RxyCode.RxyCode1_1_0.protocol.notifications import AgentEvent, ProgressUpda
 _WRITE_TOOLS = frozenset({"write", "edit", "patch"})
 _WRITE_HINTS = ("write", "edit", "file", "patch", "写文件", "修改文件")
 _STAGE_LABELS = {
+    "clarify": "正在澄清需求",
     "plan": "正在制定方案",
     "implement": "正在实现",
+    "test": "正在编写测试",
+    "verify": "正在机械验证",
     "audit": "正在审计",
+    "document": "正在写文档",
 }
 
 
@@ -184,14 +190,14 @@ class Coordinator:
         self.decided_by = "heuristic"
 
     def form_team(self, team: TeamSpec) -> TeamSpec:
-        """只有团长能建团。 Bind per-role runtimes when a live Primary is present."""
+        """只有团长能建团。 Bind per-role AgentRuntime when a live Primary is present."""
         validate_team(team)
         if not self._runtimes:
-            self._runtimes = self._live_runtimes(team)
+            self._runtimes = self._bind_runtimes(team)
         self._emit_team_created(team)
         return team
 
-    def _live_runtimes(self, team: TeamSpec) -> dict[str, Any]:
+    def _bind_runtimes(self, team: TeamSpec) -> dict[str, Any]:
         primary = getattr(self._session, "_active_agent", None)
         if primary is None:
             return {}
@@ -199,9 +205,12 @@ class Coordinator:
         for member in team.members:
             if member.mechanical:
                 continue
-            bound[member.role] = LiveRoleRuntime(
-                member, session=self._session, primary=primary
-            )
+            try:
+                bound[member.role] = AgentRuntime(
+                    member, session=self._session, primary=primary
+                )
+            except AgentSpecError:
+                continue
         return bound
 
     def member_form_team(self, _member: AgentSpec, _team: TeamSpec) -> None:
@@ -244,7 +253,8 @@ class Coordinator:
                 add = getattr(self._budget, "add_delegation", None)
                 if callable(add):
                     add()
-                self._precheck(stage, team)
+                for role in self._stage_roles(stage):
+                    self._precheck(stage, team, role=role)
                 self._emit(
                     TeamEvent(
                         session_id=self._session.session_id,
@@ -369,11 +379,47 @@ class Coordinator:
         record = self._verdicts.get(digest)
         return bool(record and record.passed and record.subject_hash == digest)
 
+    def _workspace_files(self) -> list[str]:
+        root = Path(getattr(self._session, "workspace_root", ".") or ".")
+        found: list[str] = []
+        if not root.is_dir():
+            return found
+        # Never walk the RxyCode source tree when a test/session pointed here.
+        if (root / "core" / "agents").is_dir() and (root / "pyproject.toml").is_file():
+            return found
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            parts = path.parts
+            if any(part in {".git", "__pycache__", ".venv", "node_modules"} for part in parts):
+                continue
+            found.append(path.relative_to(root).as_posix())
+        return found
+
+    @staticmethod
+    def _paths_in_text(*blobs: str) -> list[str]:
+        found: list[str] = []
+        for blob in blobs:
+            for match in re.findall(
+                r"[\w./\\-]+\.(?:py|html|md|json|yml|yaml|txt)", blob or ""
+            ):
+                norm = match.replace("\\", "/")
+                if norm not in found:
+                    found.append(norm)
+        return found
+
     def _apply_verify_gates(self, stage: SopStage, result: StageOutcome) -> StageOutcome:
+        workspace = Path(getattr(self._session, "workspace_root", ".") or ".")
+        on_disk = self._workspace_files()
+        claimed = self._paths_in_text(
+            result.answer,
+            *self.blackboard.view(list(stage.context_keys)).values(),
+        )
+        if not result.diff.strip():
+            result.diff = "\n".join(on_disk)
         digest = subject_hash(result.answer, result.diff)
         if stage.verify_before_next:
             verifier = self._verifier or MechanicalVerifier()
-            workspace = Path(getattr(self._session, "workspace_root", ".") or ".")
             from RxyCode.RxyCode1_1_0.core.agents.verifier import VerifyContext
 
             ctx = VerifyContext(
@@ -381,6 +427,13 @@ class Coordinator:
                 stage_output=result.answer,
                 expected_output=stage.expected_output,
                 diff=result.diff,
+                claimed_files=claimed or on_disk,
+                python_files=[name for name in (claimed or on_disk) if name.endswith(".py")],
+                pytest_targets=[
+                    name
+                    for name in (claimed or on_disk)
+                    if Path(name).name.startswith("test_")
+                ],
             )
             try:
                 verdict = verifier.run(stage, result, ctx=ctx)
@@ -391,13 +444,28 @@ class Coordinator:
                 result.error = "; ".join(verdict.findings)
                 return result
         if stage.audit_after_verify and result.ok and not self.verdict_allows(digest):
-            if getattr(self._session, "_active_agent", None) is None:
+            live = getattr(self._session, "_active_agent", None) is not None
+            if self._verifier is None and not live:
                 result.ok = False
                 result.error = "missing or stale VerdictRecord for current subject_hash"
         return result
 
-    def _precheck(self, stage: SopStage, team: TeamSpec) -> None:
-        member = next(m for m in team.members if m.role == stage.role)
+    @staticmethod
+    def _stage_roles(stage: SopStage) -> list[str]:
+        extras = list(stage.parallel_members or ())
+        if extras:
+            seen: list[str] = []
+            for role in extras:
+                if role not in seen:
+                    seen.append(role)
+            return seen
+        return [stage.role]
+
+    def _precheck(
+        self, stage: SopStage, team: TeamSpec, *, role: str | None = None
+    ) -> None:
+        target = role or stage.role
+        member = next(m for m in team.members if m.role == target)
         if not self._stage_needs_write(stage):
             return
         if member.tools is None:
@@ -413,8 +481,16 @@ class Coordinator:
         blob = f"{stage.name} {stage.expected_output} {stage.output_key}".lower()
         return any(hint in blob for hint in _WRITE_HINTS)
 
-    def _packet(self, stage: SopStage, team: TeamSpec, user_input: str) -> DispatchPacket:
-        member = next(m for m in team.members if m.role == stage.role)
+    def _packet(
+        self,
+        stage: SopStage,
+        team: TeamSpec,
+        user_input: str,
+        *,
+        role: str | None = None,
+    ) -> DispatchPacket:
+        target = role or stage.role
+        member = next(m for m in team.members if m.role == target)
         context = self.blackboard.view(list(stage.context_keys))
         refs = [f"blackboard://{key}" for key in stage.context_keys]
         tools = "all" if member.tools is None else ",".join(member.tools)
@@ -430,7 +506,7 @@ class Coordinator:
             attachments=tuple(refs),
         )
         return DispatchPacket(
-            to_role=stage.role,
+            to_role=target,
             goal=goal,
             expected_output=stage.expected_output,
             tools=None if member.tools is None else list(member.tools),
@@ -441,23 +517,71 @@ class Coordinator:
         )
 
     async def _dispatch(self, stage: SopStage, team: TeamSpec, user_input: str) -> StageOutcome:
-        packet = self._packet(stage, team, user_input)
-        self.progress_ledger.delegations.append(
-            {"role": stage.role, "stage": stage.name}
+        roles = self._stage_roles(stage)
+        if len(roles) == 1:
+            return await self._dispatch_one(stage, team, user_input, roles[0])
+        gathered = await asyncio.gather(
+            *[self._dispatch_one(stage, team, user_input, role) for role in roles],
+            return_exceptions=True,
         )
-        runtime = self._runtimes.get(stage.role)
-        if runtime is None:
-            agent = getattr(self._session, "_active_agent", None)
-            if agent is not None:
-                member = next(m for m in team.members if m.role == stage.role)
-                runtime = LiveRoleRuntime(
-                    member, session=self._session, primary=agent
+        outcomes: list[StageOutcome] = []
+        for role, item in zip(roles, gathered):
+            if isinstance(item, BaseException):
+                outcomes.append(
+                    StageOutcome(
+                        ok=False,
+                        answer="",
+                        error=f"{role}: {item}",
+                        packet=self._packet(stage, team, user_input, role=role),
+                    )
                 )
-                self._runtimes[stage.role] = runtime
             else:
+                outcomes.append(item)
+        ok = all(item.ok for item in outcomes)
+        answer = "\n\n".join(
+            f"[{item.packet.to_role if item.packet else '?'}]\n{item.answer}"
+            for item in outcomes
+        )
+        return StageOutcome(
+            ok=ok,
+            answer=compact_summary(answer),
+            error="; ".join(item.error for item in outcomes if item.error),
+            packet=outcomes[0].packet if outcomes else None,
+        )
+
+    async def _dispatch_one(
+        self,
+        stage: SopStage,
+        team: TeamSpec,
+        user_input: str,
+        role: str,
+    ) -> StageOutcome:
+        packet = self._packet(stage, team, user_input, role=role)
+        self.progress_ledger.delegations.append(
+            {"role": role, "stage": stage.name}
+        )
+        runtime = self._runtimes.get(role)
+        if runtime is None:
+            member = next(m for m in team.members if m.role == role)
+            if member.mechanical:
                 return StageOutcome(
                     ok=True,
-                    answer=compact_summary(f"[{stage.role}] {stage.expected_output}"),
+                    answer=compact_summary(f"[{role}] mechanical {stage.expected_output}"),
+                    packet=packet,
+                )
+            primary = getattr(self._session, "_active_agent", None)
+            if primary is not None:
+                try:
+                    runtime = AgentRuntime(
+                        member, session=self._session, primary=primary
+                    )
+                    self._runtimes[role] = runtime
+                except AgentSpecError:
+                    runtime = None
+            if runtime is None:
+                return StageOutcome(
+                    ok=True,
+                    answer=compact_summary(f"[{role}] {stage.expected_output}"),
                     packet=packet,
                 )
         from protocol.subagents import TaskRequest
@@ -465,7 +589,7 @@ class Coordinator:
         child = await runtime.run(
             TaskRequest(
                 parent_session_id=self._session.session_id,
-                agent_id=stage.role,
+                agent_id=role,
                 prompt=packet.goal,
             )
         )

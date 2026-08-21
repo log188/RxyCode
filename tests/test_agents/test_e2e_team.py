@@ -9,6 +9,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import Coordinator, PrecheckError
+from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.spec import validate_team
 from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
 from RxyCode.RxyCode1_1_0.core.agents.verifier import SOFTWARE_DEV_STAGE_CHECKS, subject_hash
@@ -77,12 +78,50 @@ def test_team_loads_and_validates() -> None:
     team = load_builtin_team("software_dev")
     validate_team(team)
     assert team.name == "software_dev"
-    assert {m.role for m in team.members} >= {"architect", "coder", "verifier", "auditor"}
+    roles = {m.role for m in team.members}
+    assert roles >= {
+        "pm",
+        "architect",
+        "frontend_coder",
+        "backend_coder",
+        "tester",
+        "verifier",
+        "security_auditor",
+        "quality_auditor",
+        "maintainability_auditor",
+        "doc",
+    }
+    assert {s.name for s in team.stages} >= {
+        "clarify",
+        "plan",
+        "implement",
+        "test",
+        "verify",
+        "audit",
+        "document",
+    }
+    implement = next(s for s in team.stages if s.name == "implement")
+    assert set(implement.parallel_members or []) == {"frontend_coder", "backend_coder"}
+    audit = next(s for s in team.stages if s.name == "audit")
+    assert set(audit.parallel_members or []) == {
+        "security_auditor",
+        "quality_auditor",
+        "maintainability_auditor",
+    }
+    assert team.extra.get("ecosystem.disable_model_invocation") is True
 
 
 def test_prompt_stages_exist() -> None:
     keys = set(list_stages())
-    assert {"agent_architect", "agent_coder", "agent_auditor"} <= keys
+    assert {
+        "agent_architect",
+        "agent_coder",
+        "agent_auditor",
+        "agent_pm",
+        "agent_frontend_coder",
+        "agent_backend_coder",
+        "agent_tester",
+    } <= keys
 
 
 def test_yaml_tool_names_are_real() -> None:
@@ -95,11 +134,17 @@ def test_yaml_tool_names_are_real() -> None:
 
 def test_auditor_cannot_edit_files() -> None:
     team = load_builtin_team()
-    auditor = next(m for m in team.members if m.role == "auditor")
-    assert _WRITE.isdisjoint(auditor.tools or [])
+    auditors = [
+        m
+        for m in team.members
+        if m.role.endswith("auditor") or m.role in {"pm", "architect"}
+    ]
+    assert auditors
+    for auditor in auditors:
+        assert _WRITE.isdisjoint(auditor.tools or []), auditor.role
     stage = SopStage(
         name="hack",
-        role="auditor",
+        role="quality_auditor",
         expected_output="write the file",
         output_key="hack",
     )
@@ -167,14 +212,19 @@ def test_architect_dispatch_cannot_write() -> None:
     team = load_builtin_team()
     coord.form_team(team)
     architect = coord._runtimes["architect"]
+    assert isinstance(architect, AgentRuntime)
     names = set(architect.registry.get_names())
     assert "write" not in names
     assert "edit" not in names
     assert "patch" not in names
     assert "read" in names
-    coder = coord._runtimes["coder"]
+    assert architect.cache_namespace == "agent:architect"
+    coder = coord._runtimes["backend_coder"]
     assert coder.spec.tools is None
+    assert coder.cache_namespace == "agent:backend_coder"
+    assert architect.cache_namespace != coder.cache_namespace
     assert "verifier" not in coord._runtimes
+    assert architect is not coder
     plan = next(stage for stage in team.stages if stage.name == "plan")
     result = asyncio.run(coord._dispatch(plan, team, "add auth/*.py"))
     assert "write" not in writes
@@ -202,7 +252,8 @@ def test_completed_enum_status_advances_past_plan() -> None:
 
 def test_happy_path_plan_implement_audit() -> None:
     text = asyncio.run(_coord().run_team(load_builtin_team(), "add a health endpoint"))
-    assert "plan" in text and "implement" in text and "audit" in text
+    for name in ("clarify", "plan", "implement", "test", "verify", "audit", "document"):
+        assert name in text, name
 
 
 def test_mechanical_fail_retries_implement() -> None:
@@ -261,7 +312,7 @@ def test_coder_consults_architect() -> None:
         ConsultRequest(
             session_id="ses-f11",
             request_id="q1",
-            from_role="coder",
+            from_role="backend_coder",
             to_role="architect",
             question="方案里没提到迁移脚本",
             stage="implement",
@@ -287,3 +338,119 @@ def test_implement_declares_both_check_levels() -> None:
     team = load_builtin_team()
     implement = next(s for s in team.stages if s.name == "implement")
     assert list(implement.verify_before_next) == SOFTWARE_DEV_STAGE_CHECKS["implement"]
+
+
+def test_backend_child_may_write_architect_may_not() -> None:
+    for name in ("read", "write"):
+        _ensure_named_tool(name, risk="read" if name == "read" else "write")
+    session = Session(session_id="ses-ws", workspace_root=".", emit=lambda _n: None)
+    architect = AgentRuntime(
+        AgentSpec(
+            role="architect",
+            display_name="a",
+            goal="plan",
+            prompt_stage="agent_architect",
+            tools=["read"],
+        ),
+        session=session,
+    )
+    backend = AgentRuntime(
+        AgentSpec(
+            role="backend_coder",
+            display_name="b",
+            goal="code",
+            prompt_stage="agent_backend_coder",
+            tools=None,
+        ),
+        session=session,
+    )
+    assert architect.child.check_tool("write", {"path": "x.py"}) is False
+    assert backend.child.check_tool("write", {"path": "x.py"}) is True
+
+
+def test_role_runtime_child_token_budget_is_team_sized() -> None:
+    session = Session(session_id="ses-budget", workspace_root=".", emit=lambda _n: None)
+    spec = AgentSpec(
+        role="architect",
+        display_name="a",
+        goal="plan",
+        prompt_stage="agent_architect",
+        tools=[],
+    )
+    runtime = AgentRuntime(spec, session=session)
+    assert runtime.child.budget.budget.max_tokens >= 120_000
+    assert runtime.child.budget.budget.max_wall_time_seconds >= 300
+
+
+def test_session_prompt_team_binds_agent_runtime() -> None:
+    """Session.prompt /team must form per-role AgentRuntime, not reuse Primary."""
+    from RxyCode.RxyCode1_1_0.protocol.agents import TeamEvent
+
+    for name in ("read", "grep", "ls", "write", "edit", "patch", "bash"):
+        _ensure_named_tool(name, risk="read" if name in {"read", "grep", "ls"} else "write")
+
+    events: list[object] = []
+    session = Session(
+        session_id="ses-live-bind",
+        workspace_root=".",
+        emit=events.append,
+    )
+
+    class _Spy:
+        async def run(self, text: str, mode: str = "build") -> str:
+            return "ok-from-role"
+
+    spy = _Spy()
+    result = asyncio.run(
+        session.prompt(spy, "/team 实现 GET /health", mode="build", run_id="run-bind")
+    )
+    assert result.status in {"succeeded", "failed"}
+    team_events = [e for e in events if isinstance(e, TeamEvent)]
+    roles = [e.role for e in team_events]
+    assert "pm" in roles or "architect" in roles
+    assert session._active_agent is None
+    runtimes = session.agent_runtimes
+    assert "architect" in runtimes
+    assert isinstance(runtimes["architect"], AgentRuntime)
+    assert runtimes["architect"].cache_namespace == "agent:architect"
+    if "backend_coder" in runtimes:
+        assert runtimes["backend_coder"].cache_namespace == "agent:backend_coder"
+        assert runtimes["architect"] is not runtimes["backend_coder"]
+
+
+def test_parallel_audit_dispatches_three_roles() -> None:
+    from protocol.subagents import ChildStatus, TaskResult
+
+    class _Rec:
+        def __init__(self, role: str) -> None:
+            self.role = role
+            self.prompts: list[str] = []
+
+        async def run(self, task: object) -> TaskResult:
+            self.prompts.append(str(getattr(task, "prompt", task)))
+            return TaskResult(
+                request_id="1",
+                child_session_id=self.role,
+                status=ChildStatus.COMPLETED,
+                summary=f"{self.role}: finding at app.py:1",
+            )
+
+    team = load_builtin_team()
+    recs = {
+        role: _Rec(role)
+        for role in (
+            "security_auditor",
+            "quality_auditor",
+            "maintainability_auditor",
+        )
+    }
+    coord = _coord()
+    coord._runtimes.update(recs)
+    audit = next(stage for stage in team.stages if stage.name == "audit")
+    result = asyncio.run(coord._dispatch(audit, team, "review login"))
+    assert result.ok is True
+    for rec in recs.values():
+        assert rec.prompts, rec.role
+    assert "security_auditor" in result.answer
+    assert "quality_auditor" in result.answer
+    assert "maintainability_auditor" in result.answer

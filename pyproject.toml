@@ -88,6 +88,8 @@ dependencies = { file = ["requirements.txt"] }
   "frontend/protocol-client/tsconfig.json",
   "frontend/protocol-client/src/**/*.ts",
   "core/agents/teams/*.yaml",
+  "core/agents/teams/**/*.yaml",
+  "core/agents/teams/**/*.md",
 ]
 
 [tool.setuptools.exclude-package-data]

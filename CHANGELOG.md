@@ -25,9 +25,13 @@ reliable. GitHub Release **v1.2.11** publishes **one** asset:
 
 - **Expert teams** — AgentSpec / TeamSpec, deterministic SopMachine,
   Coordinator, BudgetGuard, mechanical verifier, ModeRouter, JSON-RPC
-  worker bridge, builtin `software_dev` SOP (`core/agents/`). Default off.
-  The sdist now includes `core.agents` / `core.agents.bridge` /
-  `core.agents.teams` and `core/agents/teams/*.yaml`.
+  worker bridge, builtin `software_dev` Team Pack
+  (`core/agents/teams/software_dev/`: 10 roles, 7 SOP stages, PM +
+  frontend/backend + tester + mechanical verifier + three auditors + doc).
+  Default off. Role-level `ecosystem.*` skill bindings; GitHub skills
+  vendored only after SPDX + content gates. Live dispatch uses a per-role
+  `AgentRuntime` (isolated cache namespace), not a shared Primary instance.
+  The sdist includes `core/agents/teams/**/*.yaml` and `**/*.md`.
 - **Docs** — `docs/agent/`, `docs/quickstart.md`. Screenshots live in
   `docs/imgs/`.
 
@@ -39,8 +43,9 @@ reliable. GitHub Release **v1.2.11** publishes **one** asset:
   Coordinator dispatches roles through the live AgentV2 instead of a stub.
   When `agents.enabled=false` (the default), ordinary prompts skip ModeRouter
   so concurrent sessions and `session/interrupt` keep AgentV2 latency.
-- Expert-team `form_team` binds a per-role `LiveRoleRuntime` so architect
-  cannot `write`/`edit`/`patch`. `ChildStatus.COMPLETED` now advances SOP
+- Expert-team `form_team` binds a per-role `AgentRuntime` so architect
+  cannot `write`/`edit`/`patch`. Parallel stages (`parallel_members`)
+  dispatch with `asyncio.gather`. `ChildStatus.COMPLETED` now advances SOP
   (Python 3.11+ `str(enum)` is not `completed`).
 - `software_dev` plan stage no longer requires a verbatim `expected_output`
   match (`goal_satisfied`) before implement.

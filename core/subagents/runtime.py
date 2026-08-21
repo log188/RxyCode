@@ -353,7 +353,12 @@ class ChildRuntime:
         elif name in {"websearch", "webfetch"}:
             value = str(args.get("url") or args.get("query") or "")
         policy = PermissionPolicy.from_definition(self.definition.permission)
-        category = "edit" if name in {"write", "edit", "patch", "open_file"} else name
+        if name in {"write", "edit", "patch", "open_file"}:
+            category = "edit"
+        elif name in {"read", "grep", "ls", "glob"}:
+            category = "read"
+        else:
+            category = name
         decision = policy.evaluate(category, value)
         self.audit.permission_decision(name, decision.kind.value, decision.matched_rule)
         if decision.kind != DecisionKind.ALLOW:
