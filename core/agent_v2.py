@@ -5053,13 +5053,8 @@ class AgentV2:
         if orchestrator is None:
             return []
         tools = list(orchestrator.get_all().values())
-        role_allow = getattr(self, "_role_tool_allowlist", None)
-        if role_allow is not None:
-            tools = [
-                tool
-                for tool in tools
-                if getattr(tool, "name", "") in role_allow
-            ]
+        # FX6 ToolsFreeze: role allowlists deny at _execute_tool. Cropping the
+        # bound schema per role would change prefix bytes and miss the 97% hit.
         if getattr(self._memory, "_rag_enabled", False):
             tools = list(tools)
         else:
@@ -6473,6 +6468,13 @@ class AgentV2:
             download=download_intent,
         )
         self._turn_decision = decision
+        tui = get_tui()
+        if tui is not None:
+            liveness = getattr(tui, "write_turn_liveness", None)
+            if callable(liveness):
+                liveness("思考中...")
+            elif hasattr(tui, "write_progress"):
+                tui.write_progress("思考中...")
 
         if "memory.initialize" not in decision.skip_await:
             await self._memory.initialize()
