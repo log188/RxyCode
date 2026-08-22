@@ -1045,10 +1045,7 @@ def _is_transport_retryable(exc: BaseException) -> bool:
     transport error as ``__cause__``/``__context__``, so we unwrap those too.
     """
     if isinstance(exc, FirstTokenTimeoutError):
-        # mimo-v2.5 / OpenCode Go occasionally miss the first chunk after a
-        # successful write. Retrying is cheaper than aborting a /solo that
-        # already landed product files.
-        return True
+        return False
     try:
         if isinstance(exc, httpx.TransportError):
             return True

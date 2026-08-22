@@ -32,7 +32,13 @@ from RxyCode.RxyCode1_1_0.core.prompts.templates import DELEGATE_REQUEST_TEMPLAT
 from RxyCode.RxyCode1_1_0.protocol.subagents import ContextEnvelope
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
 from RxyCode.RxyCode1_1_0.core.agents.spec import AgentSpecError, validate_team
-from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier, subject_hash
+from RxyCode.RxyCode1_1_0.core.agents.verifier import (
+    MechanicalVerifier,
+    VerifyContext,
+    named_product_files,
+    named_pytest_targets,
+    subject_hash,
+)
 from RxyCode.RxyCode1_1_0.core.tracing import (
     Tracer,
     distillation_ui_notice,
@@ -446,12 +452,6 @@ class Coordinator:
         ]
         if existing:
             gate_files = existing
-        from RxyCode.RxyCode1_1_0.core.agents.verifier import (
-            VerifyContext,
-            named_product_files,
-            named_pytest_targets,
-        )
-
         if stage.name in {"implement", "verify"}:
             required = named_product_files(
                 getattr(self, "_user_input", "") or ""
@@ -550,8 +550,6 @@ class Coordinator:
             context_refs=",".join(refs) or "(none)",
         )
         if stage.name == "implement" and target == "backend_coder":
-            from RxyCode.RxyCode1_1_0.core.agents.verifier import named_product_files
-
             need = named_product_files(user_input)
             if need:
                 goal += (
