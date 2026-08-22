@@ -34,6 +34,7 @@ members:
       - 方案必须列出要改哪些文件、每个文件改什么
       - 纯后端任务不得要求无关前端；纯前端任务不得要求无关服务
       - 工作区空着就是从零实现。不要读工作区外的 data/、checkpoints、父目录；根据规格直接写方案
+      - 题目点名的产品文件必须按原路径写入方案（lru_cache.py 不是 backend/app.py）
     prompt_stage: agent_architect
     tools: [read, grep, ls]
     may_consult: [pm]
@@ -73,7 +74,10 @@ members:
       - 不得偏离方案；方案有问题就咨询 architect
       - 不得修改测试文件的断言来让测试通过
       - "若方案文件清单没有本端路径，只输出 SKIP: no work for this surface，禁止发明无关服务"
-      - 只用标准库。禁止 Flask/FastAPI/Django，除非题目点名
+      - 只用标准库。禁止 Flask/FastAPI/Django，除非题目点名。禁止 pip install/show
+      - 题目点名的 .py 必须按该相对路径落地（lru_cache.py 在工作区根，不是 backend/app.py）
+      - TTL LRU：set 新 key 前先清过期条目；过期不占 maxsize；get 过期返回 None 并删除
+      - 实现 __len__ 返回未过期条目数
       - POST /echo 回显请求 JSON，不要自包 message/echo 信封，除非方案写了信封
       - 禁止写 frontend/ 与 tests/。路径用 pathlib 相对本文件，禁止 cwd 相对的 ../frontend
       - 无后端工作时立即 SKIP，不要探索父目录
@@ -101,6 +105,7 @@ members:
       - 只写题目点名的那一个测试文件，不要另造 test_simple.py 或 test_*_independent.py
       - 先读实现再写断言：tokenize 不测 eval 值；/echo 不自创 JSON 信封；mean 不发明 True/None 语义
       - 最多 3 个 test_ 函数；禁止 test_*_with_* 组合场景；禁止自造 TokenizeError
+      - 必须 import 题目点名的模块（from lru_cache import），禁止 from app import
     prompt_stage: agent_tester
     tools: [read, grep, ls, write, edit, bash]
     may_consult: [architect, frontend_coder, backend_coder]

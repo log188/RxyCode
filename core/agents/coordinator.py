@@ -446,15 +446,24 @@ class Coordinator:
         ]
         if existing:
             gate_files = existing
+        from RxyCode.RxyCode1_1_0.core.agents.verifier import (
+            VerifyContext,
+            named_product_files,
+            named_pytest_targets,
+        )
+
+        if stage.name in {"implement", "verify"}:
+            required = named_product_files(
+                getattr(self, "_user_input", "") or ""
+            )
+            extra = [path for path in required if path not in gate_files]
+            if extra:
+                gate_files = [*gate_files, *extra]
         if not result.diff.strip():
             result.diff = "\n".join(on_disk)
         digest = subject_hash(result.answer, result.diff)
         if stage.verify_before_next:
             verifier = self._verifier or MechanicalVerifier()
-            from RxyCode.RxyCode1_1_0.core.agents.verifier import (
-                VerifyContext,
-                named_pytest_targets,
-            )
 
             ctx = VerifyContext(
                 workspace=workspace,
@@ -472,6 +481,10 @@ class Coordinator:
                 verdict = verifier.run(stage, result, ctx=ctx)
             except TypeError:
                 verdict = verifier.run(stage, result)
+            except UnicodeDecodeError as exc:
+                result.ok = False
+                result.error = f"utf-8 decode: {exc}"
+                return result
             if not verdict.passed:
                 result.ok = False
                 result.error = "; ".join(verdict.findings)
@@ -536,6 +549,15 @@ class Coordinator:
             tools=tools,
             context_refs=",".join(refs) or "(none)",
         )
+        if stage.name == "implement" and target == "backend_coder":
+            from RxyCode.RxyCode1_1_0.core.agents.verifier import named_product_files
+
+            need = named_product_files(user_input)
+            if need:
+                goal += (
+                    "\n空工作区：第一轮就用 write 写下下列文件，禁止先 ls/grep/read："
+                    + ", ".join(need)
+                )
         ContextEnvelope(
             parent_session_id=self._session.session_id,
             task=stage.expected_output,

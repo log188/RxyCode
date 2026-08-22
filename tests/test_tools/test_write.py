@@ -147,6 +147,18 @@ class TestWriteFile:
         self._write(str(f), content)
         assert target.read_text(encoding="utf-8") == content
 
+    def test_write_rejects_too_many_test_functions(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        bloated = "\n".join(f"def test_{i}():\n    assert True\n" for i in range(9))
+        result = self._write("tests/test_lru_cache.py", bloated)
+        assert "error writing file" in result
+        assert "9 test_ functions" in result
+        assert not (tmp_path / "tests" / "test_lru_cache.py").exists()
+        six = "\n".join(f"def test_{i}():\n    assert True\n" for i in range(6))
+        ok = self._write("tests/test_calc.py", six)
+        assert "error writing file" not in ok
+        assert (tmp_path / "tests" / "test_calc.py").is_file()
+
 
 class TestVerifySyntax:
     def _verify(self, path, content):

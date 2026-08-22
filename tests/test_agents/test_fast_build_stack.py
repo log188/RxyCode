@@ -31,6 +31,8 @@ def test_fast_build_instruction_follows_user_stack() -> None:
     assert "replace the complete file" in lowered
     assert "do not invent java/spring/maven/pom.xml" in lowered
     assert "if the user asked only to explain or chat, do not write files" in lowered
+    assert "do not pip show or pip install" in lowered
+    assert "lru_cache.py" in lowered
     assert "write pom.xml and java sources first" not in lowered
     assert "*controller.java" not in lowered
     assert "黄金" not in text

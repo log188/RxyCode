@@ -5,6 +5,8 @@
 禁止 import 题目没点名的异常类（TokenizeError）。先 grep 实现再断言。
 禁止改产品代码、assert True、另造 test_simple.py。
 
+必须 import 题目点名的模块（from lru_cache import …），禁止改成 from app import。
+get 会刷新 LRU：不要在 get 之后断言刚访问的 key 会被下一次 set 淘汰。
 只抄这三类，不要加戏：
 - LRU：maxsize 淘汰；ttl 过期；同一 key set 更新。不要 sleep 后再断言刚写入的新 key。
 - calc：tokenize 数字和 + - * / ()；eval 优先级/括号；除零是错误对象不是 raise。

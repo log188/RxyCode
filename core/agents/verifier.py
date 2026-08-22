@@ -65,16 +65,32 @@ SOFTWARE_DEV_STAGE_CHECKS: dict[str, list[str]] = {
 
 _FORBIDDEN_DEFAULT = ("credentials.yaml", ".env", "data/")
 _TEST_FILE_RE = re.compile(r"(?:tests[/\\])?test_[\w]+\.py", re.I)
-# Testers keep stacking combo/invented cases on the named file (ttl+lru,
-# TokenizeError for '&', True/None mean). P3 is the prompt behaviors, not those.
-_EXTRA_ASSERT_KEXPR = "not with and not invalid_character and not mixed_types"
+_PRODUCT_FILE_RE = re.compile(r"(?:[\w.-]+/)*[\w.-]+\.py")
+
+
+def named_product_files(user_input: str) -> list[str]:
+    """Product ``.py`` paths the user named. Tests are excluded.
+
+    Implement must land ``lru_cache.py`` at the workspace root when the prompt
+    says so; renaming it to ``backend/app.py`` is not the named file.
+    """
+    mentioned: list[str] = []
+    for raw in _PRODUCT_FILE_RE.findall(user_input or ""):
+        name = raw.replace("\\", "/")
+        base = Path(name).name
+        if base.startswith("test_") or name.startswith("tests/"):
+            continue
+        if name not in mentioned:
+            mentioned.append(name)
+    return mentioned
 
 
 def named_pytest_targets(user_input: str, *, on_disk: list[str]) -> list[str]:
     """Pytest only the test files the task named (P3), not extra tester files.
 
     Extra ``test_*.py`` (root or ``*_independent.py``) previously failed the
-    mechanical gate and burned wall-clock on verify retries.
+    mechanical gate and burned wall-clock on verify retries. P3 is unfiltered
+    pytest on that named file (no ``-k`` skip of failing tests inside it).
     """
     disk = [p.replace("\\", "/") for p in on_disk]
     disk_set = set(disk)
@@ -102,12 +118,6 @@ def named_pytest_targets(user_input: str, *, on_disk: list[str]) -> list[str]:
         and Path(p).name.startswith("test_")
         and p.endswith(".py")
     )
-
-
-def named_pytest_kexpr(user_input: str = "") -> str:
-    """Deselect combo/invented tests testers add beyond the task's named behaviors."""
-    del user_input
-    return _EXTRA_ASSERT_KEXPR
 
 
 @dataclass
@@ -158,7 +168,11 @@ def _check_python_parses(ctx: VerifyContext) -> tuple[bool, str]:
         if not path.is_file():
             return False, f"python file missing: {rel}"
         try:
-            ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            return False, f"{rel} is not utf-8 text: {exc}"
+        try:
+            ast.parse(text, filename=rel)
         except SyntaxError as exc:
             return False, f"{rel} does not parse: {exc.msg}"
     return True, ""
@@ -172,6 +186,8 @@ def _check_json_parses(ctx: VerifyContext) -> tuple[bool, str]:
             return False, f"json file missing: {rel}"
         try:
             json.loads(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError as exc:
+            return False, f"{rel} is not utf-8 text: {exc}"
         except json.JSONDecodeError as exc:
             return False, f"{rel} is not valid JSON: {exc.msg}"
     return True, ""
@@ -187,6 +203,8 @@ def _check_yaml_parses(ctx: VerifyContext) -> tuple[bool, str]:
             return False, f"yaml file missing: {rel}"
         try:
             yaml.safe_load(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError as exc:
+            return False, f"{rel} is not utf-8 text: {exc}"
         except yaml.YAMLError as exc:
             return False, f"{rel} is not valid YAML: {exc}"
     return True, ""
@@ -222,7 +240,6 @@ def _check_pytest(ctx: VerifyContext) -> tuple[bool, str]:
         return False, "tests_pass requires pytest targets"
     env = os.environ.copy()
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    kexpr = named_pytest_kexpr()
     try:
         proc = subprocess.run(
             [
@@ -231,8 +248,6 @@ def _check_pytest(ctx: VerifyContext) -> tuple[bool, str]:
                 "pytest",
                 *paths,
                 "-q",
-                "-k",
-                kexpr,
                 "--tb=no",
                 "-p",
                 "no:cacheprovider",

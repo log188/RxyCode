@@ -688,3 +688,40 @@ def test_implement_files_exist_ignores_tests_listed_in_plan(tmp_path) -> None:
     result = StageOutcome(ok=True, answer="wrote auth/routes.py", diff="auth/routes.py")
     out = coord._apply_verify_gates(implement, result)
     assert out.ok is True, out.error
+
+
+def test_implement_requires_named_product_file(tmp_path) -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier
+
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "app.py").write_text("class LRUCache:\n    pass\n", encoding="utf-8")
+    coord = Coordinator(
+        Session(session_id="ses-named", workspace_root=str(tmp_path), emit=lambda _n: None),
+        verifier=MechanicalVerifier(),
+    )
+    coord._user_input = (
+        "/team 实现带 TTL 的 LRU：lru_cache.py 提供 get/set/delete；"
+        "tests/test_lru_cache.py 覆盖淘汰。"
+    )
+    implement = next(stage for stage in load_builtin_team().stages if stage.name == "implement")
+    result = StageOutcome(ok=True, answer="wrote backend/app.py", diff="backend/app.py")
+    out = coord._apply_verify_gates(implement, result)
+    assert out.ok is False
+    assert "lru_cache.py" in (out.error or "")
+
+
+def test_implement_packet_tells_backend_to_write_named_files() -> None:
+    coord = Coordinator(
+        Session(session_id="ses-pkt", workspace_root=".", emit=lambda _n: None)
+    )
+    team = load_builtin_team()
+    implement = next(stage for stage in team.stages if stage.name == "implement")
+    packet = coord._packet(
+        implement,
+        team,
+        "/team 实现 lru_cache.py；tests/test_lru_cache.py 覆盖淘汰。",
+        role="backend_coder",
+    )
+    assert "lru_cache.py" in packet.goal
+    assert "write" in packet.goal.lower()

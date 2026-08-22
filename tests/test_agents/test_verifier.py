@@ -15,7 +15,7 @@ from RxyCode.RxyCode1_1_0.core.agents.verifier import (
     SOFTWARE_DEV_STAGE_CHECKS,
     MechanicalVerifier,
     VerifyContext,
-    named_pytest_kexpr,
+    named_product_files,
     named_pytest_targets,
     subject_hash,
 )
@@ -60,6 +60,13 @@ def test_python_parses_pass_and_fail(tmp_path: Path) -> None:
     assert _run(tmp_path, ["python_parses"], claimed_files=["ok.py"]).passed
     bad = _run(tmp_path, ["python_parses"], claimed_files=["bad.py"])
     assert not bad.passed
+
+
+def test_python_parses_utf16_is_a_failed_check_not_a_crash(tmp_path: Path) -> None:
+    (tmp_path / "wide.py").write_bytes("print(1)\n".encode("utf-16"))
+    verdict = _run(tmp_path, ["python_parses"], claimed_files=["wide.py"])
+    assert not verdict.passed
+    assert "utf-8" in verdict.findings[0]
 
 
 def test_json_parses_pass_and_fail(tmp_path: Path) -> None:
@@ -120,14 +127,17 @@ def test_named_pytest_targets_prefer_prompt_file() -> None:
     assert named_pytest_targets(prompt, on_disk=on_disk) == ["tests/test_lru_cache.py"]
 
 
-def test_named_pytest_kexpr_drops_combo_and_invented() -> None:
-    expr = named_pytest_kexpr("tests/test_lru_cache.py 淘汰、过期、更新")
-    assert "not with" in expr
-    assert "not invalid_character" in expr
-    assert "not mixed_types" in expr
+def test_named_product_files_skip_tests() -> None:
+    prompt = "/team 实现带 TTL 的 LRU：lru_cache.py 提供 get/set；tests/test_lru_cache.py 覆盖淘汰。"
+    assert named_product_files(prompt) == ["lru_cache.py"]
+    login = (
+        "/solo 实现 POST /login。必须落地 auth/passwords.py、auth/routes.py、"
+        "tests/test_login.py。"
+    )
+    assert named_product_files(login) == ["auth/passwords.py", "auth/routes.py"]
 
 
-def test_tests_pass_ignores_combo_extra_when_named_behaviors_pass(tmp_path: Path) -> None:
+def test_tests_pass_fails_when_named_file_has_failing_extra(tmp_path: Path) -> None:
     (tmp_path / "mod.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
     tests = tmp_path / "tests"
     tests.mkdir()
@@ -144,7 +154,7 @@ def test_tests_pass_ignores_combo_extra_when_named_behaviors_pass(tmp_path: Path
         pytest_targets=["tests/test_mod.py"],
         claimed_files=["tests/test_mod.py"],
     )
-    assert verdict.passed
+    assert not verdict.passed
 
 
 def test_named_pytest_targets_fallback_tests_dir() -> None:

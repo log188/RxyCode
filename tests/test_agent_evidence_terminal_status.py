@@ -82,6 +82,53 @@ async def test_failed_version_probe_bash_does_not_override_completed_answer(tmp_
 
 
 @pytest.mark.asyncio
+async def test_failed_pip_show_probe_does_not_block_later_write(tmp_path):
+    """Windows ``pip show | grep`` is an env probe; it must not abort /solo
+    before named source files are written."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel, classify_tool_risk
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    command = (
+        'python3 --version && pip show fastapi passlib pyjwt httpx pytest bcrypt '
+        '2>&1 | grep -E "^(Name|Version)"'
+    )
+    assert classify_tool_risk("bash", {"command": command}) == RiskLevel.READ
+
+    artifact = tmp_path / "auth"
+    artifact.mkdir()
+    passwords = artifact / "passwords.py"
+    passwords.write_text("def hash_password(p): return p\n", encoding="utf-8")
+    agent = object.__new__(AgentV2)
+
+    async def completed_run(_user_input: str, _mode: str) -> str:
+        ToolOrchestrator()._finish(
+            "bash",
+            {"command": command},
+            "[error executing bash: grep : CommandNotFoundException\n[exit code: 1]]",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.READ,
+        )
+        ToolOrchestrator()._finish(
+            "write",
+            {"filePath": str(passwords), "content": passwords.read_text(encoding="utf-8")},
+            f"[wrote {passwords.stat().st_size} bytes to {passwords}]",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.WRITE,
+        )
+        return "auth/passwords.py written with stdlib hashing."
+
+    agent._run_impl = completed_run
+    result = await agent.run(
+        "/solo 实现 POST /login。必须落地 auth/passwords.py、auth/routes.py、tests/test_login.py。"
+    )
+    assert "auth/passwords.py" in result
+    assert "evidence failed" not in result
+
+
+@pytest.mark.asyncio
 async def test_failed_bash_smoke_test_does_not_override_written_artifact(tmp_path):
     """A later ``node smoke-test.mjs`` exit 1 must not discard files already written.
 

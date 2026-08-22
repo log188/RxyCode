@@ -1,9 +1,14 @@
+import ast
 import asyncio
 from pathlib import Path
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 from ..core.session_runtime import resolve_write_path
 from ..utils.atomic_file import atomic_write_text
+
+#: Testers stack combo cases until named pytest goes red. Cap keeps the
+#: named file to the prompt behaviors (H4 asks for at least 6).
+_TEST_FUNCTION_CAP = 8
 
 
 class WriteInput(BaseModel):
@@ -33,8 +38,31 @@ def _verify_syntax(path: Path, content: str) -> str:
     return ""
 
 
+def _count_test_functions(content: str) -> int | None:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return None
+    return sum(
+        1
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+    )
+
+
 def write_file(filePath: str, content: str) -> str:
     p = resolve_write_path(filePath)
+    if p.suffix == ".py" and (
+        p.name.startswith("test_") or "tests" in {part.lower() for part in p.parts}
+    ):
+        n = _count_test_functions(content)
+        if n is not None and n > _TEST_FUNCTION_CAP:
+            return (
+                f"[error writing file: {p.name} has {n} test_ functions; "
+                f"keep at most {_TEST_FUNCTION_CAP} covering the named "
+                "behaviors. File not written.]"
+            )
     try:
         atomic_write_text(p, content)
 

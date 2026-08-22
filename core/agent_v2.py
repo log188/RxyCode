@@ -146,7 +146,10 @@ FAST_LOCAL_BUILD_INSTRUCTION = (
     "tool calls directly; do not narrate intermediate reasoning or repeat the "
     "request between tool calls. Keep the preamble to one short sentence. "
     "Do not write _probe.py or use bash to probe python, node, pip, pandas, "
-    "Yahoo Finance, or network connectivity. "
+    "Yahoo Finance, or network connectivity. Do not pip show or pip install. "
+    "Use the stdlib unless the user named a framework. Named source files in "
+    "the user prompt (lru_cache.py, auth/passwords.py) must be written at "
+    "those exact relative paths, not renamed to backend/app.py. "
     "Do not append source code with "
     "bash, cat, or PowerShell here-strings. If a write reports a syntax or "
     "validation mismatch, replace the complete file with write or edit it at "
@@ -1042,7 +1045,10 @@ def _is_transport_retryable(exc: BaseException) -> bool:
     transport error as ``__cause__``/``__context__``, so we unwrap those too.
     """
     if isinstance(exc, FirstTokenTimeoutError):
-        return False
+        # mimo-v2.5 / OpenCode Go occasionally miss the first chunk after a
+        # successful write. Retrying is cheaper than aborting a /solo that
+        # already landed product files.
+        return True
     try:
         if isinstance(exc, httpx.TransportError):
             return True
@@ -4149,7 +4155,10 @@ class AgentV2:
         self.model_config = dict(self.model_config)
         if not self.model_config.get("effort"):
             self.model_config["effort"] = self._effort_for(mode, user_input)
-        if mode == "build" and self.model_config.get("effort") == "fast":
+        if mode == "build" and (
+            self.model_config.get("effort") == "fast"
+            or self._has_creation_product_intent(user_input)
+        ):
             role_instruction = (
                 f"{role_instruction.strip()}\n\n{FAST_LOCAL_BUILD_INSTRUCTION}"
             ).strip()
@@ -4710,6 +4719,8 @@ class AgentV2:
                                 content=(
                                     "上一轮没有调用 write/edit，不能把文件名表格当作完成。"
                                     "请立即调用 write 写入用户要求的源码。"
+                                    "题目点名的路径必须原样落地（lru_cache.py 不是 backend/app.py）。"
+                                    "用标准库实现；不要 pip show/install，不要 Flask/FastAPI 除非用户点名。"
                                     "不要发明 Java/Spring/Maven/pom.xml 或 Flyway，除非用户点名。"
                                     "如果用户只要解释或聊天、明确不要改文件，则不要写文件，直接给出答案。"
                                     "不要提前给出空的 Final Answer。"
