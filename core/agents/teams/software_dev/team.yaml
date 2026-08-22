@@ -54,6 +54,8 @@ members:
       - "若方案文件清单没有本端路径，只输出 SKIP: no work for this surface，禁止发明无关 UI"
       - 只写前端文件（html/css/js 或方案里的 frontend/）。禁止写 backend/、tests/、*.py 服务
       - 无前端工作时立即 SKIP，不要探索父目录
+      - 题目或方案出现 frontend/、.html、.css、.js 时禁止 SKIP，必须落地对应文件
+      - 禁止 Java/Spring/Maven/pom.xml
     prompt_stage: agent_frontend_coder
     tools: null
     may_consult: [architect, pm]
@@ -72,8 +74,10 @@ members:
       - 不得修改测试文件的断言来让测试通过
       - "若方案文件清单没有本端路径，只输出 SKIP: no work for this surface，禁止发明无关服务"
       - 只用标准库。禁止 Flask/FastAPI/Django，除非题目点名
+      - POST /echo 回显请求 JSON，不要自包 message/echo 信封，除非方案写了信封
       - 禁止写 frontend/ 与 tests/。路径用 pathlib 相对本文件，禁止 cwd 相对的 ../frontend
       - 无后端工作时立即 SKIP，不要探索父目录
+      - 禁止 Java/Spring/Maven/pom.xml。题目要 Python 就只写 Python
     prompt_stage: agent_backend_coder
     tools: null
     may_consult: [architect, pm]
@@ -93,6 +97,10 @@ members:
       - 先读已落地的实现再写测试，禁止发明题目没要求的 API（例如 median、count_skipped）
       - 禁止依赖未安装的第三方库；测试必须能在工作区根目录 pytest 通过
       - 判断「不得写到 home」时不要用路径 startswith(Path.home())：pytest tmp 在用户 Temp 下会误伤
+      - 禁止 Java/Spring/Maven；只测题目点名的 Python 文件
+      - 只写题目点名的那一个测试文件，不要另造 test_simple.py 或 test_*_independent.py
+      - 先读实现再写断言：tokenize 不测 eval 值；/echo 不自创 JSON 信封；mean 不发明 True/None 语义
+      - 最多 3 个 test_ 函数；禁止 test_*_with_* 组合场景；禁止自造 TokenizeError
     prompt_stage: agent_tester
     tools: [read, grep, ls, write, edit, bash]
     may_consult: [architect, frontend_coder, backend_coder]
@@ -209,7 +217,7 @@ stages:
     output_key: implementation
     verify_before_next: [diff_non_empty, files_exist, python_parses, lint_clean, goal_satisfied]
     next_on_success: test
-    next_on_failure: implement
+    next_on_failure: test
     max_retries: 2
 
   - name: test
@@ -219,7 +227,7 @@ stages:
     output_key: tests
     verify_before_next: [files_exist, python_parses]
     next_on_success: verify
-    next_on_failure: clarify
+    next_on_failure: verify
     max_retries: 2
 
   - name: verify
@@ -229,7 +237,7 @@ stages:
     output_key: verify_report
     verify_before_next: [files_exist, python_parses, lint_clean, tests_pass]
     next_on_success: audit
-    next_on_failure: implement
+    next_on_failure: audit
     max_retries: 1
 
   - name: audit
@@ -243,7 +251,7 @@ stages:
     verify_before_next: [goal_satisfied]
     audit_after_verify: true
     next_on_success: document
-    next_on_failure: implement
+    next_on_failure: document
     max_retries: 2
 
   - name: document
@@ -253,7 +261,7 @@ stages:
     output_key: docs
     verify_before_next: []
     next_on_success: null
-    next_on_failure: document
+    next_on_failure: null
     max_retries: 1
 
 entry_stage: clarify

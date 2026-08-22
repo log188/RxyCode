@@ -173,6 +173,7 @@ class Coordinator:
         self.mailbox = Mailbox()
         self.blackboard = Blackboard()
         self._coordinator_history: list[str] = []
+        self._user_input = ""
         self.task_ledger = TaskLedger()
         self.progress_ledger = ProgressLedger()
         self.last_replan: str | None = None
@@ -232,6 +233,7 @@ class Coordinator:
         if notice:
             self._emit(ProgressUpdate(session_id=self._session.session_id, text=notice))
         self._coordinator_history.append(user_input)
+        self._user_input = user_input
         self.task_ledger.facts.append(user_input)
         self.task_ledger.plan = [stage.name for stage in team.stages]
         root = self._tracer.start_span(
@@ -437,12 +439,22 @@ class Coordinator:
                 *self.blackboard.view(list(stage.context_keys)).values(),
             )
         gate_files = claimed or on_disk
+        existing = [
+            path
+            for path in gate_files
+            if (workspace / path).is_file()
+        ]
+        if existing:
+            gate_files = existing
         if not result.diff.strip():
             result.diff = "\n".join(on_disk)
         digest = subject_hash(result.answer, result.diff)
         if stage.verify_before_next:
             verifier = self._verifier or MechanicalVerifier()
-            from RxyCode.RxyCode1_1_0.core.agents.verifier import VerifyContext
+            from RxyCode.RxyCode1_1_0.core.agents.verifier import (
+                VerifyContext,
+                named_pytest_targets,
+            )
 
             ctx = VerifyContext(
                 workspace=workspace,
@@ -451,11 +463,10 @@ class Coordinator:
                 diff=result.diff,
                 claimed_files=gate_files,
                 python_files=[name for name in gate_files if name.endswith(".py")],
-                pytest_targets=[
-                    name
-                    for name in gate_files
-                    if Path(name).name.startswith("test_")
-                ],
+                pytest_targets=named_pytest_targets(
+                    getattr(self, "_user_input", "") or "",
+                    on_disk=on_disk,
+                ),
             )
             try:
                 verdict = verifier.run(stage, result, ctx=ctx)
@@ -465,6 +476,9 @@ class Coordinator:
                 result.ok = False
                 result.error = "; ".join(verdict.findings)
                 return result
+            # Gates passed: a failed sibling (frontend SKIP/cancel) must not
+            # keep implement looping via next_on_failure=implement.
+            result.ok = True
         if stage.audit_after_verify and result.ok and not self.verdict_allows(digest):
             live = getattr(self._session, "_active_agent", None) is not None
             if self._verifier is None and not live:
@@ -567,6 +581,9 @@ class Coordinator:
             else:
                 outcomes.append(item)
         ok = all(self._outcome_counts_as_ok(item) for item in outcomes)
+        if stage.name == "implement" and not ok:
+            if any(self._outcome_counts_as_ok(item) for item in outcomes):
+                ok = True
         answer = "\n\n".join(
             f"[{item.packet.to_role if item.packet else '?'}]\n{item.answer}"
             for item in outcomes

@@ -257,6 +257,123 @@ def test_happy_path_plan_implement_audit() -> None:
         assert name in text, name
 
 
+def test_passing_verify_gates_promote_failed_dispatch(tmp_path) -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier
+
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    coord = Coordinator(
+        Session(session_id="ses-promote", workspace_root=str(tmp_path), emit=lambda _n: None),
+        verifier=MechanicalVerifier(),
+    )
+    implement = next(stage for stage in load_builtin_team().stages if stage.name == "implement")
+    result = StageOutcome(
+        ok=False,
+        answer="wrote app.py",
+        error="frontend_coder cancelled",
+        diff="app.py",
+    )
+    out = coord._apply_verify_gates(implement, result)
+    assert out.ok is True, out.error
+
+
+def test_parallel_implement_one_failed_sibling_still_ok() -> None:
+    from protocol.subagents import ChildStatus, TaskResult
+
+    class _Rec:
+        def __init__(self, role: str) -> None:
+            self.role = role
+
+        async def run(self, task: object) -> TaskResult:
+            if self.role == "frontend_coder":
+                return TaskResult(
+                    request_id="1",
+                    child_session_id=self.role,
+                    status=ChildStatus.FAILED,
+                    summary="",
+                )
+            return TaskResult(
+                request_id="1",
+                child_session_id=self.role,
+                status=ChildStatus.COMPLETED,
+                summary="wrote backend/app.py",
+            )
+
+    team = load_builtin_team()
+    coord = _coord()
+    coord._runtimes.update(
+        {
+            "frontend_coder": _Rec("frontend_coder"),
+            "backend_coder": _Rec("backend_coder"),
+        }
+    )
+    implement = next(stage for stage in team.stages if stage.name == "implement")
+    result = asyncio.run(coord._dispatch(implement, team, "split"))
+    assert result.ok is True
+
+
+def test_sop_reaches_document_even_if_test_and_verify_fail() -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine
+
+    team = load_builtin_team()
+    assert next(s for s in team.stages if s.name == "test").next_on_failure == "verify"
+    assert next(s for s in team.stages if s.name == "verify").next_on_failure == "audit"
+    sop = SopMachine(team)
+    assert sop.advance(ok=True).name == "plan"
+    assert sop.advance(ok=True).name == "implement"
+    assert sop.advance(ok=True).name == "test"
+    assert sop.advance(ok=False).name == "test"
+    assert sop.advance(ok=False).name == "test"
+    assert sop.advance(ok=False).name == "verify"
+    assert sop.advance(ok=False).name == "verify"
+    assert sop.advance(ok=False).name == "audit"
+    assert sop.advance(ok=True).name == "document"
+    assert sop.advance(ok=True) is None
+
+
+def test_implement_retries_then_goes_to_test() -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine
+
+    team = load_builtin_team()
+    implement = next(stage for stage in team.stages if stage.name == "implement")
+    assert implement.next_on_failure == "test"
+    sop = SopMachine(team)
+    assert sop.advance(ok=True).name == "plan"
+    assert sop.advance(ok=True).name == "implement"
+    assert sop.advance(ok=False).name == "implement"
+    assert sop.advance(ok=False).name == "implement"
+    assert sop.advance(ok=False).name == "test"
+
+
+def test_test_stage_files_exist_ignores_missing_plan_paths(tmp_path) -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_app.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    coord = Coordinator(
+        Session(session_id="ses-test-gate", workspace_root=str(tmp_path), emit=lambda _n: None),
+        verifier=MechanicalVerifier(),
+    )
+    team = load_builtin_team()
+    test_stage = next(stage for stage in team.stages if stage.name == "test")
+    coord.blackboard.put("plan", "backend/app.py frontend/index.html tests/test_app.py", "architect")
+    result = StageOutcome(
+        ok=False,
+        answer="wrote tests/test_app.py",
+        diff="tests/test_app.py",
+    )
+    out = coord._apply_verify_gates(test_stage, result)
+    assert out.ok is True, out.error
+
+
+def test_coders_forbid_java() -> None:
+    team = load_builtin_team()
+    for role in ("frontend_coder", "backend_coder"):
+        member = next(m for m in team.members if m.role == role)
+        blob = " ".join(member.constraints).lower()
+        assert "java" in blob, role
+
+
 def test_mechanical_fail_retries_implement() -> None:
     stamp = _Stamp()
     stamp.fail_first_implement = True
@@ -265,12 +382,12 @@ def test_mechanical_fail_retries_implement() -> None:
     assert "implement" in text
 
 
-def test_audit_reject_sends_back_to_implement() -> None:
+def test_audit_reject_still_reaches_document() -> None:
     stamp = _Stamp()
     stamp.fail_audit_left = 3
     text = asyncio.run(_coord(stamp).run_team(load_builtin_team(), "ship"))
-    assert stamp._implement_seen >= 2
-    assert "implement" in text
+    assert "audit" in text
+    assert "document" in text
 
 
 def test_retries_exhausted_then_fails() -> None:

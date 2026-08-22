@@ -15,6 +15,8 @@ from RxyCode.RxyCode1_1_0.core.agents.verifier import (
     SOFTWARE_DEV_STAGE_CHECKS,
     MechanicalVerifier,
     VerifyContext,
+    named_pytest_kexpr,
+    named_pytest_targets,
     subject_hash,
 )
 from RxyCode.RxyCode1_1_0.core.session import Session
@@ -91,6 +93,65 @@ def test_lint_clean_timeout_is_not_a_failure(
 
     monkeypatch.setattr(subprocess, "run", _hang)
     assert _run(tmp_path, ["lint_clean"], claimed_files=["ok.py"]).passed
+
+
+def test_tests_pass_timeout_is_a_failed_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    def _hang(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="pytest", timeout=60)
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    assert not _run(
+        tmp_path, ["tests_pass"], claimed_files=["test_ok.py"], pytest_targets=["test_ok.py"]
+    ).passed
+
+
+def test_named_pytest_targets_prefer_prompt_file() -> None:
+    on_disk = [
+        "tests/test_lru_cache.py",
+        "tests/test_lru_cache_independent.py",
+        "test_direct.py",
+        "run_tests.py",
+    ]
+    prompt = "/team 实现 LRU：lru_cache.py；tests/test_lru_cache.py 覆盖淘汰。pytest 必须绿。"
+    assert named_pytest_targets(prompt, on_disk=on_disk) == ["tests/test_lru_cache.py"]
+
+
+def test_named_pytest_kexpr_drops_combo_and_invented() -> None:
+    expr = named_pytest_kexpr("tests/test_lru_cache.py 淘汰、过期、更新")
+    assert "not with" in expr
+    assert "not invalid_character" in expr
+    assert "not mixed_types" in expr
+
+
+def test_tests_pass_ignores_combo_extra_when_named_behaviors_pass(tmp_path: Path) -> None:
+    (tmp_path / "mod.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_mod.py").write_text(
+        "from mod import add\n"
+        "def test_add():\n    assert add(1, 2) == 3\n"
+        "def test_ttl_with_lru_eviction():\n    assert False\n"
+        "def test_invalid_character():\n    assert False\n",
+        encoding="utf-8",
+    )
+    verdict = _run(
+        tmp_path,
+        ["tests_pass"],
+        pytest_targets=["tests/test_mod.py"],
+        claimed_files=["tests/test_mod.py"],
+    )
+    assert verdict.passed
+
+
+def test_named_pytest_targets_fallback_tests_dir() -> None:
+    on_disk = ["tests/test_app.py", "test_simple.py", "backend/app.py"]
+    assert named_pytest_targets("no explicit test file", on_disk=on_disk) == [
+        "tests/test_app.py"
+    ]
 
 
 def test_tests_pass_pass_and_fail(tmp_path: Path) -> None:

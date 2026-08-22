@@ -135,32 +135,18 @@ FAST_LOCAL_BUILD_INSTRUCTION = (
     "check, then implement the complete requested artifact. Do not repeat "
     "pwd/ls/version or GUI-capability probes unless a prior result failed. "
     "Do not use System.Windows.Forms or other screenshot probes; the Desktop "
-    "runner captures visual evidence. Do not block implementation on mysql "
-    "login probes when MYSQL_* / SPRING_DATASOURCE_* are already in the "
-    "environment; write pom.xml and Java sources first, including every "
-    "required *Controller.java. Do not stop after an Application class plus "
-    "one model, and do not emit a Final Answer that only says to continue. "
-    "Group independent small file writes in "
-    "one model turn, finish required documentation before validation, and run "
-    "one focused compile/smoke check after all dependent files are present. "
-    "After the Java/Flyway/frontend tree exists, write README.md, "
-    "DEVELOPMENT.md, API.md, ARCHITECTURE.md, SECURITY.md, "
-    "MIGRATION-ROLLBACK.md, and TEST-REPORT.md with write before any "
-    "Final Answer. "
+    "runner captures visual evidence. Follow the user's requested language "
+    "and stack. Do not invent Java/Spring/Maven/pom.xml or a Flyway tree "
+    "unless the user asked for them. If the user asked only to explain or "
+    "chat, do not write files. Do not emit a Final Answer that only says to "
+    "continue. Group independent small file writes in one model turn, finish "
+    "required documentation before validation, and run one focused "
+    "compile/smoke check after all dependent files are present. "
     "Use the write/edit tools for source files. When a tool is needed, issue "
     "tool calls directly; do not narrate intermediate reasoning or repeat the "
     "request between tool calls. Keep the preamble to one short sentence. "
     "Do not write _probe.py or use bash to probe python, node, pip, pandas, "
-    "Yahoo Finance, or network connectivity. After the required "
-    "websearch/webfetch calls, write the HTML/CSV/markdown artifact immediately. "
-    "T06 market-BI pages and CSVs must literally name gold/黄金, silver/白银, "
-    "Nasdaq/纳斯达克, and S&P/标普; generic Asset A/B/C labels are a hard failure. "
-    "T09 MockMvc tests must not cast getSession() to MockHttpSession; "
-    "MockMvc.session() requires MockHttpSession and will not compile on "
-    "HttpSession. Use .with(user(\"admin\").roles(\"ADMIN\")) instead. "
-    "T09 tests must import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc "
-    "and spring-boot-starter-webmvc-test; the Boot 3 package "
-    "org.springframework.boot.test.autoconfigure.web.servlet is a hard failure. "
+    "Yahoo Finance, or network connectivity. "
     "Do not append source code with "
     "bash, cat, or PowerShell here-strings. If a write reports a syntax or "
     "validation mismatch, replace the complete file with write or edit it at "
@@ -697,6 +683,7 @@ def _should_nudge_build_to_write(
     answer: str = "",
     max_incomplete_nudges: int = 8,
     has_write_tool: bool = True,
+    user_input: str = "",
 ) -> bool:
     """Keep a build turn going until write/edit actually runs.
 
@@ -708,6 +695,9 @@ def _should_nudge_build_to_write(
     if not has_write_tool:
         return False
     if str(mode or "").strip().lower() != "build":
+        return False
+    text = str(user_input or "")
+    if re.search(r"不要改任何文件|不要写文件|用一句话介绍", text):
         return False
     if not file_write_succeeded:
         return nudge_count < max_nudges
@@ -4705,6 +4695,7 @@ class AgentV2:
                             in {"write", "edit"}
                             for tool in (core_tools or [])
                         ),
+                        user_input=user_input,
                     ):
                         write_nudge_count += 1
                         if tui and hasattr(tui, "write_progress"):
@@ -4718,9 +4709,10 @@ class AgentV2:
                             HumanMessage(
                                 content=(
                                     "上一轮没有调用 write/edit，不能把文件名表格当作完成。"
-                                    "请立即调用 write 写入仍缺失的源码（尤其是 *Controller.java、"
-                                    "Flyway SQL、静态 HTML 和 application.yml），"
-                                    "不要只解释，也不要提前给出 Final Answer。"
+                                    "请立即调用 write 写入用户要求的源码。"
+                                    "不要发明 Java/Spring/Maven/pom.xml 或 Flyway，除非用户点名。"
+                                    "如果用户只要解释或聊天、明确不要改文件，则不要写文件，直接给出答案。"
+                                    "不要提前给出空的 Final Answer。"
                                 )
                             )
                         )
