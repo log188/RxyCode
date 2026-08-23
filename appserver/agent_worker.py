@@ -254,15 +254,22 @@ class AgentWorker:
         emit: Callable[[Any], None],
     ) -> Session:
         """Keep the same Session across prompts in this worker (F14 prefix)."""
-        from RxyCode.RxyCode1_1_0.core.session import reuse_or_create_session
-
-        self._core_session = reuse_or_create_session(
-            getattr(self, "_core_session", None),
+        existing = getattr(self, "_core_session", None)
+        if (
+            existing is not None
+            and getattr(existing, "session_id", None) == session_id
+            and Path(getattr(existing, "workspace_root", workspace_root)).resolve()
+            == Path(workspace_root).resolve()
+        ):
+            existing.emit = emit
+            return existing
+        session = Session(
             session_id=session_id,
             workspace_root=workspace_root,
             emit=emit,
         )
-        return self._core_session
+        self._core_session = session
+        return session
 
     def _mark_answered(self, request_id: int) -> None:
         self._answered_request_ids.add(request_id)
