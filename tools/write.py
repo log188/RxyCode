@@ -53,8 +53,14 @@ def _count_test_functions(content: str) -> int | None:
 
 def write_file(filePath: str, content: str) -> str:
     p = resolve_write_path(filePath)
+    parts = {part.lower() for part in p.parts}
+    if p.suffix == ".py" and p.name.startswith("test_") and "tests" not in parts:
+        return (
+            f"[error writing file: {p.name} belongs under tests/, "
+            "not the workspace root. File not written.]"
+        )
     if p.suffix == ".py" and (
-        p.name.startswith("test_") or "tests" in {part.lower() for part in p.parts}
+        p.name.startswith("test_") or "tests" in parts
     ):
         n = _count_test_functions(content)
         if n is not None and n > _TEST_FUNCTION_CAP:

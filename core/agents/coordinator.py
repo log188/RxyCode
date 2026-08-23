@@ -205,12 +205,20 @@ class Coordinator:
         return team
 
     def _bind_runtimes(self, team: TeamSpec) -> dict[str, Any]:
+        """Reuse per-session role runtimes so warmup transcripts stay on prefix."""
         primary = getattr(self._session, "_active_agent", None)
-        if primary is None:
+        existing = getattr(self._session, "agent_runtimes", None) or {}
+        if primary is None and not existing:
             return {}
         bound: dict[str, Any] = {}
         for member in team.members:
             if member.mechanical:
+                continue
+            prev = existing.get(member.role)
+            if prev is not None and getattr(prev, "role", None) == member.role:
+                bound[member.role] = prev
+                continue
+            if primary is None:
                 continue
             try:
                 bound[member.role] = AgentRuntime(
@@ -373,7 +381,7 @@ class Coordinator:
         try:
             from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 
-            return float(getattr(token_stats, "cache_hit_rate", 0.0) or 0.0)
+            return float(getattr(token_stats, "primary_cache_hit_rate", 0.0) or 0.0)
         except Exception:
             return 0.0
 
@@ -464,6 +472,23 @@ class Coordinator:
         digest = subject_hash(result.answer, result.diff)
         if stage.verify_before_next:
             verifier = self._verifier or MechanicalVerifier()
+            user_input = getattr(self, "_user_input", "") or ""
+            named_tests = named_pytest_targets(user_input, on_disk=on_disk)
+            named_py = [
+                path
+                for path in named_product_files(user_input)
+                if path.endswith(".py")
+            ]
+            if stage.name in {"test", "verify"} and (named_tests or named_py):
+                scoped = [
+                    path
+                    for path in [*named_py, *named_tests]
+                    if path not in {None}
+                ]
+                # Extra tester files must not fail python_parses / tests_pass.
+                python_files = [path for path in scoped if path.endswith(".py")]
+            else:
+                python_files = [name for name in gate_files if name.endswith(".py")]
 
             ctx = VerifyContext(
                 workspace=workspace,
@@ -471,11 +496,8 @@ class Coordinator:
                 expected_output=stage.expected_output,
                 diff=result.diff,
                 claimed_files=gate_files,
-                python_files=[name for name in gate_files if name.endswith(".py")],
-                pytest_targets=named_pytest_targets(
-                    getattr(self, "_user_input", "") or "",
-                    on_disk=on_disk,
-                ),
+                python_files=python_files,
+                pytest_targets=named_tests,
             )
             try:
                 verdict = verifier.run(stage, result, ctx=ctx)

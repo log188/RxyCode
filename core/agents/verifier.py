@@ -109,6 +109,10 @@ def named_pytest_targets(user_input: str, *, on_disk: list[str]) -> list[str]:
         under = f"tests/{bare}"
         if under in disk_set:
             chosen.append(under)
+            continue
+        # Keep the named path even if it is not on disk yet so extras
+        # (test_simple.py) cannot become the mechanical pytest target.
+        chosen.append(name)
     if chosen:
         return chosen
     return sorted(

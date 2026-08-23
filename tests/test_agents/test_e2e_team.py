@@ -366,6 +366,32 @@ def test_test_stage_files_exist_ignores_missing_plan_paths(tmp_path) -> None:
     assert out.ok is True, out.error
 
 
+def test_test_stage_python_parses_ignores_extra_tester_files(tmp_path) -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tmp_path / "lru_cache.py").write_text("class LRUCache:\n    pass\n", encoding="utf-8")
+    (tests / "test_lru_cache.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (tests / "test_simple.py").write_text("def (\n", encoding="utf-8")
+    coord = Coordinator(
+        Session(session_id="ses-named-py", workspace_root=str(tmp_path), emit=lambda _n: None),
+        verifier=MechanicalVerifier(),
+    )
+    coord._user_input = (
+        "/team 实现 LRU：lru_cache.py；tests/test_lru_cache.py 覆盖淘汰。pytest 必须绿。"
+    )
+    team = load_builtin_team()
+    test_stage = next(stage for stage in team.stages if stage.name == "test")
+    out = coord._apply_verify_gates(
+        test_stage,
+        StageOutcome(ok=True, answer="wrote tests/test_lru_cache.py", diff="tests/test_lru_cache.py"),
+    )
+    assert out.ok is True, out.error
+
+
 def test_coders_forbid_java() -> None:
     team = load_builtin_team()
     for role in ("frontend_coder", "backend_coder"):
@@ -545,6 +571,40 @@ def test_session_prompt_team_binds_agent_runtime() -> None:
     if "backend_coder" in runtimes:
         assert runtimes["backend_coder"].cache_namespace == "agent:backend_coder"
         assert runtimes["architect"] is not runtimes["backend_coder"]
+
+
+def test_second_team_prompt_reuses_session_runtimes() -> None:
+    """F14 shared path: warmup then H3 must keep the same per-role AgentRuntime."""
+    from RxyCode.RxyCode1_1_0.protocol.agents import TeamEvent
+
+    for name in ("read", "grep", "ls", "write", "edit", "patch", "bash"):
+        _ensure_named_tool(name, risk="read" if name in {"read", "grep", "ls"} else "write")
+
+    events: list[object] = []
+    session = Session(
+        session_id="ses-reuse-runtime",
+        workspace_root=".",
+        emit=events.append,
+    )
+
+    class _Spy:
+        async def run(self, text: str, mode: str = "build") -> str:
+            return "ok-from-role"
+
+    spy = _Spy()
+    first = asyncio.run(
+        session.prompt(spy, "/team 实现 GET /health", mode="build", run_id="run-1")
+    )
+    assert first.status in {"succeeded", "failed"}
+    first_runtimes = dict(session.agent_runtimes)
+    assert "architect" in first_runtimes
+    second = asyncio.run(
+        session.prompt(spy, "/team 实现 GET /health", mode="build", run_id="run-2")
+    )
+    assert second.status in {"succeeded", "failed"}
+    assert session.agent_runtimes["architect"] is first_runtimes["architect"]
+    team_events = [e for e in events if isinstance(e, TeamEvent)]
+    assert team_events
 
 
 def test_parallel_audit_dispatches_three_roles() -> None:

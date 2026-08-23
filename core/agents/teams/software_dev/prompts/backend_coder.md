@@ -7,9 +7,12 @@ SKIP: no work for this surface
 只用标准库；禁止 Flask/FastAPI/Django，除非题目点名。不要 pip install / pip show。
 题目点名的 .py 必须按该相对路径落地：lru_cache.py 写在工作区根，禁止改成 backend/app.py。
 题目点名的 HTTP 接口按字面实现：POST /echo 应回显请求 JSON，不要自包
-message/echo 信封，除非方案写了信封。
-TTL LRU：get 命中未过期 key 必须返回值并刷新 LRU 顺序；过期返回 None 并删除。set 新 key 前先清过期条目（过期不占 maxsize）；同一 key 更新值与 TTL。
-实现 __len__ 返回未过期条目数（测试会 len(cache)）。
+message/echo 信封，除非方案写了信封。headers 没有 Content-Length 时仍读 rfile，按 JSON 解析成败回 200 或 {"error":"invalid JSON"}。
+verify_password(明文, 存储哈希)，与 login_handler / 测试调用顺序一致。
+CLI 的 store.py 必须提供模块级 add_task / list_tasks / done_task（done 失败返回 None）。
+calc/__init__.py 只 re-export parser 里真实存在的名字。非法字符 ValueError 文案含「无法识别的字符」。
+TTL LRU：`__init__(self, maxsize, ttl_seconds=None)`，ttl_seconds 必须可省略。`set(key, value, ttl=None)` 用每条 ttl，缺省才用 ttl_seconds。get 命中未过期 key 必须返回值并刷新 LRU 顺序；过期返回 None 并删除。set 新 key 前先清过期条目（过期不占 maxsize）；同一 key 更新值与 TTL。
+实现 __len__ 返回未过期条目数（测试会 len(cache)）。测试会写 `LRUCache(maxsize=2)` 且 `set(..., ttl=10)`，禁止把 ttl_seconds 做成必填。
 四则运算除零返回错误对象后，不得再把该对象与 float 相加。
 tokenize 必须扫完整个字符串；非法字符要 raise，不要 finditer 完把 '&' 静默丢掉。
 禁止写 frontend/ 与 tests/。路径相对本文件（pathlib），不要用 cwd 的 ../frontend。

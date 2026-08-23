@@ -20,6 +20,47 @@ from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 EmitCallback = Callable[[BaseModel], None]
 
 
+def primary_usage_counters() -> dict[str, int | float]:
+    """FX-CB7 shipped snapshot: Primary cache_hit_tokens/input_tokens.
+
+    Isolated Child scopes are excluded. Callers (Session.prompt / tests)
+    must use this instead of mixing global token_stats totals.
+    """
+    return token_stats.primary_usage()
+
+
+def reuse_or_create_session(
+    existing: Session | None,
+    *,
+    session_id: str,
+    workspace_root: Path | str,
+    emit: EmitCallback,
+    session_schema_version: int | None = None,
+) -> Session:
+    """F14 shared path: keep per-role AgentRuntime across prompts.
+
+    A new Session() every session/prompt drops ``agent_runtimes``, so warmup
+    AgentPrefix cannot ride into the next /team turn and Primary 97% misses.
+    Same session_id + workspace reuses the object and only refreshes emit.
+    """
+    root = Path(workspace_root)
+    if (
+        existing is not None
+        and existing.session_id == session_id
+        and existing.workspace_root.resolve() == root.resolve()
+    ):
+        existing.emit = emit
+        if session_schema_version is not None:
+            existing.session_schema_version = session_schema_version
+        return existing
+    return Session(
+        session_id=session_id,
+        workspace_root=root,
+        emit=emit,
+        session_schema_version=session_schema_version,
+    )
+
+
 @dataclass(frozen=True)
 class PromptResult:
     """Terminal outcome of one Session.prompt() turn."""
@@ -131,9 +172,7 @@ class Session:
         permission_mode: str | None = None,
     ) -> PromptResult:
         """Run one user turn through AgentV2 and emit terminal protocol events."""
-        previous_input = token_stats.input_tokens
-        previous_output = token_stats.output_tokens
-        previous_cache_hit_tokens = token_stats.cache_hit_tokens
+        previous = primary_usage_counters()
         cursor = thinking_cursor(agent)
         workspace = Path(self.workspace_root).expanduser().resolve()
         workspace.mkdir(parents=True, exist_ok=True)
@@ -176,9 +215,12 @@ class Session:
                 return PromptResult(answer="", status="failed", detail=detail)
 
             status, detail = classify_agent_result(answer)
-            delta_input = token_stats.input_tokens - previous_input
-            delta_output = token_stats.output_tokens - previous_output
-            delta_cache_hit_tokens = token_stats.cache_hit_tokens - previous_cache_hit_tokens
+            after = primary_usage_counters()
+            delta_input = int(after["input_tokens"]) - int(previous["input_tokens"])
+            delta_output = int(after["output_tokens"]) - int(previous["output_tokens"])
+            delta_cache_hit_tokens = (
+                int(after["cache_hit_tokens"]) - int(previous["cache_hit_tokens"])
+            )
             cache_hit_rate = (
                 max(delta_cache_hit_tokens, 0) / max(delta_input, 1) * 100
                 if delta_input > 0

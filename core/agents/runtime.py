@@ -197,6 +197,9 @@ class AgentRuntime:
             child_session,
             workspace_root=session.workspace_root,
         )
+        # F14 shared path: team roles ride the frozen AgentPrefix and count
+        # as Primary cache_rate. Isolated Phase D children leave this False.
+        self._child._share_primary_prefix = True
         if spec.mechanical:
             self._child.set_agent_factory(_no_llm)
         else:

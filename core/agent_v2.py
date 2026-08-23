@@ -1664,6 +1664,10 @@ class AgentV2:
         self._stream_mode = False
         self._last_thinking = ""
         self._thinking_history: list[str] = []
+        # F14 / PHASE-FIX shared path: last AgentPrefix transcript. The next
+        # execute() appends a new user suffix; it must not rebuild [S1, human]
+        # from scratch or warmup tokens miss the 97% floor.
+        self._agent_prefix_messages: list | None = None
         # Register tools
         self._tool_orchestrator = ToolOrchestrator(tool_registry=None)
         self._mcp_lock = threading.RLock()
@@ -1797,6 +1801,7 @@ class AgentV2:
             getattr(self, "_rag_indexer_thread", None)
         )
         self._session_loaded = False
+        self._agent_prefix_messages = None
         # A20: subset 工具子集按会话固定——切换会话时清除缓存，避免沿用旧会话子集。
         self._subset_tool_names = None
         return resolved
@@ -1814,6 +1819,7 @@ class AgentV2:
             )
             self._memory.short_term.clear()
             self._memory.invalidate_code_context()
+            self._agent_prefix_messages = None
         finally:
             self._session_loaded = False
         removed_checkpoints = 0
@@ -4120,6 +4126,37 @@ class AgentV2:
             return f"{base}|{ns}"
         return base
 
+    def _agent_prefix_is_live(self, system: str) -> bool:
+        """True when the stored AgentPrefix still starts with this frozen S1."""
+        prior = getattr(self, "_agent_prefix_messages", None) or []
+        return bool(
+            prior
+            and isinstance(prior[0], SystemMessage)
+            and prior[0].content == system
+        )
+
+    def _continue_agent_prefix(self, system: str, user_msg: str) -> list:
+        """F14/PHASE-FIX: keep S1 + prior turns; only the new user suffix is unique."""
+        new_human = HumanMessage(content=user_msg)
+        if self._agent_prefix_is_live(system):
+            return list(self._agent_prefix_messages) + [new_human]
+        return [SystemMessage(content=system), new_human]
+
+    def _remember_agent_prefix(self, messages, answer: str) -> None:
+        """Persist the AgentPrefix transcript for the next execute() append."""
+        if not messages:
+            return
+        prefix = list(messages)
+        last = prefix[-1]
+        last_content = getattr(last, "content", "") or ""
+        if answer and (not isinstance(last, AIMessage) or last_content != answer):
+            ai_kwargs = {}
+            thinking = getattr(self, "_last_thinking", "") or ""
+            if thinking:
+                ai_kwargs["reasoning_content"] = thinking
+            prefix.append(AIMessage(content=answer, additional_kwargs=ai_kwargs))
+        self._agent_prefix_messages = prefix
+
     async def _fast_reply_with_tools(
         self,
         user_input: str,
@@ -4152,9 +4189,15 @@ class AgentV2:
         self.model_config = dict(self.model_config)
         if not self.model_config.get("effort"):
             self.model_config["effort"] = self._effort_for(mode, user_input)
-        if mode == "build" and (
-            self.model_config.get("effort") == "fast"
-            or self._has_creation_product_intent(user_input)
+        system = get_system_prompt(variant=self._prompt_variant())
+        prefix_live = self._agent_prefix_is_live(system)
+        if (
+            not prefix_live
+            and mode == "build"
+            and (
+                self.model_config.get("effort") == "fast"
+                or self._has_creation_product_intent(user_input)
+            )
         ):
             role_instruction = (
                 f"{role_instruction.strip()}\n\n{FAST_LOCAL_BUILD_INSTRUCTION}"
@@ -4170,14 +4213,23 @@ class AgentV2:
         ):
             role_instruction = SOCIAL_CHAT_ROLE_INSTRUCTION
         # Social chat: skip all sticky memory (short + long + RAG).
-        memory_ctx = self._memory_ctx_for_turn(user_input)
+        # F14 shared path: when the frozen prefix is live, history already
+        # carries role + memory. Re-injecting it unique-ifies the suffix and
+        # misses Primary 97%.
+        if prefix_live:
+            memory_ctx = ""
+        else:
+            memory_ctx = self._memory_ctx_for_turn(user_input)
         # FX8: appended turn context rides AFTER the base memory, BEFORE the
         # user content — never merged into S1 / tool sections.
         suffix = self._turn_context_suffix()
         if suffix:
             memory_ctx = f"{memory_ctx}\n{suffix}" if memory_ctx else suffix
-        system = get_system_prompt(variant=self._prompt_variant())
-        user_msg = build_user_message(role_instruction, user_input, memory_ctx)
+        user_msg = build_user_message(
+            "" if prefix_live else role_instruction,
+            user_input,
+            memory_ctx,
+        )
         research_policy = get_research_policy(user_input)
         # Explicit git-only / social allowlists must not be forced into web research.
         if allowed_tool_names is not None and "websearch" not in allowed_tool_names:
@@ -4248,7 +4300,7 @@ class AgentV2:
         ):
             tui.write_progress("Analyzing your request...")
 
-        messages = [SystemMessage(content=system), HumanMessage(content=user_msg)]
+        messages = self._continue_agent_prefix(system, user_msg)
         research_sources: list[str] = []
 
         def _prefetch_failure(detail: str) -> str | None:
@@ -5006,6 +5058,7 @@ class AgentV2:
 
             self._memory.add_interaction(user_input, answer)
             self._memory.save_session()
+            self._remember_agent_prefix(messages, answer)
 
             if (
                 research_policy.cache_write_allowed

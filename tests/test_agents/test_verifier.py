@@ -127,6 +127,12 @@ def test_named_pytest_targets_prefer_prompt_file() -> None:
     assert named_pytest_targets(prompt, on_disk=on_disk) == ["tests/test_lru_cache.py"]
 
 
+def test_named_pytest_targets_keep_named_file_not_extras() -> None:
+    on_disk = ["tests/test_simple.py", "test_lru_temp.py"]
+    prompt = "/team LRU；tests/test_lru_cache.py 覆盖淘汰。pytest 必须绿。"
+    assert named_pytest_targets(prompt, on_disk=on_disk) == ["tests/test_lru_cache.py"]
+
+
 def test_named_product_files_skip_tests() -> None:
     prompt = "/team 实现带 TTL 的 LRU：lru_cache.py 提供 get/set；tests/test_lru_cache.py 覆盖淘汰。"
     assert named_product_files(prompt) == ["lru_cache.py"]

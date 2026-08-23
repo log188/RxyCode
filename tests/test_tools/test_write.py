@@ -159,6 +159,12 @@ class TestWriteFile:
         assert "error writing file" not in ok
         assert (tmp_path / "tests" / "test_calc.py").is_file()
 
+    def test_write_rejects_test_module_at_workspace_root(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = self._write("test_simple.py", "def test_ok():\n    assert True\n")
+        assert "belongs under tests/" in result
+        assert not (tmp_path / "test_simple.py").exists()
+
 
 class TestVerifySyntax:
     def _verify(self, path, content):

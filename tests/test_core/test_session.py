@@ -45,6 +45,17 @@ class _UsageAgent(_FakeAgent):
         return await super().run(text, mode)
 
 
+class _MixedChildUsageAgent(_FakeAgent):
+    async def run(self, text: str, mode: str = "build") -> str:
+        token_stats.add_real_usage(1000, 0, cache_read_tokens=970)
+        scope_token, _scoped = token_stats.begin_usage_scope()
+        try:
+            token_stats.add_real_usage(5000, 0, cache_read_tokens=100)
+        finally:
+            token_stats.end_usage_scope(scope_token)
+        return await super().run(text, mode)
+
+
 @pytest.mark.asyncio
 async def test_session_prompt_why_mode_does_not_call_agent(session_workspace):
     emitted: list[BaseModel] = []
@@ -212,6 +223,34 @@ async def test_session_prompt_forwards_provider_cache_usage_for_this_turn(
 
 
 @pytest.mark.asyncio
+async def test_session_prompt_excludes_child_cache_from_primary(session_workspace):
+    """event/final P6 is Primary-only; mixing Child 68% must not be reported."""
+    token_stats.reset()
+    try:
+        emitted: list[BaseModel] = []
+        session = Session(
+            session_id="s-p6",
+            workspace_root=session_workspace,
+            emit=emitted.append,
+        )
+        result = await session.prompt(
+            _MixedChildUsageAgent("ok"),
+            "hi",
+            mode="build",
+            run_id="run-p6",
+        )
+        usage = next(item for item in emitted if isinstance(item, TokenUsage))
+        assert result.input_tokens == 1000
+        assert result.cache_hit_tokens == 970
+        assert result.cache_hit_rate == pytest.approx(97.0)
+        assert usage.input_tokens == 1000
+        assert usage.cache_hit_tokens == 970
+        assert usage.cache_hit_rate == pytest.approx(97.0)
+    finally:
+        token_stats.reset()
+
+
+@pytest.mark.asyncio
 async def test_session_prompt_emits_error_on_exception(session_workspace):
     emitted: list[BaseModel] = []
     session = Session(session_id="s1", workspace_root=session_workspace, emit=emitted.append)
@@ -276,6 +315,52 @@ def test_session_interrupt_delegates_to_agent():
     session = Session(session_id="s1", workspace_root=Path("."), emit=lambda _: None)
     assert session.interrupt(agent) is True
     assert agent._cancelled is True
+
+
+def test_reuse_or_create_session_keeps_agent_runtimes(session_workspace):
+    """F14: warmup then H3 must not drop per-role AgentRuntime / AgentPrefix."""
+    from core.session import reuse_or_create_session
+
+    first_emit: list = []
+    first = reuse_or_create_session(
+        None,
+        session_id="ses-h3",
+        workspace_root=session_workspace,
+        emit=first_emit.append,
+    )
+    marker = object()
+    first.agent_runtimes["backend_coder"] = marker
+    second_emit: list = []
+    second = reuse_or_create_session(
+        first,
+        session_id="ses-h3",
+        workspace_root=session_workspace,
+        emit=second_emit.append,
+    )
+    assert second is first
+    assert second.agent_runtimes["backend_coder"] is marker
+    second.emit("keep")
+    assert second_emit == ["keep"]
+
+
+def test_reuse_or_create_session_new_id_is_fresh(session_workspace):
+    from core.session import reuse_or_create_session
+
+    first = reuse_or_create_session(
+        None,
+        session_id="ses-a",
+        workspace_root=session_workspace,
+        emit=lambda _n: None,
+    )
+    first.agent_runtimes["architect"] = object()
+    second = reuse_or_create_session(
+        first,
+        session_id="ses-b",
+        workspace_root=session_workspace,
+        emit=lambda _n: None,
+    )
+    assert second is not first
+    assert second.agent_runtimes == {}
 
 
 @pytest.mark.asyncio

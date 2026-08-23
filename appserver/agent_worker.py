@@ -244,6 +244,25 @@ class AgentWorker:
         #: wait is atomic against concurrent emits/other responses, so a
         #: response can never overtake notifications submitted before it.
         self._write_order_lock = asyncio.Lock()
+        # F14: reuse Session so agent_runtimes / AgentPrefix survive warmup.
+        self._core_session: Session | None = None
+
+    def bind_core_session(
+        self,
+        session_id: str,
+        workspace_root: Path,
+        emit: Callable[[Any], None],
+    ) -> Session:
+        """Keep the same Session across prompts in this worker (F14 prefix)."""
+        from RxyCode.RxyCode1_1_0.core.session import reuse_or_create_session
+
+        self._core_session = reuse_or_create_session(
+            getattr(self, "_core_session", None),
+            session_id=session_id,
+            workspace_root=workspace_root,
+            emit=emit,
+        )
+        return self._core_session
 
     def _mark_answered(self, request_id: int) -> None:
         self._answered_request_ids.add(request_id)
@@ -560,11 +579,7 @@ class AgentWorker:
                 tui.set_coalescer(coalescer)
                 await coalescer.start()
 
-            session = Session(
-                session_id=session_id,
-                workspace_root=self._workspace_root,
-                emit=emit,
-            )
+            session = self.bind_core_session(session_id, self._workspace_root, emit)
             try:
                 prompt_kwargs = {
                     "mode": str(params.get("mode", "build")),
