@@ -278,7 +278,7 @@ class TestWriteTool:
 
     def test_write_includes_syntax_check_for_py(self, tmp_path):
         from RxyCode.RxyCode1_1_0.tools.write import write_file
-        f = tmp_path / "test.py"
+        f = tmp_path / "sample.py"
         result = write_file(str(f), "x = 1\n")
         assert "syntax check" in result.lower()
 
