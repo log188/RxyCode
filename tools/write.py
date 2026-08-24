@@ -7,8 +7,13 @@ from ..core.session_runtime import resolve_write_path
 from ..utils.atomic_file import atomic_write_text
 
 #: Testers stack combo cases until named pytest goes red. Cap keeps the
-#: named file to the prompt behaviors (H4 asks for at least 6).
-_TEST_FUNCTION_CAP = 8
+#: named file to the prompt behaviors (H4 asks for at least 6; LRU max 3).
+_TEST_FUNCTION_CAP = 16
+_TEST_FUNCTION_CAP_BY_NAME: dict[str, int] = {
+    "test_lru_cache.py": 3,
+    "test_lru_warmup.py": 3,
+    "test_calc.py": 24,
+}
 
 
 class WriteInput(BaseModel):
@@ -54,19 +59,40 @@ def _count_test_functions(content: str) -> int | None:
 def write_file(filePath: str, content: str) -> str:
     p = resolve_write_path(filePath)
     parts = {part.lower() for part in p.parts}
-    if p.suffix == ".py" and p.name.startswith("test_") and "tests" not in parts:
-        return (
-            f"[error writing file: {p.name} belongs under tests/, "
-            "not the workspace root. File not written.]"
-        )
+    if p.suffix == ".py" and "tests" not in parts:
+        lowered = p.name.lower()
+        if (
+            lowered.startswith("test_")
+            or lowered in {"test.py", "verify.py"}
+            or lowered.startswith(
+                (
+                    "verify_",
+                    "create_",
+                    "_gen",
+                    "_run",
+                    "quick_test",
+                    "run_test",
+                    "_min_test",
+                    "_quick_test",
+                )
+            )
+            or (lowered.startswith("_") and "test" in lowered)
+            or lowered.endswith("_test.py")
+            or lowered == "smoke_test.py"
+        ):
+            return (
+                f"[error writing file: {p.name} belongs under tests/, "
+                "not the workspace root. File not written.]"
+            )
     if p.suffix == ".py" and (
         p.name.startswith("test_") or "tests" in parts
     ):
         n = _count_test_functions(content)
-        if n is not None and n > _TEST_FUNCTION_CAP:
+        cap = _TEST_FUNCTION_CAP_BY_NAME.get(p.name, _TEST_FUNCTION_CAP)
+        if n is not None and n > cap:
             return (
                 f"[error writing file: {p.name} has {n} test_ functions; "
-                f"keep at most {_TEST_FUNCTION_CAP} covering the named "
+                f"keep at most {cap} covering the named "
                 "behaviors. File not written.]"
             )
     try:

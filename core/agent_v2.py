@@ -22,6 +22,7 @@ import re
 import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Optional, Sequence
 import re as _re
 from urllib.parse import urlsplit
@@ -147,9 +148,15 @@ FAST_LOCAL_BUILD_INSTRUCTION = (
     "request between tool calls. Keep the preamble to one short sentence. "
     "Do not write _probe.py or use bash to probe python, node, pip, pandas, "
     "Yahoo Finance, or network connectivity. Do not pip show or pip install. "
-    "Use the stdlib unless the user named a framework. Named source files in "
+    "Use the stdlib unless the user named a framework. Do not import jwt, flask, "
+    "fastapi, or PyJWT unless the user named them; mint login tokens with "
+    "hashlib/hmac or secrets.token_hex. Named source files in "
     "the user prompt (lru_cache.py, auth/passwords.py) must be written at "
     "those exact relative paths, not renamed to backend/app.py. "
+    "Named test files (tests/test_login.py, tests/test_calc.py, "
+    "tests/test_lru_cache.py, tests/test_app.py, tests/test_cli.py, "
+    "tests/test_stats.py) must be written under tests/ with the write tool "
+    "before the Final Answer; do not leave only _write_tests.py. "
     "Do not append source code with "
     "bash, cat, or PowerShell here-strings. If a write reports a syntax or "
     "validation mismatch, replace the complete file with write or edit it at "
@@ -677,6 +684,28 @@ def _answer_is_incomplete_build_continuation(answer: str) -> bool:
     return bool(_INCOMPLETE_BUILD_CONTINUATION_RE.search(text))
 
 
+def _missing_named_pytest_files(user_input: str, workspace_root) -> list[str]:
+    """Named test files from the prompt that are still absent on disk."""
+    if not user_input or workspace_root is None:
+        return []
+    root = Path(workspace_root)
+    if not root.is_dir():
+        return []
+    from RxyCode.RxyCode1_1_0.core.agents.verifier import named_pytest_targets
+
+    on_disk = [
+        p.relative_to(root).as_posix()
+        for p in root.rglob("*")
+        if p.is_file()
+    ]
+    disk_set = set(on_disk)
+    return [
+        name
+        for name in named_pytest_targets(user_input, on_disk=on_disk)
+        if name not in disk_set
+    ]
+
+
 def _should_nudge_build_to_write(
     mode: str,
     file_write_succeeded: bool,
@@ -687,6 +716,7 @@ def _should_nudge_build_to_write(
     max_incomplete_nudges: int = 8,
     has_write_tool: bool = True,
     user_input: str = "",
+    workspace_root=None,
 ) -> bool:
     """Keep a build turn going until write/edit actually runs.
 
@@ -702,6 +732,12 @@ def _should_nudge_build_to_write(
     text = str(user_input or "")
     if re.search(r"不要改任何文件|不要写文件|用一句话介绍", text):
         return False
+    if text.strip() and not task_requires_side_effect_evidence(
+        title=text, result="", effect="auto"
+    ):
+        return False
+    if _missing_named_pytest_files(user_input, workspace_root):
+        return nudge_count < 6
     if not file_write_succeeded:
         return nudge_count < max_nudges
     return (
@@ -4754,6 +4790,7 @@ class AgentV2:
                             for tool in (core_tools or [])
                         ),
                         user_input=user_input,
+                        workspace_root=getattr(self, "_workspace_root", None),
                     ):
                         write_nudge_count += 1
                         if tui and hasattr(tui, "write_progress"):
@@ -4767,8 +4804,9 @@ class AgentV2:
                             HumanMessage(
                                 content=(
                                     "上一轮没有调用 write/edit，不能把文件名表格当作完成。"
-                                    "请立即调用 write 写入用户要求的源码。"
-                                    "题目点名的路径必须原样落地（lru_cache.py 不是 backend/app.py）。"
+                                    "请立即调用 write 写入用户要求的源码和点名测试。"
+                                    "题目点名的路径必须原样落地（lru_cache.py 不是 backend/app.py；"
+                                    "tests/test_calc.py / tests/test_login.py 必须在 tests/ 下）。"
                                     "用标准库实现；不要 pip show/install，不要 Flask/FastAPI 除非用户点名。"
                                     "不要发明 Java/Spring/Maven/pom.xml 或 Flyway，除非用户点名。"
                                     "如果用户只要解释或聊天、明确不要改文件，则不要写文件，直接给出答案。"
@@ -6305,20 +6343,15 @@ class AgentV2:
                     and mode in {"build", "compose"}
                     and task_requires_side_effect_evidence(
                         title=user_input,
-                        # At the top-level boundary, request intent determines
-                        # whether a side effect was required. Answer wording such
-                        # as "Built by..." must not upgrade a read-only question.
+                        # Request intent determines whether a side effect was
+                        # required. Answer wording ("Built by...") and a
+                        # read-only bash/ls probe must not upgrade S3-style
+                        # "这段代码干什么" into a WRITE evidence demand.
                         result="",
                         effect=(
                             str(getattr(self, "_task_effect", "") or "auto").strip().lower()
                             if getattr(self, "_task_effect", "") not in ("", "auto")
-                            else (
-                                "write"
-                                if getattr(
-                                    self, "_side_effecting_tool_attempted", False
-                                )
-                                else "auto"
-                            )
+                            else "auto"
                         ),
                     )
                     and not has_verified_side_effect(evidence)

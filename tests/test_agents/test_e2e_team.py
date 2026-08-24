@@ -110,6 +110,11 @@ def test_team_loads_and_validates() -> None:
         "maintainability_auditor",
     }
     assert team.extra.get("ecosystem.disable_model_invocation") is True
+    assert next(s for s in team.stages if s.name == "implement").max_retries == 1
+    assert next(s for s in team.stages if s.name == "test").max_retries == 1
+    assert next(s for s in team.stages if s.name == "verify").max_retries == 0
+    assert next(s for s in team.stages if s.name == "verify").next_on_failure == "audit"
+    assert next(s for s in team.stages if s.name == "audit").max_retries == 1
 
 
 def test_prompt_stages_exist() -> None:
@@ -307,11 +312,145 @@ def test_parallel_implement_one_failed_sibling_still_ok() -> None:
         }
     )
     implement = next(stage for stage in team.stages if stage.name == "implement")
-    result = asyncio.run(coord._dispatch(implement, team, "split"))
+    result = asyncio.run(
+        coord._dispatch(implement, team, "frontend/index.html backend/app.py")
+    )
     assert result.ok is True
 
 
-def test_sop_reaches_document_even_if_test_and_verify_fail() -> None:
+def test_provider_error_summary_is_not_sop_success() -> None:
+    from protocol.subagents import ChildStatus, TaskResult
+    from RxyCode.RxyCode1_1_0.core.agents.coordinator import _is_runtime_error_summary
+
+    assert _is_runtime_error_summary(
+        "[error] AuthenticationError: Error code: 401 - Model  is not supported"
+    )
+    assert _is_runtime_error_summary(
+        "[error] CircuitBreakerError: Timeout not elapsed yet, circuit breaker still open"
+    )
+    assert not _is_runtime_error_summary("SKIP: no work for this surface")
+
+    class _Rec:
+        async def run(self, task: object) -> TaskResult:
+            return TaskResult(
+                request_id="1",
+                child_session_id="backend_coder",
+                status=ChildStatus.COMPLETED,
+                summary="[error] AuthenticationError: Model  is not supported",
+            )
+
+    team = load_builtin_team()
+    coord = _coord()
+    coord._runtimes["backend_coder"] = _Rec()
+    implement = next(stage for stage in team.stages if stage.name == "implement")
+    result = asyncio.run(
+        coord._dispatch_one(
+            implement,
+            team,
+            "/team lru_cache.py",
+            "backend_coder",
+        )
+    )
+    assert result.ok is False
+
+
+def test_tester_packet_names_pytest_file() -> None:
+    team = load_builtin_team()
+    coord = _coord()
+    stage = next(s for s in team.stages if s.name == "test")
+    packet = coord._packet(
+        stage, team, "/team tests/test_calc.py 至少 6 条。pytest 必须绿。"
+    )
+    assert "tests/test_calc.py" in packet.goal
+    assert "第一轮就用 write" in packet.goal
+
+
+def test_tester_packet_h5_cli_template_forbids_subprocess() -> None:
+    team = load_builtin_team()
+    coord = _coord()
+    stage = next(s for s in team.stages if s.name == "test")
+    packet = coord._packet(
+        stage,
+        team,
+        "/team 实现 CLI：cli.py 用 argparse 提供 add/list/done；"
+        "store.py 用 JSON 文件持久化；tests/test_cli.py 测三条命令。pytest 必须绿。",
+    )
+    assert "tests/test_cli.py" in packet.goal
+    assert "from cli import main" in packet.goal
+    assert "禁止 subprocess" in packet.goal
+    assert "task-a" in packet.goal
+
+
+def test_idle_frontend_skips_without_llm() -> None:
+    """H3-style backend-only implement must not start frontend_coder (P6 suffix)."""
+
+    from protocol.subagents import ChildStatus, TaskResult
+
+    class _Rec:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def run(self, task: object) -> TaskResult:
+            self.calls.append(str(getattr(task, "prompt", task)))
+            return TaskResult(
+                request_id="1",
+                child_session_id="frontend_coder",
+                status=ChildStatus.COMPLETED,
+                summary="should not run",
+            )
+
+    rec = _Rec()
+    team = load_builtin_team()
+    coord = _coord()
+    coord._runtimes["frontend_coder"] = rec
+    implement = next(stage for stage in team.stages if stage.name == "implement")
+    result = asyncio.run(
+        coord._dispatch_one(
+            implement,
+            team,
+            "/team 实现带 TTL 的 LRU：lru_cache.py 提供 get/set/delete。",
+            "frontend_coder",
+        )
+    )
+    assert rec.calls == []
+    assert result.ok is True
+    assert "SKIP:" in result.answer
+
+
+def test_frontend_dispatches_when_html_named() -> None:
+    from protocol.subagents import ChildStatus, TaskResult
+
+    class _Rec:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, task: object) -> TaskResult:
+            self.calls += 1
+            return TaskResult(
+                request_id="1",
+                child_session_id="frontend_coder",
+                status=ChildStatus.COMPLETED,
+                summary="wrote frontend/index.html",
+            )
+
+    rec = _Rec()
+    team = load_builtin_team()
+    coord = _coord()
+    coord._runtimes["frontend_coder"] = rec
+    implement = next(stage for stage in team.stages if stage.name == "implement")
+    result = asyncio.run(
+        coord._dispatch_one(
+            implement,
+            team,
+            "frontend/index.html 调 /echo",
+            "frontend_coder",
+        )
+    )
+    assert rec.calls == 1
+    assert result.ok is True
+
+
+def test_sop_reaches_document_after_verify() -> None:
     from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine
 
     team = load_builtin_team()
@@ -321,11 +460,8 @@ def test_sop_reaches_document_even_if_test_and_verify_fail() -> None:
     assert sop.advance(ok=True).name == "plan"
     assert sop.advance(ok=True).name == "implement"
     assert sop.advance(ok=True).name == "test"
-    assert sop.advance(ok=False).name == "test"
-    assert sop.advance(ok=False).name == "test"
-    assert sop.advance(ok=False).name == "verify"
-    assert sop.advance(ok=False).name == "verify"
-    assert sop.advance(ok=False).name == "audit"
+    assert sop.advance(ok=True).name == "verify"
+    assert sop.advance(ok=True).name == "audit"
     assert sop.advance(ok=True).name == "document"
     assert sop.advance(ok=True) is None
 
@@ -340,8 +476,68 @@ def test_implement_retries_then_goes_to_test() -> None:
     assert sop.advance(ok=True).name == "plan"
     assert sop.advance(ok=True).name == "implement"
     assert sop.advance(ok=False).name == "implement"
-    assert sop.advance(ok=False).name == "implement"
     assert sop.advance(ok=False).name == "test"
+
+
+def test_verify_failure_goes_to_audit() -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine
+
+    team = load_builtin_team()
+    sop = SopMachine(team)
+    assert sop.advance(ok=True).name == "plan"
+    assert sop.advance(ok=True).name == "implement"
+    assert sop.advance(ok=True).name == "test"
+    assert sop.advance(ok=True).name == "verify"
+    assert sop.advance(ok=False).name == "audit"
+
+
+def test_test_stage_requires_named_pytest_file(tmp_path) -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tmp_path / "lru_cache.py").write_text("class LRUCache:\n    pass\n", encoding="utf-8")
+    (tests / "test_lru_warmup.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    coord = Coordinator(
+        Session(session_id="ses-named-missing", workspace_root=str(tmp_path), emit=lambda _n: None),
+        verifier=MechanicalVerifier(),
+    )
+    coord._user_input = (
+        "/team 实现带 TTL 的 LRU：lru_cache.py；tests/test_lru_cache.py 覆盖淘汰。pytest 必须绿。"
+    )
+    team = load_builtin_team()
+    test_stage = next(stage for stage in team.stages if stage.name == "test")
+    out = coord._apply_verify_gates(
+        test_stage,
+        StageOutcome(ok=True, answer="wrote tests/test_lru_warmup.py", diff=""),
+    )
+    assert out.ok is False
+    assert "test_lru_cache.py" in (out.error or "")
+
+
+def test_empty_named_pytest_file_fails_python_parses(tmp_path) -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tmp_path / "calc").mkdir()
+    (tmp_path / "calc" / "eval.py").write_text("x = 1\n", encoding="utf-8")
+    (tests / "test_calc.py").write_text("", encoding="utf-8")
+    coord = Coordinator(
+        Session(session_id="ses-empty-test", workspace_root=str(tmp_path), emit=lambda _n: None),
+        verifier=MechanicalVerifier(),
+    )
+    coord._user_input = (
+        "/team tests/test_calc.py 至少 6 条。pytest 必须绿。"
+    )
+    team = load_builtin_team()
+    test_stage = next(stage for stage in team.stages if stage.name == "test")
+    out = coord._apply_verify_gates(
+        test_stage,
+        StageOutcome(ok=True, answer="wrote tests/test_calc.py", diff="tests/test_calc.py"),
+    )
+    assert out.ok is False
+    assert "test_ functions" in (out.error or "")
 
 
 def test_test_stage_files_exist_ignores_missing_plan_paths(tmp_path) -> None:

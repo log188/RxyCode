@@ -99,8 +99,30 @@ def _no_llm(_model: str | None) -> Any:
 def _primary_model_name(primary: Any) -> str | None:
     cfg = getattr(primary, "model_config", None)
     if isinstance(cfg, dict):
-        return cfg.get("name") or cfg.get("model_name")
+        for key in ("id", "name", "model", "model_name"):
+            value = str(cfg.get(key) or "").strip()
+            if value:
+                return value
+    llm = getattr(primary, "_llm", None)
+    for attr in ("model_name", "model"):
+        value = str(getattr(llm, attr, None) or "").strip()
+        if value:
+            return value
+    packed = getattr(primary, "_cfg", None)
+    if isinstance(packed, dict):
+        value = str(packed.get("active_model") or "").strip()
+        if value:
+            return value
     return None
+
+
+def _inherited_model_config(primary: Any) -> dict[str, Any]:
+    """Copy Primary credentials so Child never sends an empty model id."""
+    cfg = dict(getattr(primary, "model_config", None) or {})
+    name = _primary_model_name(primary)
+    if name and not str(cfg.get("model_name") or "").strip():
+        cfg["model_name"] = name
+    return cfg
 
 
 def _primary_tool_registry(primary: Any) -> ToolRegistry:
@@ -229,16 +251,25 @@ class AgentRuntime:
             )
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
-        agent = AgentV2(model_name=model or _primary_model_name(primary))
+        inherited = _inherited_model_config(primary) if primary is not None else {}
+        model_id = (model or inherited.get("model_name") or _primary_model_name(primary) or "").strip() or None
+        agent = AgentV2(model_name=model_id)
         if primary is not None:
-            cfg = getattr(primary, "model_config", None)
-            if isinstance(cfg, dict):
-                agent.model_config = dict(cfg)
-                try:
-                    agent._llm = agent._build_llm()
-                    agent._provider = getattr(primary, "_provider", agent._provider)
-                except Exception:
-                    pass
+            packed = getattr(primary, "_cfg", None)
+            if isinstance(packed, dict):
+                agent._cfg = packed
+            if inherited:
+                merged = dict(agent.model_config or {})
+                merged.update({key: value for key, value in inherited.items() if value not in (None, "")})
+                if not str(merged.get("model_name") or "").strip():
+                    raise AgentSpecError(
+                        "role agent inherited empty model_name from Primary"
+                    )
+                agent.model_config = merged
+                agent._llm = agent._build_llm()
+                provider = getattr(primary, "_provider", None)
+                if provider is not None:
+                    agent._provider = provider
         if self._agent_namespace is not None:
             agent._agent_namespace = self._agent_namespace
         if self._spec.tools is not None:

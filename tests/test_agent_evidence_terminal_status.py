@@ -369,6 +369,49 @@ async def test_declared_read_only_effect_skips_side_effect_gate():
 
 
 @pytest.mark.asyncio
+async def test_s3_explain_prompt_succeeds_after_bash_ls_without_write():
+    """S3 SOLO 只读问答：bash/ls 探测不得要求 WRITE 证据。"""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    agent = object.__new__(AgentV2)
+    prompt = (
+        "这段代码干什么？\n\n"
+        "```python\n"
+        "def add(a, b):\n"
+        "    return a + b\n"
+        "```"
+    )
+
+    async def explain_run(_user_input: str, _mode: str) -> str:
+        agent._side_effecting_tool_attempted = True
+        ToolOrchestrator()._finish(
+            "bash",
+            {"command": "ls"},
+            "lru_cache.py\n",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.READ,
+        )
+        ToolOrchestrator()._finish(
+            "ls",
+            {"path": "."},
+            "lru_cache.py\n",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.READ,
+        )
+        return "这段代码定义函数 add，返回两个参数之和。"
+
+    agent._run_impl = explain_run
+    result = await agent.run(prompt)
+
+    assert "evidence failed" not in result
+    assert "两个参数" in result or "之和" in result
+
+
+@pytest.mark.asyncio
 async def test_declared_write_effect_forces_side_effect_gate():
     """显式声明 effect=write 时，无 WRITE/DANGER 证据的完成声称仍被门拦截。"""
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2

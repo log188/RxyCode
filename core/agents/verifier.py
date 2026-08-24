@@ -179,6 +179,8 @@ def _check_python_parses(ctx: VerifyContext) -> tuple[bool, str]:
             ast.parse(text, filename=rel)
         except SyntaxError as exc:
             return False, f"{rel} does not parse: {exc.msg}"
+        if Path(rel).name.startswith("test_") and "def test_" not in text:
+            return False, f"{rel} has no test_ functions"
     return True, ""
 
 

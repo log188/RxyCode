@@ -149,11 +149,20 @@ class TestWriteFile:
 
     def test_write_rejects_too_many_test_functions(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        bloated = "\n".join(f"def test_{i}():\n    assert True\n" for i in range(9))
+        bloated = "\n".join(f"def test_{i}():\n    assert True\n" for i in range(17))
         result = self._write("tests/test_lru_cache.py", bloated)
         assert "error writing file" in result
-        assert "9 test_ functions" in result
-        assert not (tmp_path / "tests" / "test_lru_cache.py").exists()
+        assert "17 test_ functions" in result
+        four = "\n".join(f"def test_{i}():\n    assert True\n" for i in range(4))
+        too_many = self._write("tests/test_lru_cache.py", four)
+        assert "error writing file" in too_many
+        three = "\n".join(f"def test_{i}():\n    assert True\n" for i in range(3))
+        ok_lru = self._write("tests/test_lru_cache.py", three)
+        assert "error writing file" not in ok_lru
+        assert (tmp_path / "tests" / "test_lru_cache.py").is_file()
+        login = "\n".join(f"def test_{i}():\n    assert True\n" for i in range(4))
+        ok_login = self._write("tests/test_login.py", login)
+        assert "error writing file" not in ok_login
         six = "\n".join(f"def test_{i}():\n    assert True\n" for i in range(6))
         ok = self._write("tests/test_calc.py", six)
         assert "error writing file" not in ok
@@ -164,6 +173,18 @@ class TestWriteFile:
         result = self._write("test_simple.py", "def test_ok():\n    assert True\n")
         assert "belongs under tests/" in result
         assert not (tmp_path / "test_simple.py").exists()
+        result2 = self._write("test.py", "def test_ok():\n    assert True\n")
+        assert "belongs under tests/" in result2
+        assert not (tmp_path / "test.py").exists()
+        result3 = self._write("_min_test.py", "print(1)\n")
+        assert "belongs under tests/" in result3
+        assert not (tmp_path / "_min_test.py").exists()
+        result4 = self._write("_quick_test.py", "print(1)\n")
+        assert "belongs under tests/" in result4
+        assert not (tmp_path / "_quick_test.py").exists()
+        result5 = self._write("smoke_test.py", "print(1)\n")
+        assert "belongs under tests/" in result5
+        assert not (tmp_path / "smoke_test.py").exists()
 
 
 class TestVerifySyntax:

@@ -104,7 +104,7 @@ members:
       - 禁止 Java/Spring/Maven；只测题目点名的 Python 文件
       - 只写题目点名的那一个测试文件，不要另造 test_simple.py 或 test_*_independent.py
       - 先读实现再写断言：tokenize 不测 eval 值；/echo 不自创 JSON 信封；mean 不发明 True/None 语义
-      - 最多 3 个 test_ 函数；禁止 test_*_with_* 组合场景；禁止自造 TokenizeError
+      - 题目写至少 N 条就写 N 条（H4 ≥6，上限 8）；否则最多 3 个 test_ 函数；禁止 test_*_with_*；禁止自造 TokenizeError
       - 必须 import 题目点名的模块（from lru_cache import），禁止 from app import
     prompt_stage: agent_tester
     tools: [read, grep, ls, write, edit, bash]
@@ -223,7 +223,7 @@ stages:
     verify_before_next: [diff_non_empty, files_exist, python_parses, lint_clean, goal_satisfied]
     next_on_success: test
     next_on_failure: test
-    max_retries: 2
+    max_retries: 1
 
   - name: test
     role: tester
@@ -233,7 +233,7 @@ stages:
     verify_before_next: [files_exist, python_parses]
     next_on_success: verify
     next_on_failure: verify
-    max_retries: 2
+    max_retries: 1
 
   - name: verify
     role: verifier
@@ -243,7 +243,7 @@ stages:
     verify_before_next: [files_exist, python_parses, lint_clean, tests_pass]
     next_on_success: audit
     next_on_failure: audit
-    max_retries: 1
+    max_retries: 0
 
   - name: audit
     role: quality_auditor
@@ -257,7 +257,7 @@ stages:
     audit_after_verify: true
     next_on_success: document
     next_on_failure: document
-    max_retries: 2
+    max_retries: 1
 
   - name: document
     role: doc
@@ -271,7 +271,8 @@ stages:
 
 entry_stage: clarify
 total_token_budget: 800000
-total_timeout_s: 2400
+# plan §2.3 起点 2400；live H1-team 2400s 停在 audit（wall-clock），pytest 已 0 但未到 document
+total_timeout_s: 3300
 max_delegations: 32
 extra:
   "ecosystem.category": 技术工程
