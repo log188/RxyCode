@@ -1,0 +1,129 @@
+"""Validation and API-root normalization for LLM transport endpoints."""
+
+from __future__ import annotations
+
+from urllib.parse import SplitResult, urlsplit, urlunsplit
+
+from .model_transport import (
+    ANTHROPIC_MESSAGES_TRANSPORT,
+    LLMTransport,
+    OPENAI_CHAT_TRANSPORT,
+    OPENAI_RESPONSES_TRANSPORT,
+    normalize_api_transport,
+)
+
+
+_RESOURCE_SUFFIXES: dict[LLMTransport, tuple[str, ...]] = {
+    OPENAI_CHAT_TRANSPORT: ("/chat/completions", "/chat"),
+    OPENAI_RESPONSES_TRANSPORT: ("/responses",),
+    ANTHROPIC_MESSAGES_TRANSPORT: ("/messages",),
+}
+_FINAL_RESOURCE: dict[LLMTransport, str] = {
+    OPENAI_CHAT_TRANSPORT: "/chat/completions",
+    OPENAI_RESPONSES_TRANSPORT: "/responses",
+    ANTHROPIC_MESSAGES_TRANSPORT: "/messages",
+}
+
+
+def _validated_split(base_url: str, *, require_https: bool) -> SplitResult:
+    if not isinstance(base_url, str):
+        raise ValueError("base_url must be an absolute http:// or https:// URL")
+    value = base_url.strip().rstrip("/")
+    if not value or any(char.isspace() for char in value):
+        raise ValueError("base_url must be an absolute http:// or https:// URL")
+    parsed = urlsplit(value)
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("base_url must be an absolute http:// or https:// URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError(
+            "base_url must not contain credentials, query parameters, or fragments"
+        )
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("base_url contains an invalid port") from exc
+    if require_https and parsed.scheme.casefold() != "https":
+        raise ValueError("base_url must use https:// when an API credential is sent")
+    return parsed._replace(path=parsed.path.rstrip("/"))
+
+
+def validate_llm_base_url(base_url: str, *, require_https: bool = False) -> str:
+    """Validate a URL without assuming or removing a protocol resource."""
+    return urlunsplit(_validated_split(base_url, require_https=require_https))
+
+
+def _detect_path_transport(path: str) -> tuple[LLMTransport, str] | None:
+    folded = path.casefold()
+    for transport, suffixes in _RESOURCE_SUFFIXES.items():
+        for suffix in suffixes:
+            if folded.endswith(suffix):
+                return transport, suffix
+    return None
+
+
+def detect_explicit_transport(base_url: str) -> LLMTransport | None:
+    """Return the protocol explicitly named by the terminal URL resource."""
+    parsed = _validated_split(base_url, require_https=False)
+    detected = _detect_path_transport(parsed.path)
+    return detected[0] if detected is not None else None
+
+
+def normalize_llm_endpoint(
+    base_url: str,
+    transport: object,
+    *,
+    require_https: bool = False,
+) -> str:
+    """Return an API root for one canonical transport.
+
+    A matching terminal resource is removed exactly once. A terminal resource
+    belonging to another protocol is rejected before network I/O.
+    """
+    canonical = normalize_api_transport(transport, allow_auto=False)
+    parsed = _validated_split(base_url, require_https=require_https)
+    detected = _detect_path_transport(parsed.path)
+    path = parsed.path
+    if detected is not None:
+        explicit_transport, suffix = detected
+        if explicit_transport != canonical:
+            raise ValueError(
+                "base_url explicit resource conflicts with api_transport: "
+                f"{explicit_transport} != {canonical}"
+            )
+        path = path[: -len(suffix)]
+    return urlunsplit(parsed._replace(path=path.rstrip("/")))
+
+
+def llm_endpoint_url(
+    base_url: str,
+    transport: object,
+    *,
+    require_https: bool = False,
+) -> str:
+    """Return the final resource URL, appending the protocol path once."""
+    canonical = normalize_api_transport(transport, allow_auto=False)
+    root = normalize_llm_endpoint(
+        base_url,
+        canonical,
+        require_https=require_https,
+    )
+    return root + _FINAL_RESOURCE[canonical]
+
+
+def llm_client_base_url(base_url: str, transport: object) -> str:
+    """Return the base URL expected by the protocol's official SDK.
+
+    OpenAI clients append resources below an API root such as ``/v1``.
+    Anthropic's SDK resource is already the absolute ``/v1/messages`` path, so
+    its client must receive the service root with a terminal ``/v1`` removed.
+    The persisted/configured API root remains unchanged.
+    """
+    canonical = normalize_api_transport(transport, allow_auto=False)
+    root = normalize_llm_endpoint(base_url, canonical)
+    if canonical != ANTHROPIC_MESSAGES_TRANSPORT:
+        return root
+    parsed = urlsplit(root)
+    path = parsed.path.rstrip("/")
+    if path.casefold().endswith("/v1"):
+        path = path[:-3]
+    return urlunsplit(parsed._replace(path=path.rstrip("/")))

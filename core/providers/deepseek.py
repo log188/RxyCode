@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from urllib.parse import urlsplit
 
 try:
     from ...config.model_capabilities import (
@@ -34,7 +35,7 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
         ModelPricing,
         UsageFieldMap,
     )
-from .base import BaseProvider
+from .base import BaseProvider, CHAT_TRANSPORT, RESPONSES_TRANSPORT
 
 _DEEPSEEK_USAGE = UsageFieldMap(
     cache_read_flat=("prompt_cache_hit_tokens",),
@@ -134,6 +135,20 @@ class DeepSeekProvider(BaseProvider):
 
     def matches(self, base_url: str, model_name: str) -> bool:
         return "deepseek" in base_url.lower() or "deepseek" in model_name.lower()
+
+    def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
+        explicit = self.explicit_transport_candidates(model_config)
+        if explicit is not None:
+            return explicit
+        try:
+            host = (
+                urlsplit(str(model_config.get("base_url") or "")).hostname or ""
+            ).casefold()
+        except ValueError:
+            host = ""
+        if host == "deepseek.com" or host.endswith(".deepseek.com"):
+            return (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
+        return super().transport_candidates(model_config)
 
     def capabilities(self, model_config: dict) -> ModelCapabilities:
         model_name = str(model_config.get("model_name") or "").lower()

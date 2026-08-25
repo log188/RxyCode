@@ -1,4 +1,4 @@
-"""Anthropic Claude provider（A18 补全：OpenAI 兼容端点路径 + 五主力）。
+"""Anthropic Claude provider（原生 Messages + 兼容代理策略）。
 
 与 OpenAI 默认行为的差异以 A0 批 8 调研报告（§7.8，2026-08-02 三方审计通过）为准：
   - prompt 缓存需显式 ``cache_control``（ephemeral / automatic），与 OpenAI 的
@@ -11,11 +11,10 @@
     extended（显式 enabled + budget_tokens）
   - 无官方 tiktoken → 用 ``chars:3.0`` 启发式（精确走 messages.count_tokens；A5 前）
 
-限制说明：本项目走 OpenAI 兼容端点（MA4 禁止引入 anthropic SDK），因此
-cache_control 断点与 thinking block 的原生语义在兼容端点上可能不完整透传；
-capabilities 按原生 Messages 能力声明（生产主路径），兼容端点的能力边界
-（无 prompt caching / thinking 细节不完整）由 A19 的缓存卡按真实端点行为处理，
-OpenAI 兼容层仅作评测用。
+传输边界：精确的 Anthropic 官方 Host 使用 ``langchain-anthropic`` 原生 Messages；
+其他 Claude 代理仍由其公开的 OpenAI-compatible 契约决定，默认保持 Chat。原生路径
+由成熟集成负责鉴权、content block、tool use 和 SSE，RxyCode 只归一公开 chunk。
+兼容端点的能力边界（无 prompt caching / thinking 细节不完整）仍按真实端点行为处理。
 
 **端点边界（A18 判据 3，可核验说明）**：
 - 原生端点 ``https://api.anthropic.com``（hostname 精确匹配、仅 HTTPS）→
@@ -58,12 +57,18 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
         ModelPricing,
         UsageFieldMap,
     )
-from .base import BaseProvider
+from .base import ANTHROPIC_MESSAGES_TRANSPORT, BaseProvider
+
+try:
+    from ...config.model_endpoint import llm_client_base_url
+except ImportError:  # pragma: no cover - repo-root layout (tests)
+    from config.model_endpoint import llm_client_base_url
 
 _ANTHROPIC_USAGE = UsageFieldMap(
-    # §7.8 ③：顶层 usage 字段（非嵌套）
+    # §7.8 ③：原始 SDK usage 是顶层字段；LangChain UsageMetadata 将
+    # cache_read/cache_creation 放入 input_token_details。
     cache_read_flat=("cache_read_input_tokens",),
-    cache_read_nested=(),
+    cache_read_nested=(("input_token_details", "cache_read"),),
     cache_write_flat=("cache_creation_input_tokens",),
     reasoning=(),  # thinking 在 content blocks，非 delta.reasoning_content
 )
@@ -234,6 +239,49 @@ def _is_native_anthropic_host(base_url: str) -> bool:
 
 class AnthropicProvider(BaseProvider):
     name = "anthropic"
+
+    def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
+        """Use native Messages only for Anthropic's exact official host."""
+        if _is_native_anthropic_host(
+            str(model_config.get("base_url") or "")
+        ):
+            explicit = self.explicit_transport_candidates(model_config)
+            if explicit is None:
+                return (ANTHROPIC_MESSAGES_TRANSPORT,)
+            if explicit != (ANTHROPIC_MESSAGES_TRANSPORT,):
+                raise ValueError(
+                    "native Anthropic endpoints require "
+                    "api_transport=anthropic_messages"
+                )
+            return explicit
+        return super().transport_candidates(model_config)
+
+    def anthropic_llm_kwargs(
+        self, model_config: dict, caps: ModelCapabilities
+    ) -> dict:
+        """Translate Provider policy into ``ChatAnthropic`` constructor args."""
+        policy = self.llm_kwargs(model_config, caps)
+        kwargs = {
+            "model": policy["model"],
+            "api_key": policy.get("api_key"),
+            "base_url": llm_client_base_url(
+                str(policy.get("base_url") or ""),
+                ANTHROPIC_MESSAGES_TRANSPORT,
+            ),
+            "max_tokens": policy["max_tokens"],
+            "max_retries": policy.get("max_retries", 3),
+            "streaming": True,
+            "stream_usage": True,
+        }
+        if "temperature" in policy:
+            kwargs["temperature"] = policy["temperature"]
+
+        body = policy.get("extra_body") or {}
+        if isinstance(body, dict):
+            for key in ("thinking", "top_k", "top_p", "output_config"):
+                if key in body:
+                    kwargs[key] = body[key]
+        return kwargs
 
     def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
         """§7.8 问 5 / A21：Anthropic 的 thinking 在 content blocks（含 signature），

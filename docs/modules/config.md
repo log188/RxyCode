@@ -30,7 +30,12 @@ URL host to a preset name, else ``其他``.
 `model_manager.probe_model_connection()` accepts an API key, base URL, and
 provider model ID directly and performs no persistence. The API onboarding flow
 uses it before `add_model()`, so invalid credentials cannot leave a broken model
-entry behind. `test_model_connection()` remains the persisted-model wrapper.
+entry behind. The probe reuses Provider `transport_candidates()`: Other/custom
+tries Responses first and falls back to Chat only for an explicit unsupported
+endpoint/protocol error. Auth, policy, rate-limit, timeout, network, server and
+ordinary request errors do not trigger a second request. Successful probes return
+the selected `transport`. `test_model_connection()` remains the persisted-model
+wrapper.
 
 ## Core Code: settings.py
 - get_data_dir() -> Path: Returns `~/.RxyCode/` (or `RXYCODE_DATA_DIR`). Creates it if missing and performs best-effort migration from `~/.rxycode/` and the legacy in-repo `data/` directory.
@@ -92,6 +97,7 @@ Each entry under `models:` is a dict keyed by model name. Recognized fields
 | `temperature` | Sampling temperature (default `0.7` in `llm_kwargs`) |
 | `provider_id` / `provider_name` | Grouping metadata for `/model` (see `add_model()`) |
 | `provider` | **Explicit** provider name; bypasses `matches()` probing (short-circuits in `providers.resolve()`) |
+| `api_transport` | Expert compatibility override: `openai_chat`, `openai_responses`, `anthropic_messages`, or omitted/`auto`; legacy `chat`/`responses` are migrated at the config boundary |
 
 **全局思考强度档位（`effort` 键，2026-08-12）**：配置顶层 `effort` 键 = 全局思考强度档位（厂商档位值如 `medium`，或抽象档位 `fast`/`balanced`/`deep`）。读写入口：`config/model_manager.py` 的 `get_effort()` / `set_effort()`；消费方：`core/agent_v2.py::_build_llm_from_config`（优先级：显式传入 > 全局设置 > `balanced`）；设置入口：CLI `/effort` 命令与 `models/set_active` 的 `effort` optional_field。
 

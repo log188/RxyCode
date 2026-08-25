@@ -9,7 +9,151 @@ docs/plans/opus5-plan/PHASE-A-MODEL-ADAPTATION-LAYER.md §5。
 
 from __future__ import annotations
 
+import re
+from enum import Enum
 from typing import Any
+
+try:
+    from ...config.model_transport import (
+        ANTHROPIC_MESSAGES_TRANSPORT,
+        LLMTransport,
+        OPENAI_CHAT_TRANSPORT,
+        OPENAI_RESPONSES_TRANSPORT,
+        normalize_api_transport,
+        normalize_transport_candidates as normalize_transport_candidates,
+    )
+except ImportError:  # pragma: no cover - repo-root layout (tests)
+    from config.model_transport import (
+        ANTHROPIC_MESSAGES_TRANSPORT,
+        LLMTransport,
+        OPENAI_CHAT_TRANSPORT,
+        OPENAI_RESPONSES_TRANSPORT,
+        normalize_api_transport,
+        normalize_transport_candidates as normalize_transport_candidates,
+    )
+
+# Compatibility constant names keep existing Provider imports stable while
+# their values move to the canonical protocol vocabulary.
+CHAT_TRANSPORT: LLMTransport = OPENAI_CHAT_TRANSPORT
+RESPONSES_TRANSPORT: LLMTransport = OPENAI_RESPONSES_TRANSPORT
+
+# P2 audited 2026-08-25.  These connection presets publish a compatible
+# /responses endpoint.  Model-level incompatibility is handled by the narrow
+# unsupported-endpoint fallback, never by guessing after auth/policy failures.
+_RESPONSES_FIRST_PRESET_IDS = frozenset({"openrouter", "groq", "dashscope"})
+
+class _TransportErrorClass(str, Enum):
+    TRANSPORT_UNSUPPORTED = "TRANSPORT_UNSUPPORTED"
+    MODEL_ERROR = "MODEL_ERROR"
+    REQUEST_VALIDATION = "REQUEST_VALIDATION"
+    AUTH_OR_POLICY = "AUTH_OR_POLICY"
+    TRANSIENT_ERROR = "TRANSIENT_ERROR"
+    UNKNOWN = "UNKNOWN"
+
+
+_MODEL_ERROR_RE = re.compile(
+    r"\bno such model\b"
+    r"|\b(?:unknown|invalid|unsupported)\s+model\b"
+    r"|\b(?:requested\s+)?model(?:\s+[\w./:-]+){0,4}\s+"
+    r"(?:(?:is|was)\s+)?(?:not found|does not exist)\b"
+    r"|\b(?:requested\s+)?model(?:\s+[\w./:-]+){0,4}\s+"
+    r"(?:could not|cannot|can't|was not)\s+(?:be\s+)?found\b",
+    flags=re.IGNORECASE,
+)
+_REQUEST_VALIDATION_RE = re.compile(
+    r"\b(?:invalid|unsupported|malformed|missing|unknown|unexpected|"
+    r"unrecognized|bad)\s+(?:endpoint\s+|request\s+)?"
+    r"(?:parameter|param|argument|field|tool(?:\s+schema)?|schema|object)\b"
+    r"|\b(?:parameter|param|argument|field|tool(?:\s+schema)?|schema|object)"
+    r"(?:\s+[\w./:-]+){0,4}\s+(?:(?:is|was)\s+)?"
+    r"(?:invalid|malformed|missing|unknown|not found|does not exist|"
+    r"not supported|unsupported)\b"
+    r"|\b(?:does not|doesn't|cannot|can't)\s+support\s+(?:the\s+)?"
+    r"(?:parameter|param|argument|field|tool(?:\s+schema)?|schema)\b",
+    flags=re.IGNORECASE,
+)
+_TRANSPORT_UNSUPPORTED_RE = re.compile(
+    r"(?:\b(?:api\s+(?:endpoint|route)|responses\s+api|"
+    r"chat[ _-]?completions\s+api|endpoint|route|protocol"
+    r")\b|/(?:v\d+/)?(?:responses|chat/completions))\s+"
+    r"(?:(?:is|was)\s+)?(?:not supported|unsupported|not found|unavailable|"
+    r"does not exist)\b"
+    r"|\bunsupported\s+(?:api\s+(?:endpoint|route)|responses\s+api|"
+    r"chat[ _-]?completions\s+api|endpoint|route|protocol)\b",
+    flags=re.IGNORECASE,
+)
+_TRANSPORT_SWITCH_RE = re.compile(
+    r"\buse\s+/(?:v\d+/)?(?:chat/completions|responses)\s+instead\b"
+    r"|\bswitch\s+to\s+(?:the\s+)?(?:responses\s+api|"
+    r"chat[ _-]?completions\s+api|/(?:v\d+/)?(?:responses|chat/completions))\b",
+    flags=re.IGNORECASE,
+)
+_AUTH_OR_POLICY_RE = re.compile(
+    r"\b(?:api\s+key|credential|authentication|authorization|datapolicy|"
+    r"data\s+policy|region|regional|content\s+policy|content\s+safety|"
+    r"safety\s+policy)\b",
+    flags=re.IGNORECASE,
+)
+_TRANSIENT_ERROR_RE = re.compile(
+    r"\b(?:timed?\s*out|timeout|network\s+error|connection\s+"
+    r"(?:error|failed|refused|reset)|dns\s+(?:error|failure))\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _transport_error_status(exc: BaseException) -> int | None:
+    """Return an HTTP status without depending on one SDK exception class."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _transport_error_text(exc: BaseException) -> str:
+    """Collect bounded provider error metadata for classification only."""
+    parts = [str(exc)]
+    body = getattr(exc, "body", None)
+    if body is not None:
+        parts.append(str(body))
+    response = getattr(exc, "response", None)
+    text = getattr(response, "text", None)
+    if isinstance(text, str):
+        parts.append(text[:1000])
+    return " ".join(parts)[:3000]
+
+
+def _classify_transport_error(exc: BaseException) -> _TransportErrorClass:
+    """Classify a provider failure using complete error phrases.
+
+    Bare words such as ``api``, ``model`` or ``parameter`` are deliberately
+    not evidence.  Only a named error subject joined to its failure predicate
+    determines model, request-validation, or transport classification.
+    """
+    status = _transport_error_status(exc)
+    text = _transport_error_text(exc)
+
+    if status in {401, 403}:
+        return _TransportErrorClass.AUTH_OR_POLICY
+    if (
+        status in {408, 429}
+        or (isinstance(status, int) and status >= 500)
+        or isinstance(exc, (TimeoutError, ConnectionError))
+        or _TRANSIENT_ERROR_RE.search(text)
+    ):
+        return _TransportErrorClass.TRANSIENT_ERROR
+    if _AUTH_OR_POLICY_RE.search(text):
+        return _TransportErrorClass.AUTH_OR_POLICY
+    if _MODEL_ERROR_RE.search(text):
+        return _TransportErrorClass.MODEL_ERROR
+    if _REQUEST_VALIDATION_RE.search(text):
+        return _TransportErrorClass.REQUEST_VALIDATION
+    if status not in {400, 404, 405, 422}:
+        return _TransportErrorClass.UNKNOWN
+    if _TRANSPORT_UNSUPPORTED_RE.search(text) or _TRANSPORT_SWITCH_RE.search(text):
+        return _TransportErrorClass.TRANSPORT_UNSUPPORTED
+    return _TransportErrorClass.UNKNOWN
 
 try:
     from ...config.model_capabilities import (
@@ -39,6 +183,92 @@ class BaseProvider:
         落到 OpenAIProvider。
         """
         return False
+
+    def transport_candidates(
+        self, model_config: dict
+    ) -> tuple[LLMTransport, ...]:
+        """Return API transports in the order the provider wants them tried.
+
+        Chat remains the compatibility default.  A model added through the
+        UI's ``Other``/custom provider is deliberately probed Responses-first,
+        then Chat, because its Base URL carries no trustworthy preset policy.
+        Providers with an official Responses contract override this method.
+
+        ``api_transport`` is an expert escape hatch for imported configs.  It
+        chooses the first transport but keeps the other as a safe endpoint-
+        mismatch fallback; runtime fallback is still restricted to explicit
+        endpoint/protocol unsupported errors before any useful output.
+        """
+        explicit = self.explicit_transport_candidates(model_config)
+        if explicit is not None:
+            return explicit
+
+        provider_id = str(model_config.get("provider_id") or "").casefold()
+        if provider_id in _RESPONSES_FIRST_PRESET_IDS | {"custom", "other"}:
+            return (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
+        return (CHAT_TRANSPORT,)
+
+    def explicit_transport_candidates(
+        self, model_config: dict
+    ) -> tuple[LLMTransport, ...] | None:
+        """Return a canonical explicit override, or ``None`` for auto mode."""
+        requested = normalize_api_transport(
+            model_config.get("api_transport"), allow_auto=True
+        )
+        if requested == "auto":
+            return None
+        if requested == CHAT_TRANSPORT:
+            # Explicit Chat is also the emergency compatibility switch.  Do
+            # not silently undo an operator's deliberate choice.
+            return (CHAT_TRANSPORT,)
+        if requested == RESPONSES_TRANSPORT:
+            return (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
+        if requested == ANTHROPIC_MESSAGES_TRANSPORT:
+            return (ANTHROPIC_MESSAGES_TRANSPORT,)
+        raise ValueError(f"unsupported api_transport: {requested}")
+
+    def uses_responses_api(self, model_config: dict) -> bool:
+        """Compatibility helper: whether the preferred transport is Responses."""
+        candidates = self.transport_candidates(model_config)
+        return bool(candidates and candidates[0] == RESPONSES_TRANSPORT)
+
+    def should_fallback_transport(
+        self,
+        exc: BaseException,
+        *,
+        from_transport: LLMTransport,
+        to_transport: LLMTransport,
+    ) -> bool:
+        """Whether an untouched request may try the alternate API endpoint.
+
+        Only endpoint/protocol mismatch is eligible.  Authentication, policy,
+        rate-limit, timeout, server, content-safety, and ordinary request-body
+        failures must retain their original error instead of being hidden by a
+        second billable request.  AgentV2 separately guarantees that fallback
+        is never attempted after text/reasoning/tool output is observed.
+        """
+        del from_transport, to_transport
+        return (
+            _classify_transport_error(exc)
+            is _TransportErrorClass.TRANSPORT_UNSUPPORTED
+        )
+
+    def reasoning_effort_when_disabled(self, model_config: dict) -> str | None:
+        """Wire effort for a turn that asks to disable thinking.
+
+        Most models omit the parameter.  Always-reasoning families may return
+        their lowest supported effort instead.
+        """
+        return None
+
+    def validate_tool_payloads(self, tools: list[dict]) -> None:
+        """Validate provider-specific function-tool wire constraints.
+
+        The default OpenAI-compatible path imposes no additional policy here.
+        Providers should fail before network I/O when an upstream-only limit is
+        known; silently truncating a name would break tool-result dispatch.
+        """
+        return None
 
     # ---- 能力 ----------------------------------------------------------
 
@@ -121,6 +351,10 @@ class BaseProvider:
             kwargs["temperature"] = model_config.get("temperature", 0.7)
         if caps.extra_body:
             kwargs["extra_body"] = dict(caps.extra_body)
+        if self.uses_responses_api(model_config):
+            # ChatOpenAI owns Responses request construction and SSE parsing.
+            # RxyCode only selects the transport and normalizes public chunks.
+            kwargs["use_responses_api"] = True
         # A21: thinking 适配判断——supports_reasoning + thinking_default_on 的模型
         # 默认注入 thinking enabled（extra_body）；effort_presets 非空时按档位注入
         # reasoning_effort（顶层）。各 provider 覆写传输位置时调用 super() 继承；
