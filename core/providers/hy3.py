@@ -15,18 +15,7 @@ from __future__ import annotations
 from dataclasses import replace
 from urllib.parse import urlsplit
 
-try:
-    from ...config.model_capabilities import (
-        DEFAULT_CAPABILITIES,
-        ModelCapabilities,
-        ModelPricing,
-    )
-except ImportError:  # pragma: no cover - repo-root layout (tests)
-    from config.model_capabilities import (
-        DEFAULT_CAPABILITIES,
-        ModelCapabilities,
-        ModelPricing,
-    )
+from ._compat import DEFAULT_CAPABILITIES, ModelCapabilities, ModelPricing
 
 from .base import BaseProvider, CHAT_TRANSPORT
 

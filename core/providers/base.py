@@ -13,24 +13,19 @@ import re
 from enum import Enum
 from typing import Any
 
-try:
-    from ...config.model_transport import (
-        ANTHROPIC_MESSAGES_TRANSPORT,
-        LLMTransport,
-        OPENAI_CHAT_TRANSPORT,
-        OPENAI_RESPONSES_TRANSPORT,
-        normalize_api_transport,
-        normalize_transport_candidates as normalize_transport_candidates,
-    )
-except ImportError:  # pragma: no cover - repo-root layout (tests)
-    from config.model_transport import (
-        ANTHROPIC_MESSAGES_TRANSPORT,
-        LLMTransport,
-        OPENAI_CHAT_TRANSPORT,
-        OPENAI_RESPONSES_TRANSPORT,
-        normalize_api_transport,
-        normalize_transport_candidates as normalize_transport_candidates,
-    )
+from ._compat import (
+    ANTHROPIC_MESSAGES_TRANSPORT,
+    LLMTransport,
+    OPENAI_CHAT_TRANSPORT,
+    OPENAI_RESPONSES_TRANSPORT,
+    normalize_api_transport,
+    normalize_transport_candidates as _normalize_transport_candidates,
+)
+
+# Keep the historical module-level export for callers and tests that imported
+# this helper from ``core.providers.base`` before the compatibility module was
+# introduced.
+normalize_transport_candidates = _normalize_transport_candidates
 
 # Compatibility constant names keep existing Provider imports stable while
 # their values move to the canonical protocol vocabulary.

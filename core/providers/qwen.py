@@ -46,6 +46,7 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
         UsageFieldMap,
     )
 from .base import BaseProvider, CHAT_TRANSPORT, RESPONSES_TRANSPORT
+from ..catalog import get_contract
 
 _QWEN_USAGE = UsageFieldMap(
     cache_read_flat=(),
@@ -292,8 +293,6 @@ class QwenProvider(BaseProvider):
         # model-name heuristic. Qwen sample is "enable_thinking: true|false"
         # (3.8-preview: false forbidden) — so we set true when thinking is on
         # and never emit a {type:disabled} thinking object.
-        from RxyCode.RxyCode1_1_0.core.catalog import get_contract
-
         contract = get_contract("qwen", str(model_config.get("model_name") or ""))
         sample = str(((contract or {}).get("thinking_param") or {}).get("sample") or "")
         body = kwargs.setdefault("extra_body", {})

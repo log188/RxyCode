@@ -59,10 +59,7 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
     )
 from .base import ANTHROPIC_MESSAGES_TRANSPORT, BaseProvider
 
-try:
-    from ...config.model_endpoint import llm_client_base_url
-except ImportError:  # pragma: no cover - repo-root layout (tests)
-    from config.model_endpoint import llm_client_base_url
+from ._compat import llm_client_base_url
 
 _ANTHROPIC_USAGE = UsageFieldMap(
     # §7.8 ③：原始 SDK usage 是顶层字段；LangChain UsageMetadata 将

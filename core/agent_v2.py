@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 # 2026-08-13: ChatOpenAI 改为懒导入——顶层 `from langchain_openai import ChatOpenAI`
 # 会传递导入 torch/transformers（实测 6.5s），拖慢 worker bootstrap（切换模型/
 # 会话重建时的"agent 重启"等待）。使用点在 _build_llm_from_config 内局部导入。
@@ -112,8 +113,8 @@ from .providers.base import (
     CHAT_TRANSPORT,
     LLMTransport,
     RESPONSES_TRANSPORT,
-    normalize_transport_candidates,
 )
+from .providers._compat import normalize_llm_endpoint, normalize_transport_candidates
 from .providers.tokenizers import count_tokens
 
 _logger = logging.getLogger(__name__)
@@ -1524,8 +1525,6 @@ class UsageTrackingLLM:
         tool_list = list(tools)
         tool_validator = getattr(self._provider, "validate_tool_payloads", None)
         if callable(tool_validator):
-            from langchain_core.utils.function_calling import convert_to_openai_tool
-
             tool_validator([convert_to_openai_tool(tool) for tool in tool_list])
         bound = self._llm.bind_tools(tool_list, **kwargs)
         return UsageTrackingLLM(
@@ -1796,7 +1795,9 @@ class AgentV2:
 
     def _tokenizer_spec(self) -> str:
         caps = getattr(self, "_capabilities", None)
-        return caps.tokenizer if caps else "tiktoken:o200k_base"
+        if caps is None:
+            return "tiktoken:o200k_base"
+        return getattr(caps, "tokenizer", None) or "tiktoken:o200k_base"
 
     def _context_window(self) -> int:
         caps = getattr(self, "_capabilities", None)
@@ -2170,9 +2171,6 @@ class AgentV2:
         model_config（副本），供 provider.llm_kwargs 与 _raw_stream 消费。
         不在构造层做 context 钳制（那时还不知道本次输入 token 数）。
         """
-        from RxyCode.RxyCode1_1_0.config.model_endpoint import (
-            normalize_llm_endpoint,
-        )
         from RxyCode.RxyCode1_1_0.config.model_limits import (
             resolve_configured_max_tokens,
         )
@@ -2207,9 +2205,13 @@ class AgentV2:
                 "API credential is unavailable; "
                 f"set {env_name} or re-add the model with its API key."
             )
-        primary_transport = normalize_transport_candidates(
-            provider.transport_candidates(model_config)
-        )[0]
+        candidate_resolver = getattr(provider, "transport_candidates", None)
+        resolved_candidates = (
+            candidate_resolver(model_config)
+            if callable(candidate_resolver)
+            else (CHAT_TRANSPORT,)
+        )
+        primary_transport = normalize_transport_candidates(resolved_candidates)[0]
         model_config["base_url"] = normalize_llm_endpoint(
             str(model_config.get("base_url") or ""),
             primary_transport,
@@ -2250,7 +2252,9 @@ class AgentV2:
 
         if primary_transport == ANTHROPIC_MESSAGES_TRANSPORT:
             try:
-                from langchain_anthropic import ChatAnthropic
+                ChatAnthropic = __import__(
+                    "langchain_anthropic", fromlist=["ChatAnthropic"]
+                ).ChatAnthropic
             except ImportError as exc:  # pragma: no cover - dependency gate
                 raise RuntimeError(
                     "anthropic_messages requires langchain-anthropic; "
@@ -7271,7 +7275,3 @@ class AgentV2:
         """Compatibility: flush thinking to TUI."""
         if tui and hasattr(tui, "write_progress") and self._last_thinking:
             tui.write_progress(self._last_thinking)
-
-
-
-
