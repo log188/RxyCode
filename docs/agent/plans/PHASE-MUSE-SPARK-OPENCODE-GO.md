@@ -298,6 +298,7 @@ except Exception as exc:
   `attempted: openai_responses, openai_chat` 组合错误。
 - [x] 日志只记录 Provider 和接口名称，不记录 API Key、Header 或消息正文。
 - [x] Anthropic Messages 失败不会被默认路由到 OpenAI Chat/Responses。
+- [x] 只有带有明确请求资源路径的通用 `Not Found`/`Invalid URL` 才可作为传输不支持证据；无路径证据的普通 404/405、模型/资源错误仍不回退。
 
 ---
 
@@ -343,6 +344,8 @@ Chat 探测体：
 - [x] HTTP 明文 Base URL 在联网前被拒绝。
 - [x] Provider 回显凭据或抛出含凭据异常时，结果中已脱敏。
 - [x] 探测和运行时共用卡 2 的 URL 规范化函数，不会重复拼接资源路径。
+- [x] HTTP 200 只有在响应体包含该协议的非空 assistant 回复时才判定探测成功；Responses、Chat、Anthropic Messages 分别校验自己的响应结构。
+- [x] Anthropic 原生探测使用 `/v1/messages`、`x-api-key` 和 `anthropic-version`，不复用 OpenAI Bearer 请求头。
 
 ---
 
@@ -534,6 +537,7 @@ Live 测试只允许从环境变量安全注入凭据，并单独设置预算与
 - [x] 最新 P0 全部实现后，Provider 模块文档与最终代码一致。
 - [x] P1 回退分类正反例覆盖模型不存在、参数/tool schema 错误和明确协议不支持。
 - [x] Anthropic 流式 `input_token_details.cache_read` 已纳入 cache-read usage，且不混入 cache creation。
+- [x] Anthropic thinking block 已归一到内部 `reasoning_content`，TUI 和工具循环可以读取；Responses 路径不再注入 Chat 专用 `thinking`，但保留合法的 `reasoning_effort`。
 - [x] 核心模块文档已明确按协议构造 `ChatOpenAI` 或 `ChatAnthropic`。
 
 环境说明：当前机器的完整 `tests/test_api_security_onboarding.py` 受 Python 3.14 与已安装

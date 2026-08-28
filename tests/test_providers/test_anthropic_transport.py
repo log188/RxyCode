@@ -416,6 +416,36 @@ async def test_anthropic_terminal_mapping(stop_reason, finish_reason):
 
 
 @pytest.mark.asyncio
+async def test_anthropic_thinking_blocks_reach_internal_reasoning_field():
+    async def public_chunks():
+        yield SimpleNamespace(
+            content=[{"type": "thinking", "thinking": "plan first"}],
+            tool_call_chunks=[],
+            usage_metadata=None,
+            response_metadata={},
+            chunk_position=None,
+        )
+        yield SimpleNamespace(
+            content=[{"type": "text", "text": "answer"}],
+            tool_call_chunks=[],
+            usage_metadata=None,
+            response_metadata={"stop_reason": "end_turn"},
+            chunk_position="last",
+        )
+
+    chunks = [
+        chunk
+        async for chunk in AgentV2._anthropic_stream_as_chat_chunks(public_chunks())
+    ]
+    provider = AnthropicProvider()
+    caps = provider.capabilities(_config())
+    reasoning = provider.extract_reasoning(
+        chunks[0].choices[0].delta, caps
+    )
+    assert reasoning == "plan first"
+
+
+@pytest.mark.asyncio
 async def test_native_messages_protocol_error_is_diagnostic_without_fallback(
     monkeypatch,
 ):

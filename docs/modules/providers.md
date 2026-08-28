@@ -111,7 +111,7 @@ stop reason。缺少依赖时明确报错，不静默降级到 OpenAI client。
 query、fragment、userinfo、非法端口，以及携带凭据的明文 HTTP 均在联网前拒绝。
 
 回退只允许在尚未产生 text/reasoning/tool output 时处理明确的 endpoint/protocol
-unsupported：只有 400/404/405/422 且错误短语明确指向 endpoint、route、protocol 或命名 API 时才回退；普通 404/405 保持失败。认证、DataPolicy、限流、网络、
+unsupported：只有 400/404/405/422 且错误短语明确指向 endpoint、route、protocol 或命名 API 时才回退；对于 SDK 明确暴露的 `/responses` 或 `/chat/completions` 请求路径，FastAPI/nginx 的通用 `Not Found`/`Invalid URL` 也可作为端点不存在证据；没有请求路径证据的普通 404/405 保持失败。认证、DataPolicy、限流、网络、
 超时、5xx、内容安全、普通参数错误以及部分输出后的错误都不换接口。
 
 P2 Responses-first：OpenAI/DeepSeek 官方 Host、火山方舟官方 Host 上的 Doubao、

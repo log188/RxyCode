@@ -83,6 +83,11 @@ _TRANSPORT_SWITCH_RE = re.compile(
     r"chat[ _-]?completions\s+api|/(?:v\d+/)?(?:responses|chat/completions))\b",
     flags=re.IGNORECASE,
 )
+_GENERIC_NOT_FOUND_RE = re.compile(
+    r"(?<!resource )(?<!object )(?<!model )(?<!requested )\bnot found\b"
+    r"|\binvalid url\b",
+    flags=re.IGNORECASE,
+)
 _AUTH_OR_POLICY_RE = re.compile(
     r"\b(?:api\s+key|credential|authentication|authorization|datapolicy|"
     r"data\s+policy|region|regional|content\s+policy|content\s+safety|"
@@ -119,6 +124,18 @@ def _transport_error_text(exc: BaseException) -> str:
     return " ".join(parts)[:3000]
 
 
+def _transport_error_request_url(exc: BaseException) -> str:
+    """Return the attempted request URL when an SDK exposes it."""
+    explicit = getattr(exc, "request_url", None)
+    if explicit:
+        return str(explicit)
+    request = getattr(exc, "request", None)
+    if request is None:
+        response = getattr(exc, "response", None)
+        request = getattr(response, "request", None)
+    return str(getattr(request, "url", "") or "")
+
+
 def _classify_transport_error(exc: BaseException) -> _TransportErrorClass:
     """Classify a provider failure using complete error phrases.
 
@@ -148,6 +165,15 @@ def _classify_transport_error(exc: BaseException) -> _TransportErrorClass:
         return _TransportErrorClass.UNKNOWN
     if _TRANSPORT_UNSUPPORTED_RE.search(text) or _TRANSPORT_SWITCH_RE.search(text):
         return _TransportErrorClass.TRANSPORT_UNSUPPORTED
+    # Generic FastAPI/nginx ``Not Found`` responses are only transport evidence
+    # when the SDK also exposes the attempted API resource.  Model/resource
+    # errors remain non-fallback because their body is classified above.
+    request_url = _transport_error_request_url(exc).casefold()
+    if request_url and _GENERIC_NOT_FOUND_RE.search(text):
+        if re.search(r"/(?:v\d+/)?responses(?:$|[/?])", request_url):
+            return _TransportErrorClass.TRANSPORT_UNSUPPORTED
+        if re.search(r"/chat/completions(?:$|[/?])", request_url):
+            return _TransportErrorClass.TRANSPORT_UNSUPPORTED
     return _TransportErrorClass.UNKNOWN
 
 try:
@@ -358,9 +384,14 @@ class BaseProvider:
         # 档位全集，用户经 /effort 直接选择）时**直接透传**该值；否则仍走
         # effort_presets 抽象映射（fast/balanced/deep，Phase F 难度路由用）。
         if caps.supports_reasoning and caps.thinking_default_on:
-            body = kwargs.setdefault("extra_body", {})
-            if "thinking" not in body:
-                body["thinking"] = {"type": "enabled"}
+            # ``thinking`` is a Chat-Completions-only compatibility field.
+            # Responses uses the standard top-level ``reasoning_effort``;
+            # keep that mapping below even when the preferred transport is
+            # Responses-first.
+            if not self.uses_responses_api(model_config):
+                body = kwargs.setdefault("extra_body", {})
+                if "thinking" not in body:
+                    body["thinking"] = {"type": "enabled"}
             effort = str(model_config.get("effort") or "balanced")
             options = caps.effort_options or ()
             if effort in options:

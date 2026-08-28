@@ -191,6 +191,99 @@ def test_custom_probe_does_not_duplicate_an_explicit_resource(
     assert observed == [expected_url]
 
 
+def test_anthropic_probe_uses_native_messages_auth_and_validates_reply(monkeypatch):
+    from config import model_manager
+
+    observed: dict = {}
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "id": "msg_probe",
+                "content": [{"type": "text", "text": "ANTHROPIC_OK"}],
+            }
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, *, json, headers):
+            observed.update(url=url, json=json, headers=headers)
+            return Response()
+
+    monkeypatch.setattr(model_manager.httpx, "Client", Client)
+    credential = "test-" + uuid4().hex
+    result = model_manager.probe_model_connection(
+        api_key=credential,
+        base_url="https://api.anthropic.com/v1",
+        provider_model_id="claude-haiku-4-5",
+    )
+
+    assert result["success"] is True
+    assert result["transport"] == "anthropic_messages"
+    assert result["reply"] == "ANTHROPIC_OK"
+    assert observed["url"] == "https://api.anthropic.com/v1/messages"
+    assert observed["json"]["messages"] == [
+        {"role": "user", "content": "Hi"}
+    ]
+    assert observed["headers"]["x-api-key"] == credential
+    assert observed["headers"]["anthropic-version"] == "2023-06-01"
+    assert "Authorization" not in observed["headers"]
+
+
+@pytest.mark.parametrize(
+    ("base_url", "payload"),
+    [
+        ("https://provider.example/v1", {"id": "resp_missing_output"}),
+        ("https://provider.example/v1/chat", {"id": "chat_missing_choices"}),
+    ],
+)
+def test_probe_rejects_http_200_without_transport_reply_body(
+    monkeypatch, base_url, payload
+):
+    from config import model_manager
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return payload
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, _url, *, json, headers):
+            del json, headers
+            return Response()
+
+    monkeypatch.setattr(model_manager.httpx, "Client", Client)
+    result = model_manager.probe_model_connection(
+        api_key="test-" + uuid4().hex,
+        base_url=base_url,
+        provider_model_id="provider/model",
+    )
+
+    assert result["success"] is False
+    assert "no valid" in result["error"]
+
+
 def test_add_model_persists_api_root_and_explicit_transport(monkeypatch):
     from config import model_manager
 

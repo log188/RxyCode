@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import get_args
 
@@ -24,6 +25,12 @@ class _HTTPError(RuntimeError):
     def __init__(self, status_code: int, message: str):
         super().__init__(message)
         self.status_code = status_code
+
+
+class _RequestAwareHTTPError(_HTTPError):
+    def __init__(self, status_code: int, message: str, request_url: str):
+        super().__init__(status_code, message)
+        self.request_url = request_url
 
 
 def test_transport_contract_exposes_only_three_canonical_values():
@@ -143,6 +150,28 @@ def test_responses_first_policy_is_forwarded_to_langchain_openai():
     assert kwargs["use_responses_api"] is True
 
 
+def test_responses_path_does_not_inject_chat_thinking_parameter():
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        supports_reasoning=True,
+        thinking_default_on=True,
+        effort_presets={"balanced": "high"},
+    )
+    kwargs = BaseProvider().llm_kwargs(
+        {
+            "provider_id": "custom",
+            "model_name": "reasoning-model",
+            "base_url": "https://gateway.example/v1",
+            "resolved_max_tokens": 32,
+            "effort": "balanced",
+        },
+        caps,
+    )
+    assert kwargs["use_responses_api"] is True
+    assert "thinking" not in (kwargs.get("extra_body") or {})
+    assert kwargs["reasoning_effort"] == "high"
+
+
 def test_chat_only_policy_does_not_enable_responses_in_langchain_openai():
     cfg = {
         "provider_id": "opencode-go",
@@ -193,6 +222,34 @@ def test_only_endpoint_mismatch_statuses_allow_fallback(status):
     provider = BaseProvider()
     assert provider.should_fallback_transport(
         _HTTPError(status, "endpoint unavailable"),
+        from_transport="openai_responses",
+        to_transport="openai_chat",
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Not Found", '{"detail":"Not Found"}', "Invalid URL (POST /v1/responses)"],
+)
+def test_generic_missing_responses_resource_uses_request_path_as_transport_evidence(
+    message,
+):
+    provider = BaseProvider()
+    assert provider.should_fallback_transport(
+        _RequestAwareHTTPError(404, message, "https://gateway.example/v1/responses"),
+        from_transport="openai_responses",
+        to_transport="openai_chat",
+    )
+
+
+def test_resource_not_found_remains_a_non_transport_error_even_with_request_path():
+    provider = BaseProvider()
+    assert not provider.should_fallback_transport(
+        _RequestAwareHTTPError(
+            404,
+            "resource not found",
+            "https://gateway.example/v1/responses",
+        ),
         from_transport="openai_responses",
         to_transport="openai_chat",
     )

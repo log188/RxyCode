@@ -453,7 +453,9 @@ def test_cache_write_flat_mapping_and_pricing_write():
     """§7.8 ③：cache write 顶层字段 + 5m 写入价（cache_write_per_mtok）。"""
     caps = providers.resolve({"model_name": "claude-opus-5"}).capabilities({"model_name": "claude-opus-5"})
     assert caps.usage_fields.cache_write_flat == ("cache_creation_input_tokens",)
-    assert caps.usage_fields.reasoning == ()
+    # AgentV2 normalizes native thinking blocks to its stable internal
+    # ``reasoning_content`` field so the TUI and tool loop can consume them.
+    assert caps.usage_fields.reasoning == ("reasoning_content",)
     assert caps.pricing.cache_write_per_mtok == 6.25
 
 

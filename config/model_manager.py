@@ -14,6 +14,7 @@ from .model_endpoint import (
     validate_llm_base_url,
 )
 from .model_transport import (
+    ANTHROPIC_MESSAGES_TRANSPORT,
     OPENAI_CHAT_TRANSPORT,
     OPENAI_RESPONSES_TRANSPORT,
     normalize_api_transport,
@@ -794,87 +795,135 @@ def probe_model_connection(
     )
 
     class _ProbeHTTPError(RuntimeError):
-        def __init__(self, response: httpx.Response, detail: str):
+        def __init__(
+            self, response: httpx.Response, detail: str, request_url: str
+        ):
             super().__init__(detail)
             self.status_code = response.status_code
             self.response = response
+            self.request_url = request_url
 
-    def request_for(transport: str) -> tuple[str, dict]:
+    def request_for(transport: str) -> tuple[str, dict, dict]:
         if transport == OPENAI_RESPONSES_TRANSPORT:
             return (
-                llm_endpoint_url(
-                    base_url, transport, require_https=True
-                ),
+                llm_endpoint_url(base_url, transport, require_https=True),
                 {
                     "model": provider_model_id,
                     "input": "Hi",
                     "max_output_tokens": 32,
                     "stream": False,
                 },
+                headers,
             )
         if transport == OPENAI_CHAT_TRANSPORT:
             return (
-                llm_endpoint_url(
-                    base_url, transport, require_https=True
-                ),
+                llm_endpoint_url(base_url, transport, require_https=True),
                 {
                     "model": provider_model_id,
                     "messages": [{"role": "user", "content": "Hi"}],
                     "max_tokens": 32,
                     "stream": False,
                 },
+                headers,
+            )
+        if transport == ANTHROPIC_MESSAGES_TRANSPORT:
+            return (
+                llm_endpoint_url(base_url, transport, require_https=True),
+                {
+                    "model": provider_model_id,
+                    "max_tokens": 32,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                },
+                {
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
+                },
             )
         raise ValueError(
             f"connection probe is not implemented for transport {transport}"
         )
 
-    def reply_from(data: object, transport: str) -> str:
+    def reply_from(data: object, transport: str) -> str | None:
         if not isinstance(data, dict):
-            return ""
+            return None
         if transport == OPENAI_CHAT_TRANSPORT:
-            try:
-                return str(data["choices"][0]["message"]["content"] or "")
-            except (KeyError, IndexError, TypeError):
-                return ""
-        if transport != OPENAI_RESPONSES_TRANSPORT:
+            choices = data.get("choices")
+            if not isinstance(choices, list) or not choices:
+                return None
+            first = choices[0]
+            message = first.get("message") if isinstance(first, dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            return content if isinstance(content, str) and content.strip() else None
+        if transport == OPENAI_RESPONSES_TRANSPORT:
+            direct = data.get("output_text")
+            if isinstance(direct, str) and direct.strip():
+                return direct
+            items = data.get("output")
+        elif transport == ANTHROPIC_MESSAGES_TRANSPORT:
+            items = data.get("content")
+        else:
             raise ValueError(f"unsupported probe response transport {transport}")
-        direct = data.get("output_text")
-        if isinstance(direct, str):
-            return direct
+        if not isinstance(items, list):
+            return None
         parts: list[str] = []
-        for item in data.get("output") or []:
-            if not isinstance(item, dict) or item.get("type") != "message":
+        for item in items:
+            if not isinstance(item, dict):
                 continue
-            for block in item.get("content") or []:
-                if isinstance(block, dict) and block.get("type") in {
-                    "output_text",
-                    "text",
-                }:
-                    parts.append(str(block.get("text") or ""))
-        return "".join(parts)
+            if transport == OPENAI_RESPONSES_TRANSPORT:
+                if item.get("type") != "message":
+                    continue
+                blocks = item.get("content") or []
+                if not isinstance(blocks, list):
+                    continue
+                for block in blocks:
+                    if isinstance(block, dict) and block.get("type") in {
+                        "output_text",
+                        "text",
+                    }:
+                        value = block.get("text")
+                        if isinstance(value, str):
+                            parts.append(value)
+            elif item.get("type") == "text":
+                value = item.get("text")
+                if isinstance(value, str):
+                    parts.append(value)
+        reply = "".join(parts)
+        return reply if reply.strip() else None
 
     start = time.time()
     try:
         with httpx.Client(timeout=30) as client:
             attempted: list[str] = []
             for index, transport in enumerate(candidates):
-                url, payload = request_for(transport)
-                resp = client.post(url, json=payload, headers=headers)
+                url, payload, request_headers = request_for(transport)
+                resp = client.post(url, json=payload, headers=request_headers)
                 elapsed = round(time.time() - start, 2)
                 if resp.status_code == 200:
                     try:
                         data = resp.json()
                     except (ValueError, AttributeError):
                         data = {}
+                    reply = reply_from(data, transport)
+                    if reply is None:
+                        return {
+                            "success": False,
+                            "elapsed": elapsed,
+                            "error": (
+                                "Provider returned HTTP 200 but no valid "
+                                f"{transport} reply body"
+                            ),
+                            "transport": transport,
+                        }
                     return {
                         "success": True,
                         "elapsed": elapsed,
-                        "reply": reply_from(data, transport),
+                        "reply": reply,
                         "transport": transport,
                     }
 
                 detail = safe_error(_provider_error_message(resp))
-                probe_error = _ProbeHTTPError(resp, detail)
+                probe_error = _ProbeHTTPError(resp, detail, url)
                 next_transport = (
                     candidates[index + 1] if index + 1 < len(candidates) else None
                 )

@@ -67,7 +67,9 @@ _ANTHROPIC_USAGE = UsageFieldMap(
     cache_read_flat=("cache_read_input_tokens",),
     cache_read_nested=(("input_token_details", "cache_read"),),
     cache_write_flat=("cache_creation_input_tokens",),
-    reasoning=(),  # thinking 在 content blocks，非 delta.reasoning_content
+    # Native thinking blocks are normalized by AgentV2 to the stable internal
+    # ``delta.reasoning_content`` field consumed by the TUI and tool loop.
+    reasoning=("reasoning_content",),
 )
 
 # §7.8 A1：Opus/Sonnet/Fable/Opus 4.8 为 1M；Haiku 4.5 为 200k
