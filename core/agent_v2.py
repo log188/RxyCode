@@ -1038,19 +1038,18 @@ def _record_usage(
             if callable(cache_write_extractor)
             else 0
         )
-        try:
+        # Keep the historical three-argument call shape when there is no
+        # cache-write usage to report.  Besides preserving older embedders,
+        # this avoids needlessly changing the public call contract for the
+        # common path; the fourth argument is reserved for real cache writes.
+        if cache_write:
             token_stats.add_real_usage(
                 usage.get("input_tokens", 0),
                 usage.get("output_tokens", 0),
                 cache_read,
                 cache_write,
             )
-        except TypeError:
-            # Preserve compatibility with lightweight test doubles and older
-            # embedders that still expose the historical three-argument hook;
-            # never hide a non-zero write count behind that fallback.
-            if cache_write:
-                raise
+        else:
             token_stats.add_real_usage(
                 usage.get("input_tokens", 0), usage.get("output_tokens", 0), cache_read
             )
@@ -1072,13 +1071,11 @@ def _record_usage(
             else 0
         )
         if prompt_toks > 0 or completion_toks > 0:
-            try:
+            if cache_write:
                 token_stats.add_real_usage(
                     prompt_toks, completion_toks, cache_read, cache_write
                 )
-            except TypeError:
-                if cache_write:
-                    raise
+            else:
                 token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
             # B3 (CB3): DeepSeek 自动前缀验证——不注入 cache_control，用
             # prompt_cache_hit_tokens 验证前缀是否生效，失败记录警告而非静默。
@@ -2533,8 +2530,6 @@ class AgentV2:
         and expects the field on a text content block.  Keep this conversion
         local to the native transport so the legacy Chat wire is unchanged.
         """
-        from langchain_core.messages import HumanMessage, SystemMessage
-
         converted = []
         for message in messages:
             ak = dict(getattr(message, "additional_kwargs", None) or {})
