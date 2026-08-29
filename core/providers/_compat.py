@@ -13,10 +13,24 @@ from importlib import import_module
 
 def _load(module_suffix: str):
     last_error: ImportError | None = None
-    for prefix in ("RxyCode.RxyCode1_1_0.", ""):
+    # Source-tree imports must win over an unrelated globally installed
+    # RxyCode package; installed-package imports must stay fully qualified.
+    # Choose the order from this module's own package rather than probing a
+    # potentially stale package first.
+    package_name = __package__ or ""
+    prefixes = (
+        ("RxyCode.RxyCode1_1_0.", "")
+        if package_name.startswith("RxyCode.RxyCode1_1_0")
+        else ("", "RxyCode.RxyCode1_1_0.")
+    )
+    for prefix in prefixes:
         try:
             return import_module(prefix + module_suffix)
-        except ImportError as exc:
+        except ModuleNotFoundError as exc:
+            # Only a missing candidate module is a layout miss.  Dependency
+            # failures inside an existing module must remain visible.
+            if exc.name != prefix + module_suffix:
+                raise
             last_error = exc
     if last_error is not None:
         raise last_error

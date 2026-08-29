@@ -477,8 +477,14 @@ class TestLastUserBreakpoint:
         )
         assert allocated == ["system", "messages"]
         assert ttl == 3600
-        assert out[0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
-        assert out[1].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+        assert out[0].additional_kwargs.get("cache_control") == {
+            "type": "ephemeral",
+            "ttl": "1h",
+        }
+        assert out[1].additional_kwargs.get("cache_control") == {
+            "type": "ephemeral",
+            "ttl": "1h",
+        }
 
     def test_consecutive_tool_results_merged_not_split(self):
         """合并连续 tool_result：不拆 assistant↔tool 配对（kimi 语义）。"""

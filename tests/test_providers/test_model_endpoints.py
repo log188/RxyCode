@@ -19,8 +19,14 @@ from config.model_endpoint import (
         (
             "https://provider.example/v1/chat",
             "openai_chat",
-            "https://provider.example/v1",
-            "https://provider.example/v1/chat/completions",
+            "https://provider.example/v1/chat",
+            "https://provider.example/v1/chat",
+        ),
+        (
+            "https://gateway.example/api/chat",
+            "openai_chat",
+            "https://gateway.example/api/chat",
+            "https://gateway.example/api/chat",
         ),
         (
             "https://provider.example/v1/chat/completions/",

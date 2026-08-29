@@ -83,6 +83,11 @@ _TRANSPORT_SWITCH_RE = re.compile(
     r"chat[ _-]?completions\s+api|/(?:v\d+/)?(?:responses|chat/completions))\b",
     flags=re.IGNORECASE,
 )
+_MODEL_TRANSPORT_UNSUPPORTED_RE = re.compile(
+    r"\bmodel\b.{0,120}\b(?:does not|doesn't|cannot|can't)\s+support\b"
+    r".{0,40}\b(?:responses api|chat[ _-]?completions api)\b",
+    flags=re.IGNORECASE,
+)
 _GENERIC_NOT_FOUND_RE = re.compile(
     r"(?<!resource )(?<!object )(?<!model )(?<!requested )\bnot found\b"
     r"|\binvalid url\b",
@@ -159,6 +164,8 @@ def _classify_transport_error(exc: BaseException) -> _TransportErrorClass:
         return _TransportErrorClass.AUTH_OR_POLICY
     if _MODEL_ERROR_RE.search(text):
         return _TransportErrorClass.MODEL_ERROR
+    if status in {400, 404, 405, 422} and _MODEL_TRANSPORT_UNSUPPORTED_RE.search(text):
+        return _TransportErrorClass.TRANSPORT_UNSUPPORTED
     if _REQUEST_VALIDATION_RE.search(text):
         return _TransportErrorClass.REQUEST_VALIDATION
     if status not in {400, 404, 405, 422}:
@@ -313,6 +320,20 @@ class BaseProvider:
             if isinstance(value, int) and value >= 0:
                 return value
         for outer, inner in caps.usage_fields.cache_read_nested:
+            nested = usage.get(outer)
+            if isinstance(nested, dict):
+                value = nested.get(inner)
+                if isinstance(value, int) and value >= 0:
+                    return value
+        return 0
+
+    def extract_cache_write(self, usage: dict, caps: ModelCapabilities) -> int:
+        """Extract provider-reported prompt-cache creation tokens."""
+        for key in caps.usage_fields.cache_write_flat:
+            value = usage.get(key)
+            if isinstance(value, int) and value >= 0:
+                return value
+        for outer, inner in caps.usage_fields.cache_write_nested:
             nested = usage.get(outer)
             if isinstance(nested, dict):
                 value = nested.get(inner)

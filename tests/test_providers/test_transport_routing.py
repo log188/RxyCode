@@ -292,6 +292,18 @@ def test_auth_policy_rate_timeout_and_server_errors_never_fallback(status):
         (400, "parameter endpoint is not supported", False, "REQUEST_VALIDATION"),
         (400, "protocol not supported", True, "TRANSPORT_UNSUPPORTED"),
         (400, "Responses API is not supported", True, "TRANSPORT_UNSUPPORTED"),
+        (
+            400,
+            "This model does not support the Responses API",
+            True,
+            "TRANSPORT_UNSUPPORTED",
+        ),
+        (
+            400,
+            "This model does not support Chat Completions API",
+            True,
+            "TRANSPORT_UNSUPPORTED",
+        ),
         (400, "use /chat/completions instead", True, "TRANSPORT_UNSUPPORTED"),
         (404, "No such model", False, "MODEL_ERROR"),
         (404, "requested model could not be found", False, "MODEL_ERROR"),

@@ -24,7 +24,9 @@ if str(ROOT) not in sys.path:
 from core.agent_v2 import AgentV2  # noqa: E402
 
 
-def _percentile(values: list[float], percentile: float) -> float:
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
     ordered = sorted(values)
     index = max(0, math.ceil(percentile * len(ordered)) - 1)
     return ordered[index]
@@ -94,11 +96,11 @@ async def _stage(concurrency: int, requests: int, chunks: int) -> dict:
         "errors": len(errors),
         "error_samples": errors[:3],
         "elapsed_s": round(elapsed, 4),
-        "throughput_requests_s": round(len(latencies) / elapsed, 2),
+        "throughput_requests_s": round(len(latencies) / elapsed, 2) if elapsed else 0.0,
         "latency_ms": {
-            "p50": round(_percentile(latencies, 0.50), 3),
-            "p95": round(_percentile(latencies, 0.95), 3),
-            "p99": round(_percentile(latencies, 0.99), 3),
+            "p50": _percentile(latencies, 0.50),
+            "p95": _percentile(latencies, 0.95),
+            "p99": _percentile(latencies, 0.99),
         },
         "pending_task_leaks": leaked_tasks,
     }

@@ -156,6 +156,88 @@ def test_native_anthropic_route_is_messages_only():
     ) == ("openai_chat",)
 
 
+def test_native_thinking_blocks_are_replayable_with_signatures():
+    messages = [
+        AIMessage(
+            content=[
+                {"type": "thinking", "thinking": "plan", "signature": "sig-1"},
+                {"type": "redacted_thinking", "data": "opaque"},
+                {"type": "text", "text": "calling a tool"},
+            ],
+            tool_calls=[
+                {"name": "read", "args": {"path": "a.py"}, "id": "tool-1"}
+            ],
+        )
+    ]
+    replay = AgentV2._to_anthropic_messages(messages)
+    assert replay[0].content[0] == {
+        "type": "thinking",
+        "thinking": "plan",
+        "signature": "sig-1",
+    }
+    assert replay[0].content[1] == {
+        "type": "redacted_thinking",
+        "data": "opaque",
+    }
+
+
+def test_native_cache_control_is_moved_to_content_block_with_ttl():
+    messages = [
+        SystemMessage(
+            content="stable system",
+            additional_kwargs={
+                "cache_control": {"type": "ephemeral", "ttl": "1h"}
+            },
+        ),
+        HumanMessage(content="request"),
+    ]
+    replay = AgentV2._to_anthropic_messages(messages)
+    assert replay[0].content == [
+        {
+            "type": "text",
+            "text": "stable system",
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+    ]
+
+
+def test_anthropic_cache_write_usage_is_extracted():
+    provider = AnthropicProvider()
+    caps = provider.capabilities(_config())
+    assert provider.extract_cache_write(
+        {"input_token_details": {"cache_creation": 17}}, caps
+    ) == 17
+
+
+def test_anthropic_cache_write_usage_reaches_token_stats(monkeypatch):
+    observed = []
+    monkeypatch.setattr(
+        agent_v2.token_stats,
+        "add_real_usage",
+        lambda input_tokens, output_tokens, cache_read, cache_write: observed.append(
+            (input_tokens, output_tokens, cache_read, cache_write)
+        ),
+    )
+    response = SimpleNamespace(
+        usage_metadata={
+            "input_tokens": 20,
+            "output_tokens": 4,
+            "input_token_details": {
+                "cache_read": 2,
+                "cache_creation": 17,
+            },
+        },
+        response_metadata={},
+    )
+    provider = AnthropicProvider()
+    agent_v2._record_usage(
+        response,
+        provider=provider,
+        caps=provider.capabilities(_config()),
+    )
+    assert observed == [(20, 4, 2, 17)]
+
+
 def test_missing_langchain_anthropic_dependency_is_diagnostic(monkeypatch):
     provider = AnthropicProvider()
     monkeypatch.setattr(agent_v2.providers, "resolve", lambda _cfg: provider)

@@ -1031,11 +1031,29 @@ def _record_usage(
     um = getattr(resp, "usage_metadata", None)
     if um:
         usage = _merged_usage_dict(resp)
-        token_stats.add_real_usage(
-            usage.get("input_tokens", 0),
-            usage.get("output_tokens", 0),
-            provider.extract_cache_read(usage, caps),
+        cache_read = provider.extract_cache_read(usage, caps)
+        cache_write_extractor = getattr(provider, "extract_cache_write", None)
+        cache_write = (
+            cache_write_extractor(usage, caps)
+            if callable(cache_write_extractor)
+            else 0
         )
+        try:
+            token_stats.add_real_usage(
+                usage.get("input_tokens", 0),
+                usage.get("output_tokens", 0),
+                cache_read,
+                cache_write,
+            )
+        except TypeError:
+            # Preserve compatibility with lightweight test doubles and older
+            # embedders that still expose the historical three-argument hook;
+            # never hide a non-zero write count behind that fallback.
+            if cache_write:
+                raise
+            token_stats.add_real_usage(
+                usage.get("input_tokens", 0), usage.get("output_tokens", 0), cache_read
+            )
         return int(usage.get("input_tokens", 0) or 0), int(
             usage.get("output_tokens", 0) or 0
         )
@@ -1047,8 +1065,21 @@ def _record_usage(
         completion_toks = int(getattr(raw_usage, "completion_tokens", 0) or 0)
         usage_dict = _usage_obj_to_dict(raw_usage)
         cache_read = provider.extract_cache_read(usage_dict, caps)
+        cache_write_extractor = getattr(provider, "extract_cache_write", None)
+        cache_write = (
+            cache_write_extractor(usage_dict, caps)
+            if callable(cache_write_extractor)
+            else 0
+        )
         if prompt_toks > 0 or completion_toks > 0:
-            token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
+            try:
+                token_stats.add_real_usage(
+                    prompt_toks, completion_toks, cache_read, cache_write
+                )
+            except TypeError:
+                if cache_write:
+                    raise
+                token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
             # B3 (CB3): DeepSeek 自动前缀验证——不注入 cache_control，用
             # prompt_cache_hit_tokens 验证前缀是否生效，失败记录警告而非静默。
             if getattr(provider, "name", "") == "deepseek":
@@ -2494,6 +2525,42 @@ class AgentV2:
         return out
 
     @staticmethod
+    def _to_anthropic_messages(messages) -> list:
+        """Promote cache metadata into native Anthropic content blocks.
+
+        ``cache_control`` stored on ``additional_kwargs`` is convenient for
+        the shared OpenAI converter, but ChatAnthropic sends native Messages
+        and expects the field on a text content block.  Keep this conversion
+        local to the native transport so the legacy Chat wire is unchanged.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        converted = []
+        for message in messages:
+            ak = dict(getattr(message, "additional_kwargs", None) or {})
+            cache_control = ak.pop("cache_control", None)
+            if not cache_control or not isinstance(
+                message, (SystemMessage, HumanMessage)
+            ):
+                converted.append(message)
+                continue
+            content = getattr(message, "content", "")
+            if isinstance(content, str):
+                blocks = [{"type": "text", "text": content, "cache_control": dict(cache_control)}]
+            elif isinstance(content, list):
+                blocks = [dict(block) if isinstance(block, dict) else block for block in content]
+                text_blocks = [block for block in blocks if isinstance(block, dict) and block.get("type") == "text"]
+                if text_blocks:
+                    text_blocks[-1]["cache_control"] = dict(cache_control)
+                else:
+                    blocks.append({"type": "text", "text": "", "cache_control": dict(cache_control)})
+            else:
+                blocks = [{"type": "text", "text": str(content), "cache_control": dict(cache_control)}]
+            cls = SystemMessage if isinstance(message, SystemMessage) else HumanMessage
+            converted.append(cls(content=blocks, additional_kwargs=ak))
+        return converted
+
+    @staticmethod
     def _tool_to_openai(tool) -> dict:
         """Convert a LangChain tool to an OpenAI function-tool dict."""
         schema = None
@@ -2565,9 +2632,11 @@ class AgentV2:
         ``AIMessageChunk`` output and never reconstructs provider SSE itself.
         """
         saw_legal_terminal = False
+        saw_refusal = False
         async for item in stream:
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
+            refusal_parts: list[str] = []
             content = getattr(item, "content", "")
             if isinstance(content, str):
                 if content:
@@ -2587,6 +2656,11 @@ class AgentV2:
                                 reasoning_parts.append(
                                     str(summary.get("text") or "")
                                 )
+                    elif block_type == "refusal":
+                        refusal = str(block.get("refusal") or "")
+                        if refusal:
+                            refusal_parts.append(refusal)
+                            saw_refusal = True
 
             tool_deltas = []
             for call in getattr(item, "tool_call_chunks", None) or []:
@@ -2637,7 +2711,11 @@ class AgentV2:
                 status = str(metadata.get("status") or "").strip().casefold()
                 if status == "completed":
                     saw_legal_terminal = True
-                    finish_reason = "tool_calls" if tool_deltas else "stop"
+                    finish_reason = (
+                        "content_filter"
+                        if saw_refusal
+                        else ("tool_calls" if tool_deltas else "stop")
+                    )
                 elif status == "incomplete":
                     details = metadata.get("incomplete_details") or {}
                     reason = (
@@ -2667,7 +2745,7 @@ class AgentV2:
                         "Responses stream ended without a valid terminal response status"
                     )
             delta = SimpleNamespace(
-                content="".join(text_parts),
+                content="".join(text_parts) + "".join(refusal_parts),
                 reasoning_content="".join(reasoning_parts),
                 tool_calls=tool_deltas,
             )
@@ -2693,6 +2771,7 @@ class AgentV2:
         async for item in stream:
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
+            native_reasoning_blocks: list[dict] = []
             content = getattr(item, "content", "")
             if isinstance(content, str):
                 if content:
@@ -2710,6 +2789,9 @@ class AgentV2:
                         reasoning_parts.append(
                             str(block.get("thinking") or "")
                         )
+                        native_reasoning_blocks.append(dict(block))
+                    elif block_type == "redacted_thinking":
+                        native_reasoning_blocks.append(dict(block))
 
             tool_deltas = []
             for call in getattr(item, "tool_call_chunks", None) or []:
@@ -2732,6 +2814,12 @@ class AgentV2:
                 input_details = usage_metadata.get("input_token_details") or {}
                 output_details = usage_metadata.get("output_token_details") or {}
                 cached_tokens = int(input_details.get("cache_read", 0) or 0)
+                cache_write_tokens = int(
+                    input_details.get("cache_creation", 0)
+                    or input_details.get("cache_creation_input_tokens", 0)
+                    or usage_metadata.get("cache_creation_input_tokens", 0)
+                    or 0
+                )
                 reasoning_tokens = int(output_details.get("reasoning", 0) or 0)
                 usage = SimpleNamespace(
                     prompt_tokens=int(usage_metadata.get("input_tokens", 0) or 0),
@@ -2743,8 +2831,10 @@ class AgentV2:
                     # cache creation.  The plural fields below remain for
                     # the existing internal/OpenAI-shaped assertions.
                     input_token_details=SimpleNamespace(
-                        cache_read=cached_tokens
+                        cache_read=cached_tokens,
+                        cache_creation=cache_write_tokens,
                     ),
+                    cache_creation_input_tokens=cache_write_tokens,
                     input_tokens_details=SimpleNamespace(
                         cached_tokens=cached_tokens
                     ),
@@ -2798,6 +2888,7 @@ class AgentV2:
                 ],
                 usage=usage,
                 _rxy_anthropic_terminal=terminal,
+                _rxy_anthropic_native_blocks=native_reasoning_blocks,
             )
         if not saw_legal_terminal:
             raise RuntimeError(
@@ -3671,36 +3762,74 @@ class AgentV2:
             # 不依赖全局 is None（避免多请求/并发污染）。
             nonlocal _ttft_start, client
             _ttft_start = time.monotonic()
+            # Rebuild provider-dependent kwargs for every attempt.  A
+            # Responses-first failure must not carry its (possibly stripped)
+            # fields into the Chat fallback, and vice versa.
+            attempt_payload = dict(payload)
+            attempt_extra = {}
+            original_extra = payload.get("extra_body") or {}
+            if isinstance(original_extra, dict) and "prompt_cache_key" in original_extra:
+                attempt_extra["prompt_cache_key"] = original_extra["prompt_cache_key"]
+            if provider is not None and caps is not None:
+                attempt_cfg = dict(self.model_config)
+                attempt_cfg["api_transport"] = active_transport
+                attempt_cfg.setdefault("resolved_max_tokens", payload["max_tokens"])
+                attempt_cfg.setdefault("api_key", "raw-stream")
+                attempt_cfg.setdefault("effort", str(self.model_config.get("effort") or "balanced"))
+                attempt_kwargs = provider.llm_kwargs(attempt_cfg, caps)
+                if isinstance(attempt_kwargs.get("extra_body"), dict):
+                    attempt_extra.update(attempt_kwargs["extra_body"])
+                attempt_payload.pop("reasoning_effort", None)
+                if attempt_kwargs.get("reasoning_effort") is not None:
+                    attempt_payload["reasoning_effort"] = attempt_kwargs["reasoning_effort"]
+                if "temperature" in attempt_kwargs:
+                    attempt_payload["temperature"] = attempt_kwargs["temperature"]
+                else:
+                    attempt_payload.pop("temperature", None)
+                # A greeting/no-tool turn can explicitly disable thinking for
+                # this request.  Rebuilding provider kwargs per fallback
+                # attempt must not resurrect the normal effort value (or its
+                # ``None`` placeholder) that the first payload removed.
+                if getattr(self, "_thinking_disabled_this_turn", False):
+                    attempt_payload.pop("reasoning_effort", None)
+                    if "thinking" in attempt_extra:
+                        attempt_extra["thinking"] = {"type": "disabled"}
+            if attempt_extra:
+                attempt_payload["extra_body"] = attempt_extra
+            else:
+                attempt_payload.pop("extra_body", None)
             if active_transport == RESPONSES_TRANSPORT:
                 # ChatOpenAI already implements the full Responses input/tool/
                 # event conversion. Reuse it, then normalize its public chunks
                 # back to RxyCode's stable internal stream contract.
                 raw_llm = vars(self._llm).get("_llm", self._llm)
-                invoke_kwargs = {
-                    "max_tokens": payload["max_tokens"],
-                    "reasoning_effort": payload.get("reasoning_effort"),
-                }
-                if "temperature" in payload:
-                    invoke_kwargs["temperature"] = payload["temperature"]
-                if payload.get("extra_body"):
-                    invoke_kwargs["extra_body"] = payload["extra_body"]
-                if payload.get("tools"):
-                    invoke_kwargs["tools"] = payload["tools"]
+                invoke_kwargs = {"max_tokens": attempt_payload["max_tokens"]}
+                # Never pass a ``None`` effort: langchain-openai serializes the
+                # mere presence of this key as ``reasoning: {effort: null}``.
+                effort = attempt_payload.get("reasoning_effort")
+                if effort is not None:
+                    invoke_kwargs["reasoning_effort"] = effort
+                if "temperature" in attempt_payload:
+                    invoke_kwargs["temperature"] = attempt_payload["temperature"]
+                if attempt_payload.get("extra_body"):
+                    invoke_kwargs["extra_body"] = attempt_payload["extra_body"]
+                if attempt_payload.get("tools"):
+                    invoke_kwargs["tools"] = attempt_payload["tools"]
                 response_stream = raw_llm.astream(messages, **invoke_kwargs)
                 resp = self._responses_stream_as_chat_chunks(response_stream)
             elif active_transport == ANTHROPIC_MESSAGES_TRANSPORT:
                 raw_llm = vars(self._llm).get("_llm", self._llm)
-                if payload.get("tools"):
-                    raw_llm = raw_llm.bind_tools(payload["tools"])
+                if attempt_payload.get("tools"):
+                    raw_llm = raw_llm.bind_tools(attempt_payload["tools"])
                 response_stream = raw_llm.astream(
-                    messages,
-                    max_tokens=payload["max_tokens"],
+                    self._to_anthropic_messages(messages),
+                    max_tokens=attempt_payload["max_tokens"],
                 )
                 resp = self._anthropic_stream_as_chat_chunks(response_stream)
             elif active_transport == CHAT_TRANSPORT:
                 if client is None:
                     client = self._openai_client()
-                resp = client.create(**payload)
+                resp = client.create(**attempt_payload)
             else:
                 raise RuntimeError(
                     f"LLM transport execution is not configured: {active_transport}"
@@ -4968,6 +5097,11 @@ class AgentV2:
                 # ALWAYS stream for real-time token display
                 answer_parts = []
                 _reasoning_buffer = []
+                # Native Anthropic thinking blocks (including signatures) must
+                # be replayed verbatim on the next tool round.  The public
+                # stream normalizer exposes these blocks without making the
+                # generic OpenAI-shaped chunk contract depend on them.
+                _native_anthropic_blocks: list[dict] = []
                 tool_calls_acc: dict = {}
                 tool_call_delta_chunks = 0
                 tool_call_delta_chars = 0
@@ -5009,6 +5143,26 @@ class AgentV2:
                                 pass
                         continue
                     delta = chunk.choices[0].delta
+
+                    for native_block in (
+                        getattr(chunk, "_rxy_anthropic_native_blocks", None) or []
+                    ):
+                        if not isinstance(native_block, dict):
+                            continue
+                        block = dict(native_block)
+                        if (
+                            block.get("type") == "thinking"
+                            and _native_anthropic_blocks
+                            and _native_anthropic_blocks[-1].get("type") == "thinking"
+                        ):
+                            previous = _native_anthropic_blocks[-1]
+                            previous["thinking"] = str(previous.get("thinking") or "") + str(
+                                block.get("thinking") or ""
+                            )
+                            if block.get("signature"):
+                                previous["signature"] = block["signature"]
+                        else:
+                            _native_anthropic_blocks.append(block)
 
                     # Capture reasoning content (thinking) - stream live to the UI
                     reasoning = self._provider_reasoning(delta)
@@ -5249,10 +5403,15 @@ class AgentV2:
                 # back to the API."). Carry it in additional_kwargs so
                 # _to_openai_messages can preserve it on the wire.
                 ai_kwargs = {}
-                if _reasoning_buffer:
+                if _reasoning_buffer and not _native_anthropic_blocks:
                     ai_kwargs["reasoning_content"] = "".join(_reasoning_buffer)
+                assistant_content = answer
+                if _native_anthropic_blocks and getattr(getattr(self, "_provider", None), "name", "") == "anthropic":
+                    assistant_content = [*(_native_anthropic_blocks)]
+                    if answer:
+                        assistant_content.append({"type": "text", "text": answer})
                 messages.append(AIMessage(
-                    content=answer,
+                    content=assistant_content,
                     tool_calls=tool_calls,
                     additional_kwargs=ai_kwargs,
                 ))
@@ -6664,6 +6823,7 @@ class AgentV2:
         token_start = (token_stats.input_tokens, token_stats.output_tokens)
         # A19: 缓存命中 token 快照基线（run 级），用于 run.finished 的 cache_read 落盘
         cache_start = token_stats.cache_hit_tokens
+        cache_write_start = token_stats.cache_write_tokens
         status = "failed"
         evidence = []
         session_token = bind_session(session_id)
@@ -6868,6 +7028,7 @@ class AgentV2:
             output_tokens = max(0, token_stats.output_tokens - token_start[1])
             # A19: 本 run 缓存命中 token（可观测，供 evals/trajectory 计算命中率）
             cache_read = max(0, token_stats.cache_hit_tokens - cache_start)
+            cache_write = max(0, token_stats.cache_write_tokens - cache_write_start)
             trajectory.record(
                 "run.finished",
                 {
@@ -6887,6 +7048,7 @@ class AgentV2:
                         "output_tokens": output_tokens,
                         "total_tokens": input_tokens + output_tokens,
                         "cache_read": cache_read,
+                        "cache_write": cache_write,
                     },
                     "tool_evidence_count": len(evidence),
                     "hook_event_count": len(self._active_hook_audit),

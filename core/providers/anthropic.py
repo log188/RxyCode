@@ -67,6 +67,10 @@ _ANTHROPIC_USAGE = UsageFieldMap(
     cache_read_flat=("cache_read_input_tokens",),
     cache_read_nested=(("input_token_details", "cache_read"),),
     cache_write_flat=("cache_creation_input_tokens",),
+    cache_write_nested=(
+        ("input_token_details", "cache_creation"),
+        ("input_token_details", "cache_creation_input_tokens"),
+    ),
     # Native thinking blocks are normalized by AgentV2 to the stable internal
     # ``delta.reasoning_content`` field consumed by the TUI and tool loop.
     reasoning=("reasoning_content",),

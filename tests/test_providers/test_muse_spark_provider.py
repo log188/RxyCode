@@ -102,6 +102,12 @@ def test_provider_family_recognizes_known_muse_ids(model):
     assert isinstance(providers.resolve(_config(model)), MuseSparkProvider)
 
 
+def test_local_stress_percentile_handles_empty_latency_after_all_errors():
+    from scripts.stress_muse_provider import _percentile
+
+    assert _percentile([], 0.95) is None
+
+
 @pytest.mark.parametrize(
     "model", ["muse-glimmer-30b", "llama-4", "gpt-5.6-luna", "hy3"]
 )
@@ -298,6 +304,32 @@ async def test_responses_chunk_adapter_preserves_text_tools_and_usage():
     assert chunks[1].usage.prompt_tokens == 100
     assert chunks[1].usage.prompt_tokens_details.cached_tokens == 75
     assert chunks[1]._rxy_responses_terminal is True
+
+
+@pytest.mark.asyncio
+async def test_responses_refusal_is_visible_and_marks_content_filter():
+    async def source():
+        # Refusal and terminal status may arrive in different public chunks.
+        yield SimpleNamespace(
+            content=[{"type": "refusal", "refusal": "Not allowed"}],
+            tool_call_chunks=[],
+            usage_metadata=None,
+            chunk_position=None,
+            response_metadata={"status": "in_progress"},
+        )
+        yield SimpleNamespace(
+            content=[],
+            tool_call_chunks=[],
+            usage_metadata=None,
+            chunk_position="last",
+            response_metadata={"status": "completed"},
+        )
+
+    chunks = [
+        chunk async for chunk in AgentV2._responses_stream_as_chat_chunks(source())
+    ]
+    assert chunks[0].choices[0].delta.content == "Not allowed"
+    assert chunks[-1].choices[0].finish_reason == "content_filter"
 
 
 @pytest.mark.asyncio
@@ -583,7 +615,7 @@ async def test_raw_stream_uses_langchain_responses_without_unverified_effort(mon
         )
     ]
     assert chunks[0].choices[0].delta.content == "READY"
-    assert captured["kwargs"]["reasoning_effort"] is None
+    assert "reasoning_effort" not in captured["kwargs"]
     assert captured["kwargs"]["max_tokens"] == 1
 
 
