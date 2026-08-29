@@ -201,6 +201,28 @@ def test_native_cache_control_is_moved_to_content_block_with_ttl():
     ]
 
 
+def test_native_tool_cache_control_is_preserved_in_anthropic_shape():
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read",
+                "description": "Read a file",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+    ]
+    assert AgentV2._to_anthropic_tools(tools) == [
+        {
+            "name": "read",
+            "description": "Read a file",
+            "input_schema": {"type": "object", "properties": {}},
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+    ]
+
+
 def test_anthropic_cache_write_usage_is_extracted():
     provider = AnthropicProvider()
     caps = provider.capabilities(_config())

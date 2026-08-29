@@ -2582,6 +2582,35 @@ class AgentV2:
             },
         }
 
+    @staticmethod
+    def _to_anthropic_tools(tools: list[dict]) -> list[dict]:
+        """Convert shared OpenAI tool dicts to native Anthropic definitions.
+
+        ``ChatAnthropic.bind_tools`` preserves ``cache_control`` only when it
+        receives an Anthropic-shaped definition.  The shared tool loop stores
+        OpenAI-shaped definitions, so translate them at the native transport
+        boundary instead of losing a tools breakpoint during conversion.
+        """
+        converted = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                converted.append(tool)
+                continue
+            function = tool.get("function")
+            if tool.get("type") == "function" and isinstance(function, dict):
+                native = {
+                    "name": function.get("name", "tool"),
+                    "description": function.get("description", "") or "",
+                    "input_schema": function.get("parameters")
+                    or {"type": "object", "properties": {}},
+                }
+                if "cache_control" in tool:
+                    native["cache_control"] = dict(tool["cache_control"])
+                converted.append(native)
+            else:
+                converted.append(tool)
+        return converted
+
     def _provider_reasoning(self, delta) -> str:
         """Delegate reasoning extraction to the provider layer (A8).
 
@@ -3820,7 +3849,9 @@ class AgentV2:
             elif active_transport == ANTHROPIC_MESSAGES_TRANSPORT:
                 raw_llm = vars(self._llm).get("_llm", self._llm)
                 if attempt_payload.get("tools"):
-                    raw_llm = raw_llm.bind_tools(attempt_payload["tools"])
+                    raw_llm = raw_llm.bind_tools(
+                        self._to_anthropic_tools(attempt_payload["tools"])
+                    )
                 response_stream = raw_llm.astream(
                     self._to_anthropic_messages(messages),
                     max_tokens=attempt_payload["max_tokens"],
