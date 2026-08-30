@@ -109,6 +109,23 @@ def test_haiku_context_window_is_200k():
     assert caps.context_window == 200_000
 
 
+def test_dotted_catalog_ids_use_canonical_family():
+    dotted = providers.resolve({"model_name": "claude-haiku-4.5"}).capabilities(
+        {
+            "base_url": "https://api.anthropic.com/v1",
+            "model_name": "claude-haiku-4.5",
+        }
+    )
+    hyphen = providers.resolve({"model_name": "claude-haiku-4-5"}).capabilities(
+        {
+            "base_url": "https://api.anthropic.com/v1",
+            "model_name": "claude-haiku-4-5",
+        }
+    )
+    assert dotted.context_window == hyphen.context_window == 200_000
+    assert dotted.cache_min_block_tokens == hyphen.cache_min_block_tokens == 4096
+
+
 def test_supports_reasoning_and_tools():
     caps = providers.resolve({"model_name": "claude-opus-5"}).capabilities(
         {"model_name": "claude-opus-5"}

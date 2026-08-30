@@ -27,6 +27,18 @@ TTL_TIER_1H = 3600
 DEFAULT_TTL_SECONDS = TTL_TIER_5M
 
 
+def cache_control_for_ttl(ttl_seconds: int) -> dict:
+    """Anthropic cache_control block for a resolved TTL.
+
+    Only the documented 5m (omit ttl) and 1h (ttl=1h) tiers are expressed.
+    Other values keep the 5m default rather than inventing a vendor field.
+    """
+    control = {"type": "ephemeral"}
+    if int(ttl_seconds) == TTL_TIER_1H:
+        control["ttl"] = "1h"
+    return control
+
+
 def resolve_ttl_seconds(cfg: Optional[dict]) -> int:
     """解析 cache.ttl 配置为秒。
 
@@ -230,12 +242,7 @@ def apply_breakpoint_budget(
     ttl = resolve_ttl_seconds(cfg)
 
     result = list(messages)
-    cache_control = {"type": "ephemeral"}
-    # Anthropic's one-hour cache tier is a property of the content block, not
-    # a client constructor option.  Carry the resolved TTL through the same
-    # message metadata used by the OpenAI-compatible converter.
-    if ttl == 3600:
-        cache_control["ttl"] = "1h"
+    cache_control = cache_control_for_ttl(ttl)
     for block in allocated:
         if block == "system":
             first = result[0]

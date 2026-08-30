@@ -180,7 +180,12 @@ def _sampling_restricted(model_name: str) -> bool:
 
 def _family(model_name: str) -> str | None:
     """返回调研覆盖的型号规范名；未覆盖返回 None。"""
-    name = model_name.lower()
+    try:
+        from ..catalog import canonical_model_id
+    except ImportError:  # pragma: no cover - repo-root layout
+        from core.catalog import canonical_model_id
+
+    name = canonical_model_id("anthropic", model_name)
     if name in _ANTHROPIC_FAMILY:
         return name
     return None
@@ -387,13 +392,9 @@ class AnthropicProvider(BaseProvider):
                 kwargs["extra_body"] = body
             else:
                 kwargs.pop("extra_body", None)
-        # B3 (CB2): TTL 档位随请求生效——model_config["cache_ttl"]（秒，由调用方
-        # 从 config.cache.ttl 解析注入）写入 extra_body.cache_ttl；未设置不注入。
-        ttl = model_config.get("cache_ttl")
-        if isinstance(ttl, (int, float)) and ttl > 0:
-            body = dict(kwargs.get("extra_body") or {})
-            body["cache_ttl"] = int(ttl)
-            kwargs["extra_body"] = body
+        # Native TTL is expressed on content-block cache_control, never as a
+        # Chat Completions extra_body field.  OpenAI-compatible Claude proxies
+        # reject unknown cache_ttl and do not support prompt caching.
         return kwargs
 
     def matches(self, base_url: str, model_name: str) -> bool:

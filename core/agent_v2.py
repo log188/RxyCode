@@ -2648,145 +2648,11 @@ class AgentV2:
 
     @staticmethod
     async def _responses_stream_as_chat_chunks(stream):
-        """Translate LangChain Responses chunks to the legacy raw-chat shape.
+        """Translate LangChain Responses chunks to the legacy raw-chat shape."""
+        from .providers.responses_adapter import responses_stream_as_chat_chunks
 
-        RxyCode's tool loop intentionally consumes one stable internal stream
-        contract (``choices[0].delta``). LangChain owns the changing OpenAI
-        Responses event grammar; this adapter only normalizes its public
-        ``AIMessageChunk`` output and never reconstructs provider SSE itself.
-        """
-        saw_legal_terminal = False
-        saw_refusal = False
-        async for item in stream:
-            text_parts: list[str] = []
-            reasoning_parts: list[str] = []
-            refusal_parts: list[str] = []
-            content = getattr(item, "content", "")
-            if isinstance(content, str):
-                if content:
-                    text_parts.append(content)
-            elif isinstance(content, list):
-                for block in content:
-                    if not isinstance(block, dict):
-                        if isinstance(block, str):
-                            text_parts.append(block)
-                        continue
-                    block_type = str(block.get("type") or "")
-                    if block_type in {"text", "output_text"}:
-                        text_parts.append(str(block.get("text") or ""))
-                    elif block_type == "reasoning":
-                        for summary in block.get("summary") or []:
-                            if isinstance(summary, dict):
-                                reasoning_parts.append(
-                                    str(summary.get("text") or "")
-                                )
-                    elif block_type == "refusal":
-                        refusal = str(block.get("refusal") or "")
-                        if refusal:
-                            refusal_parts.append(refusal)
-                            saw_refusal = True
-
-            tool_deltas = []
-            for call in getattr(item, "tool_call_chunks", None) or []:
-                if not isinstance(call, dict):
-                    continue
-                tool_deltas.append(
-                    SimpleNamespace(
-                        index=call.get("index", 0),
-                        id=call.get("id"),
-                        function=SimpleNamespace(
-                            name=call.get("name"),
-                            arguments=call.get("args") or "",
-                        ),
-                    )
-                )
-
-            usage = None
-            usage_metadata = getattr(item, "usage_metadata", None)
-            if isinstance(usage_metadata, dict):
-                input_details = usage_metadata.get("input_token_details") or {}
-                output_details = usage_metadata.get("output_token_details") or {}
-                cached_tokens = int(input_details.get("cache_read", 0) or 0)
-                reasoning_tokens = int(output_details.get("reasoning", 0) or 0)
-                usage = SimpleNamespace(
-                    prompt_tokens=int(usage_metadata.get("input_tokens", 0) or 0),
-                    completion_tokens=int(
-                        usage_metadata.get("output_tokens", 0) or 0
-                    ),
-                    input_tokens_details=SimpleNamespace(
-                        cached_tokens=cached_tokens
-                    ),
-                    prompt_tokens_details=SimpleNamespace(
-                        cached_tokens=cached_tokens
-                    ),
-                    completion_tokens_details=SimpleNamespace(
-                        reasoning_tokens=reasoning_tokens
-                    ),
-                    output_tokens_details=SimpleNamespace(
-                        reasoning_tokens=reasoning_tokens
-                    ),
-                )
-
-            terminal = getattr(item, "chunk_position", None) == "last"
-            finish_reason = None
-            if terminal:
-                metadata = getattr(item, "response_metadata", None)
-                metadata = metadata if isinstance(metadata, dict) else {}
-                status = str(metadata.get("status") or "").strip().casefold()
-                if status == "completed":
-                    saw_legal_terminal = True
-                    finish_reason = (
-                        "content_filter"
-                        if saw_refusal
-                        else ("tool_calls" if tool_deltas else "stop")
-                    )
-                elif status == "incomplete":
-                    details = metadata.get("incomplete_details") or {}
-                    reason = (
-                        str(details.get("reason") or "").strip().casefold()
-                        if isinstance(details, dict)
-                        else ""
-                    )
-                    if reason == "max_output_tokens":
-                        saw_legal_terminal = True
-                        finish_reason = "length"
-                    elif reason == "content_filter":
-                        saw_legal_terminal = True
-                        finish_reason = "content_filter"
-                    else:
-                        raise RuntimeError(
-                            "Responses stream ended with incomplete status but no "
-                            "supported incomplete reason"
-                        )
-                elif status == "failed":
-                    raise RuntimeError("Responses stream ended with failed status")
-                else:
-                    # langchain-openai 1.4.1 drops response.failed/error and
-                    # then emits an empty synthetic last chunk.  At this layer
-                    # the missing status is the only reliable observable; do
-                    # not reconstruct or guess at the discarded provider event.
-                    raise RuntimeError(
-                        "Responses stream ended without a valid terminal response status"
-                    )
-            delta = SimpleNamespace(
-                content="".join(text_parts) + "".join(refusal_parts),
-                reasoning_content="".join(reasoning_parts),
-                tool_calls=tool_deltas,
-            )
-            yield SimpleNamespace(
-                choices=[
-                    SimpleNamespace(
-                        delta=delta,
-                        finish_reason=finish_reason,
-                    )
-                ],
-                usage=usage,
-                _rxy_responses_terminal=terminal,
-            )
-        if not saw_legal_terminal:
-            raise RuntimeError(
-                "Responses stream ended without a valid terminal response status"
-            )
+        async for chunk in responses_stream_as_chat_chunks(stream):
+            yield chunk
 
     @staticmethod
     async def _anthropic_stream_as_chat_chunks(stream):
@@ -3690,7 +3556,17 @@ class AgentV2:
             if injects_cache_control(contract) and payload["tools"]:
                 last_tool = payload["tools"][-1]
                 if isinstance(last_tool, dict):
-                    last_tool["cache_control"] = {"type": "ephemeral"}
+                    from .cache_policy import (
+                        cache_control_for_ttl,
+                        resolve_ttl_seconds,
+                    )
+
+                    last_tool["cache_control"] = cache_control_for_ttl(
+                        resolve_ttl_seconds(
+                            getattr(self, "_cache_cfg", None)
+                            or (_settings.load_config() or {})
+                        )
+                    )
 
         # Keep provider latency diagnosable without logging prompt text,
         # credentials, workspace paths, or tool arguments.  An HTTP 200 can
@@ -3800,7 +3676,11 @@ class AgentV2:
                 attempt_cfg.setdefault("resolved_max_tokens", payload["max_tokens"])
                 attempt_cfg.setdefault("api_key", "raw-stream")
                 attempt_cfg.setdefault("effort", str(self.model_config.get("effort") or "balanced"))
-                attempt_kwargs = provider.llm_kwargs(attempt_cfg, caps)
+                attempt_caps = caps
+                caps_resolver = getattr(provider, "capabilities", None)
+                if callable(caps_resolver):
+                    attempt_caps = caps_resolver(attempt_cfg)
+                attempt_kwargs = provider.llm_kwargs(attempt_cfg, attempt_caps)
                 if isinstance(attempt_kwargs.get("extra_body"), dict):
                     attempt_extra.update(attempt_kwargs["extra_body"])
                 attempt_payload.pop("reasoning_effort", None)
@@ -3847,9 +3727,12 @@ class AgentV2:
                     raw_llm = raw_llm.bind_tools(
                         self._to_anthropic_tools(attempt_payload["tools"])
                     )
+                astream_kwargs = {"max_tokens": attempt_payload["max_tokens"]}
+                if getattr(self, "_thinking_disabled_this_turn", False):
+                    astream_kwargs["thinking"] = {"type": "disabled"}
                 response_stream = raw_llm.astream(
                     self._to_anthropic_messages(messages),
-                    max_tokens=attempt_payload["max_tokens"],
+                    **astream_kwargs,
                 )
                 resp = self._anthropic_stream_as_chat_chunks(response_stream)
             elif active_transport == CHAT_TRANSPORT:

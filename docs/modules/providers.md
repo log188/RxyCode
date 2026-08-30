@@ -107,15 +107,18 @@ stop reason。缺少依赖时明确报错，不静默降级到 OpenAI client。
 
 `config/model_endpoint.py` 是持久化、连接探测和运行时共同使用的 URL 边界：它把完整
 `/chat`、`/chat/completions`、`/responses`、`/messages` 精确还原为 API root，再由
-对应 SDK 或探测层只拼接一次资源路径。多段网关前缀会保留；协议与完整资源冲突、
+对应 SDK 或探测层只拼接一次资源路径（``/chat`` 是 Chat Completions 别名，探针与
+OpenAI SDK 都落到 ``/chat/completions``）。多段网关前缀会保留；协议与完整资源冲突、
 query、fragment、userinfo、非法端口，以及携带凭据的明文 HTTP 均在联网前拒绝。
 
 回退只允许在尚未产生 text/reasoning/tool output 时处理明确的 endpoint/protocol
 unsupported：只有 400/404/405/422 且错误短语明确指向 endpoint、route、protocol 或命名 API 时才回退；对于 SDK 明确暴露的 `/responses` 或 `/chat/completions` 请求路径，FastAPI/nginx 的通用 `Not Found`/`Invalid URL` 也可作为端点不存在证据；没有请求路径证据的普通 404/405 保持失败。认证、DataPolicy、限流、网络、
 超时、5xx、内容安全、普通参数错误以及部分输出后的错误都不换接口。
 
-P2 Responses-first：OpenAI/DeepSeek 官方 Host、火山方舟官方 Host 上的 Doubao、
-DashScope/Qwen 官方 Host 与预设、OpenRouter、Groq 预设和 Other/custom。火山方舟托管的
+P2 Responses-first：OpenAI 官方 Host、火山方舟官方 Host 上的 Doubao、
+DashScope/Qwen 官方 Host 与预设、OpenRouter、Groq 预设和 Other/custom。DeepSeek 官方
+Host 保持 Chat Completions（thinking 工具轮必须回放 ``reasoning_content``；Responses
+的 ``reasoning_text`` item 尚未能按原生 item 重放）。火山方舟托管的
 第三方模型不因 Ark Host 被整体切换；Together 与缺少官方 Responses 证据的预设保持
 Chat；OpenCode Go 普通模型也不整体切换，由精确 Provider 单独声明。
 

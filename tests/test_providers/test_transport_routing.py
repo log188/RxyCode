@@ -189,7 +189,7 @@ def test_official_response_hosts_prefer_responses_without_saved_preset_metadata(
     ) == ("openai_responses", "openai_chat")
     assert DeepSeekProvider().transport_candidates(
         {"base_url": "https://api.deepseek.com/v1"}
-    ) == ("openai_responses", "openai_chat")
+    ) == ("openai_chat",)
     assert DoubaoProvider().transport_candidates(
         {"base_url": "https://ark.cn-beijing.volces.com/api/v3"}
     ) == ("openai_responses", "openai_chat")
@@ -204,15 +204,15 @@ def test_official_response_hosts_prefer_responses_without_saved_preset_metadata(
 
 
 @pytest.mark.parametrize(
-    "base_url",
+    "configured_url",
     [
         "https://dashscope.aliyuncs.com.attacker.example/compatible-mode/v1",
         "https://dashscope.aliyuncs.com@attacker.example/compatible-mode/v1",
         "https://maas.aliyuncs.com.attacker.example/compatible-mode/v1",
     ],
 )
-def test_qwen_response_host_check_rejects_spoofs(base_url):
-    assert QwenProvider().transport_candidates({"base_url": base_url}) == (
+def test_qwen_response_host_check_rejects_spoofs(configured_url):
+    assert QwenProvider().transport_candidates({"base_url": configured_url}) == (
         "openai_chat",
     )
 

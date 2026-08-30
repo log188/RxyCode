@@ -14,9 +14,10 @@ from .model_transport import (
 
 
 _RESOURCE_SUFFIXES: dict[LLMTransport, tuple[str, ...]] = {
-    # Only the canonical resource is rewritten globally.  A custom gateway
-    # ending in ``/api/chat`` may intentionally expose that exact path.
-    OPENAI_CHAT_TRANSPORT: ("/chat/completions",),
+    # Longer suffix first.  ``/chat`` is an alias for the Chat Completions
+    # resource and must strip back to the API root so probe and the OpenAI
+    # SDK both hit ``/chat/completions``.
+    OPENAI_CHAT_TRANSPORT: ("/chat/completions", "/chat"),
     OPENAI_RESPONSES_TRANSPORT: ("/responses",),
     ANTHROPIC_MESSAGES_TRANSPORT: ("/messages",),
 }
@@ -104,12 +105,6 @@ def llm_endpoint_url(
 ) -> str:
     """Return the final resource URL, appending the protocol path once."""
     canonical = normalize_api_transport(transport, allow_auto=False)
-    parsed = _validated_split(base_url, require_https=require_https)
-    # ``/chat`` is a valid custom resource path.  It is no longer globally
-    # treated as an alias for ``/chat/completions``; only the canonical
-    # resource is synthesized when the configured URL is an API root.
-    if canonical == OPENAI_CHAT_TRANSPORT and parsed.path.casefold().endswith("/chat"):
-        return urlunsplit(parsed)
     root = normalize_llm_endpoint(
         base_url,
         canonical,

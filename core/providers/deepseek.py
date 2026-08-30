@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
         ModelPricing,
         UsageFieldMap,
     )
-from .base import BaseProvider, CHAT_TRANSPORT, RESPONSES_TRANSPORT
+from .base import BaseProvider, CHAT_TRANSPORT
 
 _DEEPSEEK_USAGE = UsageFieldMap(
     cache_read_flat=("prompt_cache_hit_tokens",),
@@ -147,7 +147,13 @@ class DeepSeekProvider(BaseProvider):
         except ValueError:
             host = ""
         if host == "deepseek.com" or host.endswith(".deepseek.com"):
-            return (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
+            # DeepSeek thinking + tools requires Chat Completions
+            # ``reasoning_content`` echo.  Official Responses items use
+            # ``reasoning_text`` parts that LangChain/ChatOpenAI does not
+            # replay as native ``reasoning`` input items, which 400s the
+            # next tool turn.  Keep Chat first until that wire contract
+            # is implemented; explicit api_transport still wins above.
+            return (CHAT_TRANSPORT,)
         return super().transport_candidates(model_config)
 
     def capabilities(self, model_config: dict) -> ModelCapabilities:

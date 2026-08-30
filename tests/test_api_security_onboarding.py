@@ -444,12 +444,10 @@ def test_custom_probe_falls_back_to_chat_only_when_responses_endpoint_is_missing
         provider_model_id="provider/model-v2",
     )
 
-    assert result == {
-        "success": True,
-        "elapsed": result["elapsed"],
-        "reply": "CHAT_OK",
-            "transport": "openai_chat",
-    }
+    assert result["success"] is True
+    assert result["reply"] == "CHAT_OK"
+    assert result["transport"] == "openai_chat"
+    assert result.get("outcome") == "completed"
     assert [url.rsplit("/", 1)[-1] for url, _ in observed] == [
         "responses",
         "completions",

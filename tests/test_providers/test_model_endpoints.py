@@ -14,19 +14,19 @@ from config.model_endpoint import (
 
 
 @pytest.mark.parametrize(
-    ("base_url", "transport", "root", "endpoint"),
+    ("configured_url", "transport", "root", "endpoint"),
     [
         (
             "https://provider.example/v1/chat",
             "openai_chat",
-            "https://provider.example/v1/chat",
-            "https://provider.example/v1/chat",
+            "https://provider.example/v1",
+            "https://provider.example/v1/chat/completions",
         ),
         (
             "https://gateway.example/api/chat",
             "openai_chat",
-            "https://gateway.example/api/chat",
-            "https://gateway.example/api/chat",
+            "https://gateway.example/api",
+            "https://gateway.example/api/chat/completions",
         ),
         (
             "https://provider.example/v1/chat/completions/",
@@ -61,16 +61,24 @@ from config.model_endpoint import (
     ],
 )
 def test_normalization_removes_only_the_matching_terminal_resource(
-    base_url, transport, root, endpoint
+    configured_url, transport, root, endpoint
 ):
-    assert normalize_llm_endpoint(base_url, transport) == root
-    assert llm_endpoint_url(base_url, transport) == endpoint
+    assert normalize_llm_endpoint(configured_url, transport) == root
+    assert llm_endpoint_url(configured_url, transport) == endpoint
+    # Probe and the official OpenAI SDK must hit the same final resource.
+    if transport == "openai_chat":
+        assert llm_client_base_url(configured_url, transport) + "/chat/completions" == (
+            endpoint
+        )
+    elif transport == "openai_responses":
+        assert llm_client_base_url(configured_url, transport) + "/responses" == endpoint
 
 
 @pytest.mark.parametrize(
-    ("base_url", "expected"),
+    ("configured_url", "expected"),
     [
         ("https://provider.example/v1/CHAT/COMPLETIONS/", "openai_chat"),
+        ("https://provider.example/v1/chat", "openai_chat"),
         ("https://provider.example/v1/Responses", "openai_responses"),
         ("https://provider.example/v1/Messages/", "anthropic_messages"),
         ("https://provider.example/v1/myresponses", None),
@@ -78,26 +86,26 @@ def test_normalization_removes_only_the_matching_terminal_resource(
     ],
 )
 def test_explicit_resource_detection_is_case_insensitive_and_exact(
-    base_url, expected
+    configured_url, expected
 ):
-    assert detect_explicit_transport(base_url) == expected
+    assert detect_explicit_transport(configured_url) == expected
 
 
 @pytest.mark.parametrize(
-    ("base_url", "transport"),
+    ("configured_url", "transport"),
     [
         ("https://provider.example/v1/responses", "openai_chat"),
         ("https://provider.example/v1/messages", "openai_responses"),
         ("https://provider.example/v1/chat/completions", "anthropic_messages"),
     ],
 )
-def test_explicit_resource_conflict_fails_before_network(base_url, transport):
+def test_explicit_resource_conflict_fails_before_network(configured_url, transport):
     with pytest.raises(ValueError, match="conflicts"):
-        normalize_llm_endpoint(base_url, transport)
+        normalize_llm_endpoint(configured_url, transport)
 
 
 @pytest.mark.parametrize(
-    "base_url",
+    "configured_url",
     [
         "https://user@provider.example/v1",
         "https://provider.example/v1?mode=test",
@@ -106,9 +114,9 @@ def test_explicit_resource_conflict_fails_before_network(base_url, transport):
         "https://provider.example/v1 with-space",
     ],
 )
-def test_unsafe_or_ambiguous_urls_are_rejected(base_url):
+def test_unsafe_or_ambiguous_urls_are_rejected(configured_url):
     with pytest.raises(ValueError, match="base_url"):
-        normalize_llm_endpoint(base_url, "openai_chat")
+        normalize_llm_endpoint(configured_url, "openai_chat")
 
 
 def test_plain_http_is_rejected_when_a_credential_will_be_sent():
@@ -139,7 +147,7 @@ def test_similar_suffix_is_preserved_as_part_of_the_api_root():
 
 
 @pytest.mark.parametrize(
-    ("base_url", "expected_url", "expected_transport", "payload"),
+    ("configured_url", "expected_url", "expected_transport", "payload"),
     [
         (
             "https://provider.example/v1/responses",
@@ -156,7 +164,7 @@ def test_similar_suffix_is_preserved_as_part_of_the_api_root():
     ],
 )
 def test_custom_probe_does_not_duplicate_an_explicit_resource(
-    monkeypatch, base_url, expected_url, expected_transport, payload
+    monkeypatch, configured_url, expected_url, expected_transport, payload
 ):
     from config import model_manager
 
@@ -188,7 +196,7 @@ def test_custom_probe_does_not_duplicate_an_explicit_resource(
     credential = "test-" + uuid4().hex
     result = model_manager.probe_model_connection(
         api_key=credential,
-        base_url=base_url,
+        base_url=configured_url,
         provider_model_id="provider/model",
     )
 
@@ -247,14 +255,14 @@ def test_anthropic_probe_uses_native_messages_auth_and_validates_reply(monkeypat
 
 
 @pytest.mark.parametrize(
-    ("base_url", "payload"),
+    ("configured_url", "payload"),
     [
         ("https://provider.example/v1", {"id": "resp_missing_output"}),
         ("https://provider.example/v1/chat", {"id": "chat_missing_choices"}),
     ],
 )
 def test_probe_rejects_http_200_without_transport_reply_body(
-    monkeypatch, base_url, payload
+    monkeypatch, configured_url, payload
 ):
     from config import model_manager
 
@@ -282,12 +290,55 @@ def test_probe_rejects_http_200_without_transport_reply_body(
     monkeypatch.setattr(model_manager.httpx, "Client", Client)
     result = model_manager.probe_model_connection(
         api_key="test-" + uuid4().hex,
-        base_url=base_url,
+        base_url=configured_url,
         provider_model_id="provider/model",
     )
 
     assert result["success"] is False
     assert "no valid" in result["error"]
+
+
+def test_probe_accepts_completed_response_without_visible_text(monkeypatch):
+    from config import model_manager
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "content": [{"type": "reasoning_text", "text": "plan"}],
+                    }
+                ],
+            }
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, _url, *, json, headers):
+            del json, headers
+            return Response()
+
+    monkeypatch.setattr(model_manager.httpx, "Client", Client)
+    result = model_manager.probe_model_connection(
+        api_key="test-" + uuid4().hex,
+        base_url="https://provider.example/v1/responses",
+        provider_model_id="provider/model",
+    )
+    assert result["success"] is True
+    assert result["reply"] is None
+    assert result["outcome"] == "completed_no_text"
 
 
 def test_add_model_persists_api_root_and_explicit_transport(monkeypatch):

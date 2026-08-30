@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.agent_v2 import AgentV2  # noqa: E402
+from core.providers.responses_adapter import (  # noqa: E402
+    responses_stream_as_chat_chunks,
+)
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
@@ -61,7 +63,7 @@ async def _run_one(request_id: int, chunks: int, semaphore: asyncio.Semaphore):
     terminal_count = 0
     usage_seen = False
     async with semaphore:
-        async for chunk in AgentV2._responses_stream_as_chat_chunks(
+        async for chunk in responses_stream_as_chat_chunks(
             _source(request_id, chunks)
         ):
             text_length += len(chunk.choices[0].delta.content or "")

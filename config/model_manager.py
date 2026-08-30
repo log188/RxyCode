@@ -844,52 +844,84 @@ def probe_model_connection(
             f"connection probe is not implemented for transport {transport}"
         )
 
-    def reply_from(data: object, transport: str) -> str | None:
+    def inspect_probe_body(
+        data: object, transport: str
+    ) -> tuple[bool, str | None, str]:
+        """Return (structurally_valid, visible_text, outcome).
+
+        Connection tests must accept reasoning-only / refusal / empty-text
+        completions.  Missing protocol shape is not a successful probe.
+        """
         if not isinstance(data, dict):
-            return None
+            return False, None, "invalid_body"
         if transport == OPENAI_CHAT_TRANSPORT:
             choices = data.get("choices")
             if not isinstance(choices, list) or not choices:
-                return None
+                return False, None, "invalid_body"
             first = choices[0]
             message = first.get("message") if isinstance(first, dict) else None
-            content = message.get("content") if isinstance(message, dict) else None
-            return content if isinstance(content, str) and content.strip() else None
+            if not isinstance(message, dict):
+                return False, None, "invalid_body"
+            content = message.get("content")
+            reasoning = message.get("reasoning_content")
+            text = content if isinstance(content, str) and content.strip() else None
+            if text is None and isinstance(reasoning, str) and reasoning.strip():
+                return True, None, "completed_no_text"
+            if text is None:
+                return True, None, "completed_no_text"
+            return True, text, "completed"
         if transport == OPENAI_RESPONSES_TRANSPORT:
+            status = str(data.get("status") or "").strip().casefold()
+            items = data.get("output")
+            has_items = isinstance(items, list)
+            if not has_items and status not in {"completed", "incomplete"}:
+                if isinstance(data.get("output_text"), str) and data["output_text"].strip():
+                    return True, data["output_text"], "completed"
+                return False, None, "invalid_body"
+            parts: list[str] = []
+            refused = False
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "refusal" or str(
+                    item.get("status") or ""
+                ).casefold() == "incomplete":
+                    refused = refused or item.get("type") == "refusal"
+                if item.get("type") == "message":
+                    for block in item.get("content") or []:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "refusal":
+                            refused = True
+                            continue
+                        if block.get("type") in {"output_text", "text"}:
+                            value = block.get("text")
+                            if isinstance(value, str):
+                                parts.append(value)
             direct = data.get("output_text")
             if isinstance(direct, str) and direct.strip():
-                return direct
-            items = data.get("output")
-        elif transport == ANTHROPIC_MESSAGES_TRANSPORT:
+                parts.append(direct)
+            text = "".join(parts).strip() or None
+            if refused and not text:
+                return True, None, "refused"
+            if text is None:
+                return True, None, "completed_no_text"
+            return True, text, "completed"
+        if transport == ANTHROPIC_MESSAGES_TRANSPORT:
             items = data.get("content")
-        else:
-            raise ValueError(f"unsupported probe response transport {transport}")
-        if not isinstance(items, list):
-            return None
-        parts: list[str] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            if transport == OPENAI_RESPONSES_TRANSPORT:
-                if item.get("type") != "message":
-                    continue
-                blocks = item.get("content") or []
-                if not isinstance(blocks, list):
-                    continue
-                for block in blocks:
-                    if isinstance(block, dict) and block.get("type") in {
-                        "output_text",
-                        "text",
-                    }:
-                        value = block.get("text")
-                        if isinstance(value, str):
-                            parts.append(value)
-            elif item.get("type") == "text":
-                value = item.get("text")
-                if isinstance(value, str):
-                    parts.append(value)
-        reply = "".join(parts)
-        return reply if reply.strip() else None
+            if not isinstance(items, list):
+                return False, None, "invalid_body"
+            parts: list[str] = []
+            for item in items:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    value = item.get("text")
+                    if isinstance(value, str):
+                        parts.append(value)
+            text = "".join(parts).strip() or None
+            if text is None:
+                return True, None, "completed_no_text"
+            return True, text, "completed"
+        raise ValueError(f"unsupported probe response transport {transport}")
 
     start = time.time()
     try:
@@ -904,21 +936,35 @@ def probe_model_connection(
                         data = resp.json()
                     except (ValueError, AttributeError):
                         data = {}
-                    reply = reply_from(data, transport)
-                    if reply is None:
-                        return {
-                            "success": False,
+                    valid, reply, outcome = inspect_probe_body(data, transport)
+                    if valid:
+                        result = {
+                            "success": True,
                             "elapsed": elapsed,
-                            "error": (
-                                "Provider returned HTTP 200 but no valid "
-                                f"{transport} reply body"
-                            ),
+                            "reply": reply,
                             "transport": transport,
+                            "outcome": outcome,
                         }
+                        if outcome == "refused":
+                            result["message"] = (
+                                "连接成功，但请求被策略拒绝"
+                            )
+                        return result
+                    next_transport = (
+                        candidates[index + 1]
+                        if index + 1 < len(candidates)
+                        else None
+                    )
+                    if next_transport:
+                        attempted.append(transport)
+                        continue
                     return {
-                        "success": True,
+                        "success": False,
                         "elapsed": elapsed,
-                        "reply": reply,
+                        "error": (
+                            "Provider returned HTTP 200 but no valid "
+                            f"{transport} reply body"
+                        ),
                         "transport": transport,
                     }
 

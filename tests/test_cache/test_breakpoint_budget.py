@@ -280,7 +280,7 @@ class TestApplyCacheControlDispatch:
         assert allocated == ["tools", "system", "messages"]
 
     def test_anthropic_llm_kwargs_injects_cache_ttl(self):
-        """luna 阻断项 1：TTL 注入 Anthropic 请求 extra_body.cache_ttl。"""
+        """TTL is not a Chat Completions extra_body field on Anthropic."""
         from RxyCode.RxyCode1_1_0.config.model_capabilities import (
             DEFAULT_CAPABILITIES,
         )
@@ -293,12 +293,12 @@ class TestApplyCacheControlDispatch:
                 "cache_ttl": 3600,
                 "resolved_max_tokens": 2048,
                 "api_key": "test-key",
-                "base_url": "https://api.anthropic.com/v1",
+                "base_url": "https://relay.example/v1",
             },
             DEFAULT_CAPABILITIES,
         )
         extra = kwargs.get("extra_body") or {}
-        assert extra.get("cache_ttl") == 3600
+        assert "cache_ttl" not in extra
 
     def test_anthropic_tools_breakpoint_in_raw_stream(self):
         """luna 阻断项 2：Anthropic tools 断点注入真实 _raw_stream payload。"""
@@ -349,7 +349,9 @@ class TestApplyCacheControlDispatch:
         tools = payload.get("tools") or []
         assert tools, "tools missing from payload"
         for tool_def in tools:
-            assert tool_def.get("cache_control") == {"type": "ephemeral"}
+            control = tool_def.get("cache_control") or {}
+            assert control.get("type") == "ephemeral"
+            assert control.get("ttl") in (None, "1h")
 
     def test_openai_tools_no_breakpoint(self):
         """luna 阻断项 1：OpenAI 系 tools 不注入 cache_control（CB3）。"""

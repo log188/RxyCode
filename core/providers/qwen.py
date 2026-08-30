@@ -302,6 +302,8 @@ class QwenProvider(BaseProvider):
             # enable_thinking as a deprecated, non-standard compatibility field.
             body.pop("enable_thinking", None)
             return kwargs
+        kwargs.pop("reasoning_effort", None)
+        body.pop("reasoning", None)
         # FXC5/FX-CB11: strictly catalog-driven — a Qwen variant without a
         # catalog record gets NO thinking parameter (unknown-model fallback,
         # FXC6: never invent params from capabilities).
