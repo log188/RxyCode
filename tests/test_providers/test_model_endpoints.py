@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from config.model_endpoint import (
     llm_endpoint_url,
     normalize_llm_endpoint,
     normalize_resource_path,
+    resource_path_request_hook,
     rewrite_sdk_request_url,
 )
 
@@ -504,3 +506,141 @@ def test_resource_path_probe_hits_exact_chat_url(monkeypatch):
             "provider_id": "custom",
         }
     ) == ("openai_chat",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transport", "sdk_url", "resource_path", "expected"),
+    [
+        (
+            "openai_chat",
+            "https://gateway.example/api/chat/completions",
+            "/chat",
+            "https://gateway.example/api/chat",
+        ),
+        (
+            "openai_responses",
+            "https://gateway.example/api/responses",
+            "/proxy/responses",
+            "https://gateway.example/api/proxy/responses",
+        ),
+    ],
+)
+async def test_resource_path_async_client_reaches_rewritten_path(
+    transport, sdk_url, resource_path, expected
+):
+    """httpx.AsyncClient awaits request hooks; a sync hook never hits the wire."""
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    hook = resource_path_request_hook(resource_path, transport)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        event_hooks={"request": [hook]},
+    ) as client:
+        response = await client.post(sdk_url, json={"model": "x"})
+        assert response.status_code == 200
+    assert seen == [expected]
+
+
+@pytest.mark.asyncio
+async def test_chatopenai_resource_path_hook_reaches_exact_chat_path(monkeypatch):
+    from langchain_openai import ChatOpenAI
+
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "x",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+            request=request,
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-" + uuid4().hex)
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        event_hooks={
+            "request": [resource_path_request_hook("/chat", "openai_chat")]
+        },
+    )
+    llm = ChatOpenAI(
+        model="x",
+        api_key="sk-test",
+        base_url="https://gateway.example/api",
+        http_async_client=client,
+    )
+    try:
+        message = await llm.ainvoke("hi")
+    finally:
+        await client.aclose()
+    assert message.content == "ok"
+    assert seen, "request never reached the transport"
+    assert seen[0].split("?", 1)[0] == "https://gateway.example/api/chat"
+
+
+def test_add_model_rejects_anthropic_resource_path(monkeypatch):
+    from config import model_manager
+
+    monkeypatch.setattr(model_manager, "load_config", lambda: {"models": {}})
+    monkeypatch.setattr(model_manager, "save_config", lambda _value: None)
+    monkeypatch.setattr(
+        model_manager,
+        "_credential_config",
+        lambda _value: {"api_key_env": "RXYCODE_TEST_ENDPOINT_KEY"},
+    )
+    with pytest.raises(ValueError, match="anthropic_messages"):
+        model_manager.add_model(
+            "anthropic/custom",
+            "test-" + uuid4().hex,
+            "https://gateway.example/api",
+            model_name="claude-sonnet-4-5",
+            provider_id="anthropic",
+            api_transport="anthropic_messages",
+            resource_path="/proxy/messages",
+        )
+
+
+def test_probe_rejects_anthropic_resource_path():
+    from config import model_manager
+
+    result = model_manager.probe_model_connection(
+        api_key="test-" + uuid4().hex,
+        base_url="https://gateway.example/api",
+        provider_model_id="claude-sonnet-4-5",
+        resource_path="/proxy/messages",
+    )
+    assert result["success"] is False
+    assert "anthropic_messages" in result["error"]
+
+
+def test_resource_path_candidates_reject_anthropic_custom_path():
+    from core.providers.base import BaseProvider
+
+    with pytest.raises(ValueError, match="anthropic_messages"):
+        BaseProvider()._resource_path_candidates(
+            {
+                "api_transport": "anthropic_messages",
+                "resource_path": "/proxy/messages",
+            }
+        )

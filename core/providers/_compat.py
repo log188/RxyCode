@@ -59,3 +59,4 @@ normalize_resource_path = _endpoint.normalize_resource_path
 infer_transport_from_resource_path = _endpoint.infer_transport_from_resource_path
 rewrite_sdk_request_url = _endpoint.rewrite_sdk_request_url
 resource_path_request_hook = _endpoint.resource_path_request_hook
+ensure_resource_path_rewritable = _endpoint.ensure_resource_path_rewritable

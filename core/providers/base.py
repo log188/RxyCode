@@ -18,6 +18,7 @@ from ._compat import (
     LLMTransport,
     OPENAI_CHAT_TRANSPORT,
     OPENAI_RESPONSES_TRANSPORT,
+    ensure_resource_path_rewritable,
     infer_transport_from_resource_path,
     normalize_api_transport,
     normalize_resource_path,
@@ -229,6 +230,7 @@ class BaseProvider:
                 "resource_path does not match api_transport: "
                 f"{resource_path} != {requested}"
             )
+        ensure_resource_path_rewritable(resource_path, inferred)
         return (inferred,)
 
     def transport_candidates(

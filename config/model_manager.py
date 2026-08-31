@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from .credential_store import delete_credential, store_credential
 from .model_endpoint import (
     detect_explicit_transport,
+    ensure_resource_path_rewritable,
     infer_transport_from_resource_path,
     llm_endpoint_url,
     normalize_llm_endpoint,
@@ -244,6 +245,12 @@ def add_model(
                 "resource_path does not match api_transport: "
                 f"{exact_resource} != {requested_transport}"
             )
+        ensure_resource_path_rewritable(
+            exact_resource,
+            requested_transport
+            if requested_transport != "auto"
+            else inferred_from_path,
+        )
     explicit_transport = detect_explicit_transport(base_url)
     if requested_transport != "auto":
         if (
@@ -810,6 +817,15 @@ def probe_model_connection(
         probe_cfg["api_transport"] = explicit_transport
     if exact_resource:
         probe_cfg["resource_path"] = exact_resource
+        try:
+            ensure_resource_path_rewritable(
+                exact_resource,
+                explicit_transport
+                if explicit_transport is not None
+                else infer_transport_from_resource_path(exact_resource),
+            )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
     provider = _providers.resolve(probe_cfg)
     candidates = normalize_transport_candidates(
         provider.transport_candidates(probe_cfg)

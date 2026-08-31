@@ -151,9 +151,9 @@ class DeepSeekProvider(BaseProvider):
             host = ""
         if host == "deepseek.com" or host.endswith(".deepseek.com"):
             # Default Chat Completions: thinking+tools must echo
-            # ``reasoning_content``.  Explicit ``openai_responses`` stores
-            # native reasoning items on the assistant message so the next
-            # turn can replay reasoning → function_call → function_call_output.
+            # ``reasoning_content``.  Explicit ``openai_responses`` keeps
+            # native ``reasoning_text`` events at the SDK stream layer so the
+            # next turn can replay reasoning → function_call → output.
             return (CHAT_TRANSPORT,)
         return super().transport_candidates(model_config)
 

@@ -2299,6 +2299,18 @@ class AgentV2:
                     "provider selected anthropic_messages without an "
                     "Anthropic client configuration"
                 )
+            from .providers._compat import (
+                ensure_resource_path_rewritable,
+                normalize_resource_path,
+            )
+
+            exact_resource = normalize_resource_path(
+                model_config.get("resource_path")
+            )
+            if exact_resource:
+                ensure_resource_path_rewritable(
+                    exact_resource, ANTHROPIC_MESSAGES_TRANSPORT
+                )
             raw_llm = ChatAnthropic(**kwargs_builder(model_config, caps))
         else:
             # 2026-08-13: ChatOpenAI 懒导入（顶层导入拖慢 worker bootstrap 6.5s）
@@ -3756,9 +3768,9 @@ class AgentV2:
             else:
                 attempt_payload.pop("extra_body", None)
             if active_transport == RESPONSES_TRANSPORT:
-                # ChatOpenAI already implements the full Responses input/tool/
-                # event conversion. Reuse it, then normalize its public chunks
-                # back to RxyCode's stable internal stream contract.
+                # ChatOpenAI builds the Responses payload. langchain-openai
+                # 1.3.3 drops response.reasoning_text.delta and reasoning
+                # output_item.done; patch those events back in before astream.
                 raw_llm = vars(self._llm).get("_llm", self._llm)
                 invoke_kwargs = {"max_tokens": attempt_payload["max_tokens"]}
                 # Never pass a ``None`` effort: langchain-openai serializes the
@@ -3772,7 +3784,15 @@ class AgentV2:
                     invoke_kwargs["extra_body"] = attempt_payload["extra_body"]
                 if attempt_payload.get("tools"):
                     invoke_kwargs["tools"] = attempt_payload["tools"]
-                response_stream = raw_llm.astream(messages, **invoke_kwargs)
+                from .providers.responses_adapter import (
+                    astream_with_native_reasoning_events,
+                    install_langchain_responses_reasoning_patch,
+                )
+
+                install_langchain_responses_reasoning_patch()
+                response_stream = astream_with_native_reasoning_events(
+                    raw_llm.astream(messages, **invoke_kwargs)
+                )
                 resp = self._responses_stream_as_chat_chunks(response_stream)
             elif active_transport == ANTHROPIC_MESSAGES_TRANSPORT:
                 raw_llm = vars(self._llm).get("_llm", self._llm)

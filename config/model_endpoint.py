@@ -80,10 +80,34 @@ def rewrite_sdk_request_url(
     return url
 
 
-def resource_path_request_hook(resource_path: str, transport: object):
-    """httpx request hook so ChatOpenAI/AsyncOpenAI hit resource_path."""
+def ensure_resource_path_rewritable(
+    resource_path: str,
+    transport: object | None = None,
+) -> None:
+    """Reject transports whose runtime client does not honor resource_path."""
+    inferred = infer_transport_from_resource_path(resource_path)
+    canonical = inferred
+    if transport is not None:
+        requested = normalize_api_transport(transport, allow_auto=True)
+        if requested != "auto":
+            canonical = requested
+    if canonical == ANTHROPIC_MESSAGES_TRANSPORT:
+        raise ValueError(
+            "resource_path is not supported for anthropic_messages; "
+            "ChatAnthropic does not rewrite the SDK /v1/messages path. "
+            "Omit resource_path for Anthropic, or use openai_chat / "
+            "openai_responses"
+        )
 
-    def _hook(request) -> None:
+
+def resource_path_request_hook(resource_path: str, transport: object):
+    """httpx.AsyncClient request hook so ChatOpenAI/AsyncOpenAI hit resource_path.
+
+    The hook must be async: AsyncClient does ``await hook(request)``. A sync
+    hook returns None and the request never reaches the network handler.
+    """
+
+    async def _hook(request) -> None:
         rewritten = rewrite_sdk_request_url(
             str(request.url),
             resource_path=resource_path,
