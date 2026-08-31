@@ -385,10 +385,12 @@ async def test_native_messages_wire_and_agent_normalization(
     assert "authorization" not in observed["headers"]
     body = observed["body"]
     assert body["system"] == "system policy"
-    assert body["tools"][0] == {
-        "name": "read",
-        "description": "Read a file",
-        "input_schema": tool_parameters,
+    assert body["tools"][0]["name"] == "read"
+    assert body["tools"][0]["description"] == "Read a file"
+    assert body["tools"][0]["input_schema"] == tool_parameters
+    assert body["tools"][0]["cache_control"] == {
+        "type": "ephemeral",
+        "ttl": "1h",
     }
     assert any(
         block.get("type") == "image"

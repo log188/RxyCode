@@ -298,6 +298,39 @@ def test_probe_rejects_http_200_without_transport_reply_body(
     assert "no valid" in result["error"]
 
 
+def test_probe_rejects_failed_responses_status(monkeypatch):
+    from config import model_manager
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"status": "failed", "output": []}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, _url, *, json, headers):
+            del json, headers
+            return Response()
+
+    monkeypatch.setattr(model_manager.httpx, "Client", Client)
+    result = model_manager.probe_model_connection(
+        api_key="test-" + uuid4().hex,
+        base_url="https://provider.example/v1/responses",
+        provider_model_id="provider/model",
+    )
+    assert result["success"] is False
+
+
 def test_probe_accepts_completed_response_without_visible_text(monkeypatch):
     from config import model_manager
 

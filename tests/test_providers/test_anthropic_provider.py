@@ -126,6 +126,33 @@ def test_dotted_catalog_ids_use_canonical_family():
     assert dotted.cache_min_block_tokens == hyphen.cache_min_block_tokens == 4096
 
 
+def test_sonnet_45_is_not_aliased_to_sonnet_5():
+    """claude-sonnet-4.5 is the Sonnet 4.5 API id, not Sonnet 5."""
+    from core.catalog import canonical_model_id
+
+    assert canonical_model_id("anthropic", "claude-sonnet-4.5") == "claude-sonnet-4-5"
+    sonnet_45 = AnthropicProvider().capabilities(
+        {
+            "base_url": "https://api.anthropic.com/v1",
+            "model_name": "claude-sonnet-4.5",
+        }
+    )
+    sonnet_5 = AnthropicProvider().capabilities(
+        {
+            "base_url": "https://api.anthropic.com/v1",
+            "model_name": "claude-sonnet-5",
+        }
+    )
+    assert sonnet_45.context_window == 200_000
+    assert sonnet_5.context_window == 1_000_000
+    assert sonnet_45.max_output_tokens == 64_000
+    assert sonnet_5.max_output_tokens == 128_000
+    assert sonnet_45.thinking_default_on is False
+    assert sonnet_5.thinking_default_on is True
+    assert sonnet_45.pricing.input_per_mtok is None
+    assert sonnet_5.pricing.input_per_mtok == 2.0
+
+
 def test_supports_reasoning_and_tools():
     caps = providers.resolve({"model_name": "claude-opus-5"}).capabilities(
         {"model_name": "claude-opus-5"}

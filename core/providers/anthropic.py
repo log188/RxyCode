@@ -76,12 +76,14 @@ _ANTHROPIC_USAGE = UsageFieldMap(
     reasoning=("reasoning_content",),
 )
 
-# §7.8 A1：Opus/Sonnet/Fable/Opus 4.8 为 1M；Haiku 4.5 为 200k
+# §7.8 A1：Opus/Sonnet 5/Fable/Opus 4.8 为 1M；Haiku 4.5 / Sonnet 4.5 为 200k
 _CONTEXT_WINDOW_DEFAULT = 1_000_000
-_CONTEXT_WINDOW_HAIKU = 200_000
-# §7.8 A1：输出 128k（Haiku 64k）
+_CONTEXT_WINDOW_200K = 200_000
+_CONTEXT_WINDOW_HAIKU = _CONTEXT_WINDOW_200K
+# §7.8 A1：输出 128k（Haiku 64k）；Sonnet 4.5 不继承 Sonnet 5 的 128k
 _MAX_OUTPUT_DEFAULT = 128_000
 _MAX_OUTPUT_HAIKU = 64_000
+_MAX_OUTPUT_SONNET_45 = 64_000
 # RxyCode 项目约定：compaction_threshold ≈ context 的 90%（同 A3 §7.1 / DeepSeek 卡；
 # 非 Anthropic 官方文档数值）
 _COMPACTION_RATIO = 0.9
@@ -131,6 +133,15 @@ _ANTHROPIC_PRICING: dict[str, ModelPricing] = {
         as_of="2026-08-02",
         source_url="https://docs.anthropic.com/en/docs/about-claude/pricing",
     ),
+    # Distinct from Sonnet 5.  Leave prices unset until this id is re-audited.
+    "claude-sonnet-4-5": ModelPricing(
+        input_per_mtok=None,
+        output_per_mtok=None,
+        cached_input_per_mtok=None,
+        cache_write_per_mtok=None,
+        as_of="2026-08-02",
+        source_url="https://docs.anthropic.com/en/docs/about-claude/pricing",
+    ),
 }
 
 #: 未调研型号 → 价格显式 None（来源 URL 仍在），不得静默当 0。
@@ -147,6 +158,7 @@ _DEFAULT_ANTHROPIC_PRICING = ModelPricing(
 _ANTHROPIC_FAMILY = {
     "claude-opus-5",
     "claude-sonnet-5",
+    "claude-sonnet-4-5",
     "claude-fable-5",
     "claude-opus-4-8",
     "claude-haiku-4-5",
@@ -175,7 +187,12 @@ _SAMPLING_RESTRICTED = frozenset(
 def _sampling_restricted(model_name: str) -> bool:
     """§7.8 问 5（A4）：该型号是否受"非默认采样一律 400"契约约束。
     仅报告明确列出的型号；旧代（claude-opus-3）与未调研变体不受限（DC1）。"""
-    return model_name.lower() in _SAMPLING_RESTRICTED
+    try:
+        from ..catalog import canonical_model_id
+    except ImportError:  # pragma: no cover - repo-root layout
+        from core.catalog import canonical_model_id
+
+    return canonical_model_id("anthropic", model_name) in _SAMPLING_RESTRICTED
 
 
 def _family(model_name: str) -> str | None:
@@ -192,11 +209,17 @@ def _family(model_name: str) -> str | None:
 
 
 def _context_window(family: str) -> int:
-    return _CONTEXT_WINDOW_HAIKU if family == "claude-haiku-4-5" else _CONTEXT_WINDOW_DEFAULT
+    if family in {"claude-haiku-4-5", "claude-sonnet-4-5"}:
+        return _CONTEXT_WINDOW_200K
+    return _CONTEXT_WINDOW_DEFAULT
 
 
 def _max_output(family: str) -> int:
-    return _MAX_OUTPUT_HAIKU if family == "claude-haiku-4-5" else _MAX_OUTPUT_DEFAULT
+    if family == "claude-haiku-4-5":
+        return _MAX_OUTPUT_HAIKU
+    if family == "claude-sonnet-4-5":
+        return _MAX_OUTPUT_SONNET_45
+    return _MAX_OUTPUT_DEFAULT
 
 
 def _thinking_default_on(family: str) -> bool:
@@ -218,7 +241,7 @@ def _cache_min_block(family: str) -> int:
 def _pricing_for(family: str | None) -> ModelPricing:
     if family is None:
         return _DEFAULT_ANTHROPIC_PRICING
-    return _ANTHROPIC_PRICING[family]
+    return _ANTHROPIC_PRICING.get(family, _DEFAULT_ANTHROPIC_PRICING)
 
 
 def _prompt_variant(model_name: str) -> str:

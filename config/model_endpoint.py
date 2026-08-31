@@ -14,9 +14,10 @@ from .model_transport import (
 
 
 _RESOURCE_SUFFIXES: dict[LLMTransport, tuple[str, ...]] = {
-    # Longer suffix first.  ``/chat`` is an alias for the Chat Completions
-    # resource and must strip back to the API root so probe and the OpenAI
-    # SDK both hit ``/chat/completions``.
+    # Longer suffix first.  ``/chat`` is always treated as the Chat Completions
+    # alias so probe and the OpenAI SDK hit the same final URL.  Exact custom
+    # resources such as ``https://gateway.example/api/chat`` are not supported;
+    # configure the API root instead (``https://gateway.example/api``).
     OPENAI_CHAT_TRANSPORT: ("/chat/completions", "/chat"),
     OPENAI_RESPONSES_TRANSPORT: ("/responses",),
     ANTHROPIC_MESSAGES_TRANSPORT: ("/messages",),

@@ -143,6 +143,41 @@ class TestApplyCacheControlDispatch:
         out = agent._apply_cache_control(self._msgs())
         assert out[0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
 
+    def test_ttl_1h_is_shared_across_system_user_and_tools(self):
+        from dataclasses import replace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            apply_breakpoint_budget,
+            cache_control_for_ttl,
+        )
+
+        hour = cache_control_for_ttl(3600)
+        assert hour == {"type": "ephemeral", "ttl": "1h"}
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="anthropic",
+            supports_prompt_cache=True,
+            cache_breakpoints=("tools", "system", "tail"),
+        )
+        agent = self._make_agent("anthropic", caps)
+        agent._cfg = {"cache": {"ttl": 3600}}
+        out = agent._apply_cache_control(self._msgs())
+        assert out[0].additional_kwargs.get("cache_control") == hour
+        assert out[1].additional_kwargs.get("cache_control") == hour
+        msgs, _allocated, ttl = apply_breakpoint_budget(
+            self._msgs(),
+            tools=["read", "bash"],
+            caps=caps,
+            cfg={"cache": {"ttl": 3600}},
+            contract={"cache_mode": "explicit_breakpoints", "breakpoints_max": 4},
+        )
+        assert ttl == 3600
+        assert msgs[0].additional_kwargs.get("cache_control") == hour
+        assert msgs[1].additional_kwargs.get("cache_control") == hour
+
     def test_openai_gets_no_cache_control(self):
         """OpenAI 系：不注入 cache_control（B2 走 prompt_cache_key，CB3）。"""
         from dataclasses import replace
@@ -349,9 +384,10 @@ class TestApplyCacheControlDispatch:
         tools = payload.get("tools") or []
         assert tools, "tools missing from payload"
         for tool_def in tools:
-            control = tool_def.get("cache_control") or {}
-            assert control.get("type") == "ephemeral"
-            assert control.get("ttl") in (None, "1h")
+            assert tool_def.get("cache_control") == {
+                "type": "ephemeral",
+                "ttl": "1h",
+            }
 
     def test_openai_tools_no_breakpoint(self):
         """luna 阻断项 1：OpenAI 系 tools 不注入 cache_control（CB3）。"""

@@ -872,6 +872,19 @@ def probe_model_connection(
             return True, text, "completed"
         if transport == OPENAI_RESPONSES_TRANSPORT:
             status = str(data.get("status") or "").strip().casefold()
+            if status == "failed":
+                return False, None, "failed"
+            if status == "incomplete":
+                details = data.get("incomplete_details") or {}
+                reason = (
+                    str(details.get("reason") or "").strip().casefold()
+                    if isinstance(details, dict)
+                    else ""
+                )
+                if reason not in {"max_output_tokens", "content_filter"}:
+                    return False, None, "invalid_body"
+            elif status and status != "completed":
+                return False, None, "invalid_body"
             items = data.get("output")
             has_items = isinstance(items, list)
             if not has_items and status not in {"completed", "incomplete"}:

@@ -19,11 +19,9 @@ from typing import Any
 #: 契约目录（与 model_catalog.json 同源）。
 _CATALOG_PATH = Path(__file__).resolve().parents[1] / "config" / "model_catalog.json"
 
-#: Anthropic catalog IDs drifted (dots vs hyphens vs Claude 5 names).
-#: Lookups and Provider family matching share this map.
+#: Dotted catalog spellings → official API ids.  Sonnet 4.5 is not Sonnet 5.
 _ANTHROPIC_MODEL_ALIASES: dict[str, str] = {
-    "claude-sonnet-4.5": "claude-sonnet-5",
-    "claude-sonnet-4-5": "claude-sonnet-5",
+    "claude-sonnet-4.5": "claude-sonnet-4-5",
     "claude-haiku-4.5": "claude-haiku-4-5",
 }
 

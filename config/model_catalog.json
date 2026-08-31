@@ -347,8 +347,8 @@
     {
       "provider_id": "anthropic",
       "model_id": "claude-sonnet-4.5",
-      "model_context_window": 1000000,
-      "model_max_output_tokens": 128000,
+      "model_context_window": 200000,
+      "model_max_output_tokens": 64000,
       "source": "phase-a:anthropic",
       "source_url": "https://docs.anthropic.com/en/docs/about-claude/models",
       "as_of": "2026-08-14",

@@ -1213,10 +1213,12 @@ class UsageTrackingLLM:
         capabilities=None,
         llm_timeout: float = 90.0,
         first_token_timeout: float | None = None,
+        cache_cfg: dict | None = None,
     ):
         self._llm = llm
         self._provider = provider
         self._capabilities = capabilities
+        self._cfg = dict(cache_cfg or {})
         # Cache the prompt_prefix_cache decision so we don't re-read config
         # on every single LLM call.
         self._cache_enabled = None
@@ -1566,6 +1568,7 @@ class UsageTrackingLLM:
             capabilities=self._capabilities,
             llm_timeout=self._llm_timeout,
             first_token_timeout=self._first_token_timeout,
+            cache_cfg=getattr(self, "_cfg", None),
         )
 
     def with_structured_output(self, schema, **kwargs):
@@ -1582,6 +1585,7 @@ class UsageTrackingLLM:
             capabilities=self._capabilities,
             llm_timeout=self._llm_timeout,
             first_token_timeout=self._first_token_timeout,
+            cache_cfg=getattr(self, "_cfg", None),
         )
 
     def __getattr__(self, name):
@@ -2270,6 +2274,7 @@ class AgentV2:
         self._stuck_detector: StuckDetector = StuckDetector(threshold=3)
         # B7: Git 快照（LLM 调用前捕获，坏结局回滚）。
         self._git_snapshot = None
+        self._cache_cfg = cfg or {}
         # B3 (CB2): TTL 档位写入 model_config（供 Anthropic provider 注入请求）。
         try:
             from .cache_policy import resolve_ttl_seconds
@@ -2324,6 +2329,7 @@ class AgentV2:
             capabilities=caps,
             llm_timeout=float(model_config.get('timeout', 90.0) or 90.0),
             first_token_timeout=model_config.get("first_token_timeout"),
+            cache_cfg=cfg or {},
         )
 
     def _build_llm(self):
@@ -3564,6 +3570,7 @@ class AgentV2:
                     last_tool["cache_control"] = cache_control_for_ttl(
                         resolve_ttl_seconds(
                             getattr(self, "_cache_cfg", None)
+                            or getattr(self, "_cfg", None)
                             or (_settings.load_config() or {})
                         )
                     )
