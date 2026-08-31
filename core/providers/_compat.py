@@ -38,6 +38,7 @@ def _load(module_suffix: str):
 
 
 _capabilities = _load("config.model_capabilities")
+_catalog = _load("core.catalog")
 _transport = _load("config.model_transport")
 _endpoint = _load("config.model_endpoint")
 
@@ -45,6 +46,7 @@ DEFAULT_CAPABILITIES = _capabilities.DEFAULT_CAPABILITIES
 ModelCapabilities = _capabilities.ModelCapabilities
 ModelPricing = _capabilities.ModelPricing
 UsageFieldMap = _capabilities.UsageFieldMap
+canonical_model_id = _catalog.canonical_model_id
 
 ANTHROPIC_MESSAGES_TRANSPORT = _transport.ANTHROPIC_MESSAGES_TRANSPORT
 LLMTransport = _transport.LLMTransport

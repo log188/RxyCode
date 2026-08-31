@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
     )
 from .base import ANTHROPIC_MESSAGES_TRANSPORT, BaseProvider
 
-from ._compat import llm_client_base_url
+from ._compat import canonical_model_id, llm_client_base_url
 
 _ANTHROPIC_USAGE = UsageFieldMap(
     # §7.8 ③：原始 SDK usage 是顶层字段；LangChain UsageMetadata 将
@@ -187,21 +187,11 @@ _SAMPLING_RESTRICTED = frozenset(
 def _sampling_restricted(model_name: str) -> bool:
     """§7.8 问 5（A4）：该型号是否受"非默认采样一律 400"契约约束。
     仅报告明确列出的型号；旧代（claude-opus-3）与未调研变体不受限（DC1）。"""
-    try:
-        from ..catalog import canonical_model_id
-    except ImportError:  # pragma: no cover - repo-root layout
-        from core.catalog import canonical_model_id
-
     return canonical_model_id("anthropic", model_name) in _SAMPLING_RESTRICTED
 
 
 def _family(model_name: str) -> str | None:
     """返回调研覆盖的型号规范名；未覆盖返回 None。"""
-    try:
-        from ..catalog import canonical_model_id
-    except ImportError:  # pragma: no cover - repo-root layout
-        from core.catalog import canonical_model_id
-
     name = canonical_model_id("anthropic", model_name)
     if name in _ANTHROPIC_FAMILY:
         return name

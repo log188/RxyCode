@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from uuid import uuid4
@@ -24,6 +25,7 @@ from openai.types.responses import (
     ResponseReasoningTextDeltaEvent,
 )
 
+from core.providers import responses_adapter as responses_adapter_mod
 from core.providers.responses_adapter import (
     accumulate_reasoning_items,
     assistant_content_for_responses_replay,
@@ -806,6 +808,26 @@ async def test_raw_sse_reasoning_text_replays_on_next_responses_request(
     assert len(live_reasoning) == 1
     assert live_reasoning[0]["id"] == "rs_1"
     assert live_reasoning[0].get("content") == expected_reasoning["content"]
+
+
+@pytest.mark.asyncio
+async def test_native_reasoning_stream_survives_wait_for_anext():
+    """AgentV2 drives streams with wait_for(anext); each call is a new Context."""
+    seen_inside: list[bool] = []
+
+    async def source():
+        seen_inside.append(responses_adapter_mod._NATIVE_REASONING_EVENTS.get())
+        yield "partial"
+        seen_inside.append(responses_adapter_mod._NATIVE_REASONING_EVENTS.get())
+        raise RuntimeError("endpoint disappeared")
+
+    stream = astream_with_native_reasoning_events(source())
+    first = await asyncio.create_task(stream.__anext__())
+    assert first == "partial"
+    with pytest.raises(RuntimeError, match="endpoint disappeared"):
+        await asyncio.create_task(stream.__anext__())
+    await stream.aclose()
+    assert seen_inside == [True, True]
 
 
 class _ScriptedResponsesAgentModel(ChatOpenAI):

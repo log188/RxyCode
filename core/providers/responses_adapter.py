@@ -662,6 +662,12 @@ def _advance_responses_indexes(
     return current_index, output_idx, current_sub_index
 
 
+def _load_langchain_runtime():
+    from . import _langchain_runtime as runtime
+
+    return runtime
+
+
 def _generation_from_dropped_reasoning_event(
     chunk: object,
     current_index: int,
@@ -669,8 +675,9 @@ def _generation_from_dropped_reasoning_event(
     current_sub_index: int,
 ):
     """Map DeepSeek native reasoning events langchain-openai 1.3.3 drops."""
-    from langchain_core.messages import AIMessageChunk
-    from langchain_core.outputs import ChatGenerationChunk
+    runtime = _load_langchain_runtime()
+    AIMessageChunk = runtime.AIMessageChunk
+    ChatGenerationChunk = runtime.ChatGenerationChunk
 
     chunk_type = _event_type(chunk)
     content: list[dict[str, Any]] | None = None
@@ -737,14 +744,29 @@ def native_reasoning_scope():
     try:
         yield
     finally:
-        _NATIVE_REASONING_EVENTS.reset(token)
+        try:
+            _NATIVE_REASONING_EVENTS.reset(token)
+        except ValueError:
+            # AgentV2 pulls this generator with wait_for(anext), so __exit__
+            # can run in a different Task/Context than __enter__.
+            _NATIVE_REASONING_EVENTS.set(False)
 
 
 async def astream_with_native_reasoning_events(stream):
-    """Enable dropped-event conversion only for this Responses stream."""
-    with native_reasoning_scope():
-        async for item in stream:
-            yield item
+    """Enable dropped-event conversion only while pulling the next item.
+
+    AgentV2 drives streams with ``asyncio.wait_for(ait.__anext__())``. Each
+    wait_for call is a new Task with its own Context, so a ``with`` around
+    ``yield`` would reset a ContextVar token created in a different Context.
+    """
+    aiter = stream.__aiter__() if hasattr(stream, "__aiter__") else stream
+    while True:
+        with native_reasoning_scope():
+            try:
+                item = await aiter.__anext__()
+            except StopAsyncIteration:
+                break
+        yield item
 
 
 def convert_responses_sdk_event(
@@ -755,7 +777,7 @@ def convert_responses_sdk_event(
     **kwargs,
 ):
     """LangChain Responses converter plus native reasoning events it drops."""
-    from langchain_openai.chat_models import base as lc_base
+    lc_base = _load_langchain_runtime().lc_base
 
     converter = (
         _LC_CONVERT_ORIGINAL
@@ -776,8 +798,9 @@ def convert_responses_sdk_event(
 
 
 def _install_responses_payload_sanitizer() -> None:
-    from langchain_core.messages import AIMessage
-    from langchain_openai.chat_models import base as lc_base
+    runtime = _load_langchain_runtime()
+    AIMessage = runtime.AIMessage
+    lc_base = runtime.lc_base
 
     original = lc_base._construct_responses_api_input
     if getattr(original, "_rxy_sanitize_reasoning", False):
@@ -805,7 +828,7 @@ def install_langchain_responses_reasoning_patch() -> None:
     follow-up requests do not keep snapshot flags or duplicated text.
     """
     global _LC_CONVERT_ORIGINAL
-    from langchain_openai.chat_models import base as lc_base
+    lc_base = _load_langchain_runtime().lc_base
 
     _install_responses_payload_sanitizer()
     current = lc_base._convert_responses_chunk_to_generation_chunk

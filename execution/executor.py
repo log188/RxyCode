@@ -11,6 +11,11 @@ from RxyCode.RxyCode1_1_0.core.prompts import (
     get_role_prompt,
     get_system_prompt,
 )
+from RxyCode.RxyCode1_1_0.core.providers.responses_adapter import (
+    finalize_responses_reasoning_message,
+    install_langchain_responses_reasoning_patch,
+    native_reasoning_scope,
+)
 from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
 from RxyCode.RxyCode1_1_0.core.state import TaskEffect, TaskNode
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
@@ -106,12 +111,6 @@ class _ResponsesReasoningMiddleware(AgentMiddleware):
 
     @staticmethod
     def _finalize(response):
-        from langchain_core.messages import AIMessage
-
-        from RxyCode.RxyCode1_1_0.core.providers.responses_adapter import (
-            finalize_responses_reasoning_message,
-        )
-
         if isinstance(response, AIMessage):
             return finalize_responses_reasoning_message(response)
         result = getattr(response, "result", None)
@@ -125,22 +124,12 @@ class _ResponsesReasoningMiddleware(AgentMiddleware):
         return response
 
     def wrap_model_call(self, request, handler):
-        from RxyCode.RxyCode1_1_0.core.providers.responses_adapter import (
-            install_langchain_responses_reasoning_patch,
-            native_reasoning_scope,
-        )
-
         install_langchain_responses_reasoning_patch()
         with native_reasoning_scope():
             response = handler(request)
         return self._finalize(response)
 
     async def awrap_model_call(self, request, handler):
-        from RxyCode.RxyCode1_1_0.core.providers.responses_adapter import (
-            install_langchain_responses_reasoning_patch,
-            native_reasoning_scope,
-        )
-
         install_langchain_responses_reasoning_patch()
         with native_reasoning_scope():
             response = await handler(request)

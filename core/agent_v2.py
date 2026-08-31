@@ -114,7 +114,23 @@ from .providers.base import (
     LLMTransport,
     RESPONSES_TRANSPORT,
 )
-from .providers._compat import normalize_llm_endpoint, normalize_transport_candidates
+from .cache_policy import cache_control_for_ttl, resolve_ttl_seconds
+from .providers._compat import (
+    OPENAI_CHAT_TRANSPORT,
+    OPENAI_RESPONSES_TRANSPORT,
+    ensure_resource_path_rewritable,
+    normalize_llm_endpoint,
+    normalize_resource_path,
+    normalize_transport_candidates,
+    resource_path_request_hook,
+)
+from .providers.responses_adapter import (
+    accumulate_reasoning_items,
+    assistant_content_for_responses_replay,
+    astream_with_native_reasoning_events,
+    install_langchain_responses_reasoning_patch,
+    responses_stream_as_chat_chunks,
+)
 from .providers.tokenizers import count_tokens
 
 _logger = logging.getLogger(__name__)
@@ -2277,8 +2293,6 @@ class AgentV2:
         self._cache_cfg = cfg or {}
         # B3 (CB2): TTL 档位写入 model_config（供 Anthropic provider 注入请求）。
         try:
-            from .cache_policy import resolve_ttl_seconds
-
             model_config["cache_ttl"] = resolve_ttl_seconds(cfg or {})
         except Exception:  # pragma: no cover
             pass
@@ -2299,11 +2313,6 @@ class AgentV2:
                     "provider selected anthropic_messages without an "
                     "Anthropic client configuration"
                 )
-            from .providers._compat import (
-                ensure_resource_path_rewritable,
-                normalize_resource_path,
-            )
-
             exact_resource = normalize_resource_path(
                 model_config.get("resource_path")
             )
@@ -2328,11 +2337,6 @@ class AgentV2:
                     **(llm_kwargs.get("default_headers") or {}),
                     **headers,
                 }
-            from .providers._compat import (
-                normalize_resource_path,
-                resource_path_request_hook,
-            )
-
             exact_resource = normalize_resource_path(
                 model_config.get("resource_path")
             )
@@ -2447,13 +2451,6 @@ class AgentV2:
             # 流式建立期由 _open_stream/_open_stream_with_retry 的 wait_for 兜底。
             "timeout": self.model_config.get("timeout", 90.0),
         }
-        from .providers._compat import (
-            OPENAI_CHAT_TRANSPORT,
-            OPENAI_RESPONSES_TRANSPORT,
-            normalize_resource_path,
-            resource_path_request_hook,
-        )
-
         exact_resource = normalize_resource_path(
             (self.model_config or {}).get("resource_path")
         )
@@ -2713,8 +2710,6 @@ class AgentV2:
     @staticmethod
     async def _responses_stream_as_chat_chunks(stream):
         """Translate LangChain Responses chunks to the legacy raw-chat shape."""
-        from .providers.responses_adapter import responses_stream_as_chat_chunks
-
         async for chunk in responses_stream_as_chat_chunks(stream):
             yield chunk
 
@@ -3620,11 +3615,6 @@ class AgentV2:
             if injects_cache_control(contract) and payload["tools"]:
                 last_tool = payload["tools"][-1]
                 if isinstance(last_tool, dict):
-                    from .cache_policy import (
-                        cache_control_for_ttl,
-                        resolve_ttl_seconds,
-                    )
-
                     last_tool["cache_control"] = cache_control_for_ttl(
                         resolve_ttl_seconds(
                             getattr(self, "_cache_cfg", None)
@@ -3784,11 +3774,6 @@ class AgentV2:
                     invoke_kwargs["extra_body"] = attempt_payload["extra_body"]
                 if attempt_payload.get("tools"):
                     invoke_kwargs["tools"] = attempt_payload["tools"]
-                from .providers.responses_adapter import (
-                    astream_with_native_reasoning_events,
-                    install_langchain_responses_reasoning_patch,
-                )
-
                 install_langchain_responses_reasoning_patch()
                 response_stream = astream_with_native_reasoning_events(
                     raw_llm.astream(messages, **invoke_kwargs)
@@ -5085,7 +5070,6 @@ class AgentV2:
                 # generic OpenAI-shaped chunk contract depend on them.
                 _native_anthropic_blocks: list[dict] = []
                 _responses_reasoning_items: list[dict] = []
-                from .providers.responses_adapter import accumulate_reasoning_items
 
                 tool_calls_acc: dict = {}
                 tool_call_delta_chunks = 0
@@ -5405,10 +5389,6 @@ class AgentV2:
                         self.model_config or {}
                     )
                 ):
-                    from .providers.responses_adapter import (
-                        assistant_content_for_responses_replay,
-                    )
-
                     items = list(_responses_reasoning_items)
                     if not items and _reasoning_buffer:
                         items = [
