@@ -14,10 +14,9 @@ from .model_transport import (
 
 
 _RESOURCE_SUFFIXES: dict[LLMTransport, tuple[str, ...]] = {
-    # Longer suffix first.  ``/chat`` is always treated as the Chat Completions
-    # alias so probe and the OpenAI SDK hit the same final URL.  Exact custom
-    # resources such as ``https://gateway.example/api/chat`` are not supported;
-    # configure the API root instead (``https://gateway.example/api``).
+    # Longer suffix first.  ``/chat`` is the Chat Completions alias so probe and
+    # the OpenAI SDK hit ``/chat/completions``.  Gateways whose real resource
+    # is exactly ``/chat`` must set ``resource_path: /chat`` on the API root.
     OPENAI_CHAT_TRANSPORT: ("/chat/completions", "/chat"),
     OPENAI_RESPONSES_TRANSPORT: ("/responses",),
     ANTHROPIC_MESSAGES_TRANSPORT: ("/messages",),
@@ -27,6 +26,73 @@ _FINAL_RESOURCE: dict[LLMTransport, str] = {
     OPENAI_RESPONSES_TRANSPORT: "/responses",
     ANTHROPIC_MESSAGES_TRANSPORT: "/messages",
 }
+
+
+def normalize_resource_path(value: object) -> str | None:
+    """Return an exact terminal resource such as ``/chat``, or None.
+
+    ``base_url`` remains the API root.  When this is set, probe and the SDK
+    rewrite hit that path instead of the canonical ``/chat/completions``.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("resource_path must be a string")
+    text = value.strip()
+    if not text:
+        return None
+    if (
+        not text.startswith("/")
+        or text.startswith("//")
+        or any(char.isspace() for char in text)
+        or "?" in text
+        or "#" in text
+        or "://" in text
+    ):
+        raise ValueError(
+            "resource_path must be an absolute path like /chat "
+            "(no query, fragment, or URL scheme)"
+        )
+    return text.rstrip("/") or text
+
+
+def infer_transport_from_resource_path(resource_path: str) -> LLMTransport:
+    detected = _detect_path_transport(resource_path)
+    if detected is not None:
+        return detected[0]
+    return OPENAI_CHAT_TRANSPORT
+
+
+def rewrite_sdk_request_url(
+    url: str,
+    *,
+    resource_path: str,
+    transport: object,
+) -> str:
+    """Replace the SDK's canonical suffix with an exact resource_path."""
+    canonical = normalize_api_transport(transport, allow_auto=False)
+    suffix = _FINAL_RESOURCE[canonical]
+    parsed = urlsplit(url)
+    path = parsed.path
+    if path.endswith(suffix):
+        path = path[: -len(suffix)] + resource_path
+        return urlunsplit(parsed._replace(path=path))
+    return url
+
+
+def resource_path_request_hook(resource_path: str, transport: object):
+    """httpx request hook so ChatOpenAI/AsyncOpenAI hit resource_path."""
+
+    def _hook(request) -> None:
+        rewritten = rewrite_sdk_request_url(
+            str(request.url),
+            resource_path=resource_path,
+            transport=transport,
+        )
+        if rewritten != str(request.url):
+            request.url = type(request.url)(rewritten)
+
+    return _hook
 
 
 def _validated_split(base_url: str, *, require_https: bool) -> SplitResult:
@@ -103,6 +169,7 @@ def llm_endpoint_url(
     transport: object,
     *,
     require_https: bool = False,
+    resource_path: object = None,
 ) -> str:
     """Return the final resource URL, appending the protocol path once."""
     canonical = normalize_api_transport(transport, allow_auto=False)
@@ -111,6 +178,9 @@ def llm_endpoint_url(
         canonical,
         require_https=require_https,
     )
+    extra = normalize_resource_path(resource_path)
+    if extra:
+        return root + extra
     return root + _FINAL_RESOURCE[canonical]
 
 

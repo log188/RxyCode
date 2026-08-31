@@ -137,6 +137,9 @@ class DeepSeekProvider(BaseProvider):
         return "deepseek" in base_url.lower() or "deepseek" in model_name.lower()
 
     def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
         explicit = self.explicit_transport_candidates(model_config)
         if explicit is not None:
             return explicit
@@ -147,12 +150,10 @@ class DeepSeekProvider(BaseProvider):
         except ValueError:
             host = ""
         if host == "deepseek.com" or host.endswith(".deepseek.com"):
-            # DeepSeek thinking + tools requires Chat Completions
-            # ``reasoning_content`` echo.  Official Responses items use
-            # ``reasoning_text`` parts that LangChain/ChatOpenAI does not
-            # replay as native ``reasoning`` input items, which 400s the
-            # next tool turn.  Keep Chat first until that wire contract
-            # is implemented; explicit api_transport still wins above.
+            # Default Chat Completions: thinking+tools must echo
+            # ``reasoning_content``.  Explicit ``openai_responses`` stores
+            # native reasoning items on the assistant message so the next
+            # turn can replay reasoning → function_call → function_call_output.
             return (CHAT_TRANSPORT,)
         return super().transport_candidates(model_config)
 

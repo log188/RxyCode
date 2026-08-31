@@ -109,6 +109,9 @@ class OpenAIProvider(BaseProvider):
         return "openai.com" in url or name.startswith(("gpt-", "o1-", "o3-", "o4-"))
 
     def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
         explicit = self.explicit_transport_candidates(model_config)
         if explicit is not None:
             return explicit

@@ -273,6 +273,9 @@ class AnthropicProvider(BaseProvider):
 
     def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
         """Use native Messages only for Anthropic's exact official host."""
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
         if _is_native_anthropic_host(
             str(model_config.get("base_url") or "")
         ):

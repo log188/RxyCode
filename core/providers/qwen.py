@@ -212,6 +212,9 @@ class QwenProvider(BaseProvider):
         ``provider_id``.  Model-name matching alone is deliberately insufficient:
         a Qwen model may be served by a third-party Chat-only gateway.
         """
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
         explicit = self.explicit_transport_candidates(model_config)
         if explicit is not None:
             return explicit

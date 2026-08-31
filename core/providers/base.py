@@ -18,7 +18,9 @@ from ._compat import (
     LLMTransport,
     OPENAI_CHAT_TRANSPORT,
     OPENAI_RESPONSES_TRANSPORT,
+    infer_transport_from_resource_path,
     normalize_api_transport,
+    normalize_resource_path,
     normalize_transport_candidates as _normalize_transport_candidates,
 )
 
@@ -212,6 +214,23 @@ class BaseProvider:
         """
         return False
 
+    def _resource_path_candidates(
+        self, model_config: dict
+    ) -> tuple[LLMTransport, ...] | None:
+        resource_path = normalize_resource_path(model_config.get("resource_path"))
+        if not resource_path:
+            return None
+        inferred = infer_transport_from_resource_path(resource_path)
+        requested = normalize_api_transport(
+            model_config.get("api_transport"), allow_auto=True
+        )
+        if requested != "auto" and requested != inferred:
+            raise ValueError(
+                "resource_path does not match api_transport: "
+                f"{resource_path} != {requested}"
+            )
+        return (inferred,)
+
     def transport_candidates(
         self, model_config: dict
     ) -> tuple[LLMTransport, ...]:
@@ -227,6 +246,10 @@ class BaseProvider:
         mismatch fallback; runtime fallback is still restricted to explicit
         endpoint/protocol unsupported errors before any useful output.
         """
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
+
         explicit = self.explicit_transport_candidates(model_config)
         if explicit is not None:
             return explicit

@@ -85,6 +85,9 @@ class MuseSparkProvider(BaseProvider):
         # OpenCode Go's official endpoint table pins only the Contributor ID to
         # /v1/responses. Family recognition is intentionally broader than this
         # gateway availability/transport decision.
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
         explicit = self.explicit_transport_candidates(model_config)
         if explicit is not None:
             return explicit

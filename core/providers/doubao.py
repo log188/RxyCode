@@ -150,6 +150,9 @@ class DoubaoProvider(BaseProvider):
         return is_ark_coding_hostname(url)
 
     def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
         explicit = self.explicit_transport_candidates(model_config)
         if explicit is not None:
             return explicit

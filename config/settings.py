@@ -15,7 +15,11 @@ from .credential_store import (
     restrict_file_permissions,
     store_credential,
 )
-from .model_endpoint import detect_explicit_transport, normalize_llm_endpoint
+from .model_endpoint import (
+    detect_explicit_transport,
+    normalize_llm_endpoint,
+    normalize_resource_path,
+)
 from .model_transport import normalize_api_transport
 
 
@@ -418,6 +422,10 @@ def resolve_model_config(entry: dict) -> dict:
     if "api_transport" in resolved:
         resolved["api_transport"] = normalize_api_transport(
             resolved.get("api_transport"), allow_auto=True
+        )
+    if "resource_path" in resolved:
+        resolved["resource_path"] = normalize_resource_path(
+            resolved.get("resource_path")
         )
     base_url = resolved.get("base_url")
     if isinstance(base_url, str) and base_url.strip():

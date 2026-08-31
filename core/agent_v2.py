@@ -2316,6 +2316,24 @@ class AgentV2:
                     **(llm_kwargs.get("default_headers") or {}),
                     **headers,
                 }
+            from .providers._compat import (
+                normalize_resource_path,
+                resource_path_request_hook,
+            )
+
+            exact_resource = normalize_resource_path(
+                model_config.get("resource_path")
+            )
+            if exact_resource:
+                llm_kwargs["http_async_client"] = httpx.AsyncClient(
+                    event_hooks={
+                        "request": [
+                            resource_path_request_hook(
+                                exact_resource, primary_transport
+                            )
+                        ]
+                    }
+                )
             raw_llm = ChatOpenAI(**llm_kwargs)
 
         return UsageTrackingLLM(
@@ -2396,6 +2414,9 @@ class AgentV2:
         """
         llm = self._llm
         client = getattr(llm, "async_client", None)
+        if client is None:
+            inner = vars(llm).get("_llm") if llm is not None else None
+            client = getattr(inner, "async_client", None)
         if client is not None:
             return client
         # Match LangChain's ChatOpenAI default request timeout so the
@@ -2403,17 +2424,42 @@ class AgentV2:
         # timeout than the primary async_client path. An empty api_key
         # string (not None) lets the SDK fall back to the OPENAI_API_KEY
         # environment variable instead of raising on None.
-        return AsyncOpenAI(
-            api_key=self.model_config.get("api_key") or "",
-            base_url=getattr(
+        client_kwargs = {
+            "api_key": self.model_config.get("api_key") or "",
+            "base_url": getattr(
                 self, "_llm_base_url", self.model_config.get("base_url")
             ),
             # 2026-08-13: 默认超时 600 → 90s（对齐 _llm_call_timeout 与 watchdog
             # 120s 层级：LLM 单次调用超时必须先于 watchdog 触发，否则挂起被
             # 伪装成 "job stalled"）。httpx read timeout 覆盖流式消费期块间等待；
             # 流式建立期由 _open_stream/_open_stream_with_retry 的 wait_for 兜底。
-            timeout=self.model_config.get("timeout", 90.0),
+            "timeout": self.model_config.get("timeout", 90.0),
+        }
+        from .providers._compat import (
+            OPENAI_CHAT_TRANSPORT,
+            OPENAI_RESPONSES_TRANSPORT,
+            normalize_resource_path,
+            resource_path_request_hook,
         )
+
+        exact_resource = normalize_resource_path(
+            (self.model_config or {}).get("resource_path")
+        )
+        if exact_resource:
+            transport = OPENAI_CHAT_TRANSPORT
+            provider = getattr(self, "_provider", None)
+            if provider is not None and getattr(
+                provider, "uses_responses_api", lambda _c: False
+            )(self.model_config or {}):
+                transport = OPENAI_RESPONSES_TRANSPORT
+            client_kwargs["http_client"] = httpx.AsyncClient(
+                event_hooks={
+                    "request": [
+                        resource_path_request_hook(exact_resource, transport)
+                    ]
+                }
+            )
+        return AsyncOpenAI(**client_kwargs)
 
     @staticmethod
     def _to_openai_messages(
@@ -5018,6 +5064,9 @@ class AgentV2:
                 # stream normalizer exposes these blocks without making the
                 # generic OpenAI-shaped chunk contract depend on them.
                 _native_anthropic_blocks: list[dict] = []
+                _responses_reasoning_items: list[dict] = []
+                from .providers.responses_adapter import accumulate_reasoning_items
+
                 tool_calls_acc: dict = {}
                 tool_call_delta_chunks = 0
                 tool_call_delta_chars = 0
@@ -5060,6 +5109,10 @@ class AgentV2:
                         continue
                     delta = chunk.choices[0].delta
 
+                    accumulate_reasoning_items(
+                        _responses_reasoning_items,
+                        getattr(chunk, "_rxy_reasoning_items", None) or [],
+                    )
                     for native_block in (
                         getattr(chunk, "_rxy_anthropic_native_blocks", None) or []
                     ):
@@ -5326,6 +5379,33 @@ class AgentV2:
                     assistant_content = [*(_native_anthropic_blocks)]
                     if answer:
                         assistant_content.append({"type": "text", "text": answer})
+                elif _responses_reasoning_items or (
+                    _reasoning_buffer
+                    and getattr(self._provider, "uses_responses_api", lambda _c: False)(
+                        self.model_config or {}
+                    )
+                ):
+                    from .providers.responses_adapter import (
+                        assistant_content_for_responses_replay,
+                    )
+
+                    items = list(_responses_reasoning_items)
+                    if not items and _reasoning_buffer:
+                        items = [
+                            {
+                                "type": "reasoning",
+                                "content": [
+                                    {
+                                        "type": "reasoning_text",
+                                        "text": "".join(_reasoning_buffer),
+                                    }
+                                ],
+                            }
+                        ]
+                    ai_kwargs["responses_reasoning_items"] = items
+                    assistant_content = assistant_content_for_responses_replay(
+                        items, answer
+                    )
                 messages.append(AIMessage(
                     content=assistant_content,
                     tool_calls=tool_calls,

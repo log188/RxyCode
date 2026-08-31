@@ -7,9 +7,12 @@ from uuid import uuid4
 
 from config.model_endpoint import (
     detect_explicit_transport,
+    infer_transport_from_resource_path,
     llm_client_base_url,
     llm_endpoint_url,
     normalize_llm_endpoint,
+    normalize_resource_path,
+    rewrite_sdk_request_url,
 )
 
 
@@ -440,3 +443,64 @@ def test_batch_probe_preserves_explicit_resource_policy(monkeypatch):
     assert probes == ["https://provider.example/gateway/v1/chat/completions"]
     assert additions[0]["base_url"] == "https://provider.example/gateway/v1"
     assert additions[0]["api_transport"] == "openai_chat"
+
+
+def test_resource_path_keeps_exact_chat_endpoint():
+    root = "https://gateway.example/api"
+    assert normalize_resource_path("/chat") == "/chat"
+    assert infer_transport_from_resource_path("/chat") == "openai_chat"
+    probe = llm_endpoint_url(root, "openai_chat", resource_path="/chat")
+    runtime = rewrite_sdk_request_url(
+        llm_client_base_url(root, "openai_chat") + "/chat/completions",
+        resource_path="/chat",
+        transport="openai_chat",
+    )
+    assert probe == "https://gateway.example/api/chat"
+    assert runtime == probe
+
+
+def test_resource_path_probe_hits_exact_chat_url(monkeypatch):
+    from config import model_manager
+    from core.providers.base import BaseProvider
+
+    observed: list[str] = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, *, json, headers):
+            del json, headers
+            observed.append(url)
+            return Response()
+
+    monkeypatch.setattr(model_manager.httpx, "Client", Client)
+    result = model_manager.probe_model_connection(
+        api_key="test-" + uuid4().hex,
+        base_url="https://gateway.example/api",
+        provider_model_id="custom-model",
+        resource_path="/chat",
+    )
+    assert result["success"] is True
+    assert result["transport"] == "openai_chat"
+    assert observed == ["https://gateway.example/api/chat"]
+    assert BaseProvider().transport_candidates(
+        {
+            "base_url": "https://gateway.example/api",
+            "resource_path": "/chat",
+            "provider_id": "custom",
+        }
+    ) == ("openai_chat",)

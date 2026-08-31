@@ -9,8 +9,10 @@ from urllib.parse import urlsplit
 from .credential_store import delete_credential, store_credential
 from .model_endpoint import (
     detect_explicit_transport,
+    infer_transport_from_resource_path,
     llm_endpoint_url,
     normalize_llm_endpoint,
+    normalize_resource_path,
     validate_llm_base_url,
 )
 from .model_transport import (
@@ -216,6 +218,7 @@ def add_model(
     provider_name: Optional[str] = None,
     nickname: Optional[str] = None,
     api_transport: Optional[str] = None,
+    resource_path: Optional[str] = None,
 ) -> dict:
     """M5：max_tokens 只接受正整数 / "auto" / None；0/负数/空串/浮点拒绝。"""
     if max_tokens is not None and max_tokens != "auto":
@@ -227,9 +230,20 @@ def add_model(
         if max_tokens <= 0:
             raise ValueError(f"max_tokens must be a positive integer; got {max_tokens}")
     base_url = normalize_provider_base_url(base_url, require_https=True)
+    exact_resource = normalize_resource_path(resource_path)
     requested_transport = normalize_api_transport(
         api_transport, allow_auto=True
     )
+    if exact_resource:
+        inferred_from_path = infer_transport_from_resource_path(exact_resource)
+        if (
+            requested_transport != "auto"
+            and requested_transport != inferred_from_path
+        ):
+            raise ValueError(
+                "resource_path does not match api_transport: "
+                f"{exact_resource} != {requested_transport}"
+            )
     explicit_transport = detect_explicit_transport(base_url)
     if requested_transport != "auto":
         if (
@@ -282,6 +296,9 @@ def add_model(
     }
     if explicit_transport is not None:
         entry["api_transport"] = explicit_transport
+    if exact_resource:
+        entry["resource_path"] = exact_resource
+        entry["api_transport"] = infer_transport_from_resource_path(exact_resource)
     if nickname and nickname.strip() and nickname.strip() != vendor_id:
         entry["nickname"] = nickname.strip()
     models[name] = entry
@@ -748,6 +765,7 @@ def probe_model_connection(
     api_key: str,
     base_url: str,
     provider_model_id: str,
+    resource_path: Optional[str] = None,
 ) -> dict:
     """Test an unsaved provider configuration without touching disk.
 
@@ -760,6 +778,7 @@ def probe_model_connection(
     try:
         base_url = normalize_provider_base_url(base_url, require_https=True)
         explicit_transport = detect_explicit_transport(base_url)
+        exact_resource = normalize_resource_path(resource_path)
     except ValueError as exc:
         return {"success": False, "error": str(exc)}
     provider_model_id = provider_model_id.strip()
@@ -789,6 +808,8 @@ def probe_model_connection(
     }
     if explicit_transport is not None:
         probe_cfg["api_transport"] = explicit_transport
+    if exact_resource:
+        probe_cfg["resource_path"] = exact_resource
     provider = _providers.resolve(probe_cfg)
     candidates = normalize_transport_candidates(
         provider.transport_candidates(probe_cfg)
@@ -806,7 +827,12 @@ def probe_model_connection(
     def request_for(transport: str) -> tuple[str, dict, dict]:
         if transport == OPENAI_RESPONSES_TRANSPORT:
             return (
-                llm_endpoint_url(base_url, transport, require_https=True),
+                llm_endpoint_url(
+                    base_url,
+                    transport,
+                    require_https=True,
+                    resource_path=exact_resource,
+                ),
                 {
                     "model": provider_model_id,
                     "input": "Hi",
@@ -817,7 +843,12 @@ def probe_model_connection(
             )
         if transport == OPENAI_CHAT_TRANSPORT:
             return (
-                llm_endpoint_url(base_url, transport, require_https=True),
+                llm_endpoint_url(
+                    base_url,
+                    transport,
+                    require_https=True,
+                    resource_path=exact_resource,
+                ),
                 {
                     "model": provider_model_id,
                     "messages": [{"role": "user", "content": "Hi"}],
@@ -828,7 +859,12 @@ def probe_model_connection(
             )
         if transport == ANTHROPIC_MESSAGES_TRANSPORT:
             return (
-                llm_endpoint_url(base_url, transport, require_https=True),
+                llm_endpoint_url(
+                    base_url,
+                    transport,
+                    require_https=True,
+                    resource_path=exact_resource,
+                ),
                 {
                     "model": provider_model_id,
                     "max_tokens": 32,

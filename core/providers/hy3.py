@@ -45,6 +45,11 @@ class Hy3Provider(BaseProvider):
     def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
         # The OpenCode Go contract currently exposes HY3 through
         # /chat/completions.  Do not probe undocumented Responses semantics.
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            if pinned != (CHAT_TRANSPORT,):
+                raise ValueError("HY3 only supports api_transport=openai_chat")
+            return pinned
         explicit = self.explicit_transport_candidates(model_config)
         if explicit is not None and explicit != (CHAT_TRANSPORT,):
             raise ValueError("HY3 only supports api_transport=openai_chat")
